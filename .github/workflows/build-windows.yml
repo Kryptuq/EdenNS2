@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  SCCACHE_GHA_ENABLED: "true"
+
 jobs:
   windows:
     runs-on: windows-2025
@@ -37,11 +40,14 @@ jobs:
           key: cpm-windows-${{ hashFiles('**/cpmfile.json') }}
           restore-keys: cpm-windows-
 
+      - name: Set up compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Configure
         shell: bash
         run: |
           set -o pipefail
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=OFF -DENABLE_UPDATE_CHECKER=OFF 2>&1 | tee configure.log
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=OFF -DENABLE_UPDATE_CHECKER=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW 2>&1 | tee configure.log
 
       - name: Build
         shell: bash
@@ -56,7 +62,7 @@ jobs:
         run: |
           for f in configure.log build.log; do
             [ -f "$f" ] || continue
-            grep -n -i -E 'error|fatal|failed' "$f" | grep -v -i 'werror' | head -c 20000 > errs.txt || true
+            grep -n -E 'LNK[0-9]{4}|error C[0-9]{4}|fatal error|FAILED:|CMake Error|undefined reference|: error:' "$f" | head -c 30000 > errs.txt || true
             tail -c 12000 "$f" > tail.txt
             for part in errs tail; do
               msg=$(sed -e 's/%/%25/g' -e 's/\r//g' ${part}.txt | awk '{printf "%s%%0A", $0}')
