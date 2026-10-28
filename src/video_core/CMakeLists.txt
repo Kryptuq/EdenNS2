@@ -95,6 +95,7 @@ add_library(video_core STATIC
     gpu.h
     native_query_trace.h
     native_semaphore.h
+    native_strict.h
     gpu_thread.cpp
     gpu_thread.h
     guest_memory.h

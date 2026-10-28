@@ -46,6 +46,7 @@
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "video_core/native_strict.h"
 
 namespace Vulkan {
 
@@ -246,8 +247,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     SCOPE_EXIT {
         auto& native = maxwell3d->GetNativeMacroEngine();
         if (native.native_turing && !submitted) {
-            native.native_execution_failed = true;
-            LOG_ERROR(HW_GPU, "Native graphics draw failed; refusing submission completion");
+            if (VideoCommon::NativeStrict()) {
+                native.native_execution_failed = true;
+                LOG_ERROR(HW_GPU, "Native graphics draw failed; refusing submission completion");
+            } else {
+                LOG_DEBUG(HW_GPU, "Native graphics draw skipped");
+            }
         }
     };
     FlushWork();

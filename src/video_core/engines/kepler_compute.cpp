@@ -16,6 +16,7 @@
 #include "video_core/native_query_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
+#include "video_core/native_strict.h"
 
 namespace Tegra::Engines {
 
@@ -303,7 +304,8 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         rasterizer->DispatchCompute();
     } catch (const Shader::Exception& error) {
         LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
-        return false;
+        // Skip the dispatch so the QMD still completes and the title keeps running.
+        return !VideoCommon::NativeStrict();
     }
     return true;
 }

@@ -14,6 +14,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/memory_manager.h"
+#include "video_core/native_strict.h"
 
 namespace Tegra::Engines {
 
@@ -330,8 +331,12 @@ void Maxwell3D::DrawManager::ProcessDrawIndirect(Maxwell3D& maxwell3d) {
     if (maxwell3d.ShouldExecute()) {
         auto& native = maxwell3d.GetNativeMacroEngine();
         if (native.native_turing) {
-            native.native_execution_failed = true;
-            LOG_ERROR(HW_GPU, "Native graphics shader translation required: indirect draw");
+            if (VideoCommon::NativeStrict()) native.native_execution_failed = true;
+            static bool logged{};
+            if (!logged) {
+                logged = true;
+                LOG_ERROR(HW_GPU, "Native graphics shader translation required: indirect draw (skipped)");
+            }
             return;
         }
         maxwell3d.rasterizer->DrawIndirect();

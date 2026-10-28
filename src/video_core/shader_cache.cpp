@@ -22,6 +22,7 @@
 #include "video_core/shader_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/util.h"
+#include "video_core/native_strict.h"
 
 namespace VideoCommon {
 
@@ -88,7 +89,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
 } catch (const Shader::Exception& error) {
     auto& native = maxwell3d->GetNativeMacroEngine();
     if (!native.native_turing) throw;
-    native.native_execution_failed = true;
+    if (VideoCommon::NativeStrict()) native.native_execution_failed = true;
     last_shaders_valid = false;
     LOG_ERROR(HW_GPU, "Native graphics shader rejected: {}", error.what());
     return false;
