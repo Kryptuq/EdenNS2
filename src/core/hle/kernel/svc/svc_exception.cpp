@@ -34,12 +34,22 @@ void LogStackCodePointers(Core::System& system) {
     }
     Svc::ThreadContext ctx{};
     arm->GetContext(ctx);
-    constexpr size_t Words = 2048;
-    std::vector<u64> stack(Words);
-    if (!process->GetMemory().ReadBlock(ctx.sp, stack.data(), Words * sizeof(u64))) {
-        LOG_ERROR(Debug_Emulated, "Stack dump: could not read sp={:#x}", ctx.sp);
-        return;
+    // Read up to 16 KiB, stopping at the first unmapped page (the stack top).
+    auto& memory = process->GetMemory();
+    std::vector<u64> stack;
+    u64 addr = ctx.sp;
+    const u64 limit = ctx.sp + 0x4000;
+    while (addr < limit) {
+        const u64 chunk = std::min<u64>(((addr + 0x1000) & ~u64{0xfff}) - addr, limit - addr);
+        if (!memory.IsValidVirtualAddressRange(addr, chunk)) {
+            break;
+        }
+        const size_t old = stack.size();
+        stack.resize(old + chunk / sizeof(u64));
+        memory.ReadBlock(addr, stack.data() + old, chunk);
+        addr += chunk;
     }
+    const size_t Words = stack.size();
     // Loaded modules start at the entry point; 512 MiB covers all of them.
     const u64 code_start = GetInteger(process->GetEntryPoint());
     const u64 code_end = code_start + 0x20000000;
