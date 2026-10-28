@@ -315,15 +315,15 @@ struct TranslatorVisitor final {
     bool LDUMINH(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
     bool SWPH(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
     bool LDAPRH(Reg Rn, Reg Rt);
-    bool LDADD(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDCLR(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDEOR(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDSET(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDSMAX(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDSMIN(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDUMAX(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool LDUMIN(bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
-    bool SWP(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDADD(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDCLR(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDEOR(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDSET(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDSMAX(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDSMIN(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDUMAX(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool LDUMIN(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
+    bool SWP(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt);
     bool LDAPR(Imm<2> size, Reg Rn, Reg Rt);
 
     // Loads and stores - Load/Store register (register offset)

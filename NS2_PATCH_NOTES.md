@@ -30,3 +30,10 @@
 - Not tested: running an actual Switch 2 title, the Qt frontend, Windows/MSVC builds.
 
 - NS2-adapted-for-eden-master.patch is the full diff against eden-master.
+
+## Later fixes
+- dynarmic: LSE atomics (LDADD, LDCLR, LDEOR, LDSET, LDSMAX, LDSMIN, LDUMAX,
+  LDUMIN, SWP) now decode for all access sizes (byte, half, word, doubleword).
+  The original patch only handled 32/64-bit LDADD/LDCLR/LDSET/SWP, so Switch 2
+  code using e.g. LDADDALB raised an exception during boot. Tests added in
+  src/dynarmic/tests/A64/lse.cpp.
