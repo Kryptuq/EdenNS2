@@ -22,6 +22,12 @@
 #include "core/hle/service/nvdrv/devices/native_gpu_kind.h"
 
 namespace Service::AM {
+
+namespace {
+// Titles register thousands of GPU memory objects during startup; 1024 ran out
+// while the first Unreal Engine title was still loading.
+constexpr size_t MaxGpuSessionObjects = 65536;
+} // namespace
 struct GpuDeviceRegistry {
     GpuDeviceRegistry(Core::System& system, std::shared_ptr<Nvidia::Module> module_, Kernel::KProcess* process_)
         : context{system, "GpuDevices"}, module{std::move(module_)}, process{process_} {
@@ -119,7 +125,7 @@ private:
         R_UNLESS(kind, Kernel::ResultNotImplemented);
         const u64 begin = ReadPair(packet, 3), end = ReadPair(packet, 5);
         R_UNLESS(end >= begin && end != ~u64{0}, Kernel::ResultInvalidSize);
-        R_UNLESS(m_mappings.size() < 1024, Kernel::ResultOutOfResource);
+        R_UNLESS(m_mappings.size() < MaxGpuSessionObjects, Kernel::ResultOutOfResource);
         const auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(packet[2]);
         R_UNLESS(as, Kernel::ResultNotFound);
         const auto result = as->MapNative4K(packet[7], begin, ReadPair(packet, 8),
@@ -222,7 +228,7 @@ private:
         const u64 size = end - begin + 1;
         R_UNLESS(Common::IsAligned(begin, Kernel::PageSize), Kernel::ResultInvalidAddress);
         R_UNLESS(Common::IsAligned(size, Kernel::PageSize), Kernel::ResultInvalidSize);
-        R_UNLESS(m_memory.size() < 1024, Kernel::ResultOutOfResource);
+        R_UNLESS(m_memory.size() < MaxGpuSessionObjects, Kernel::ResultOutOfResource);
         auto& page_table = m_process->GetPageTable();
         R_UNLESS(page_table.Contains(begin, size), Kernel::ResultInvalidCurrentMemory);
         for (u64 address = begin; address <= end;) {

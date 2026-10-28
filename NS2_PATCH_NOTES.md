@@ -64,3 +64,7 @@
   large-page region at the same offset as the small-page region. The NVN2
   driver merges regions with equal offsets but fails on an empty region, which
   sent it into an error path that freed uninitialized pointers and aborted.
+- gpu_session.cpp / graphics_supervisor.cpp: per-session limits on GPU memory
+  registrations, GPU mappings, native memories and native images raised from
+  1024 to 65536. The first Unreal Engine title had 1024 live registrations
+  while still loading, and the next one failed with OutOfResource.
