@@ -187,8 +187,17 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
 
     std::shared_ptr<nvhost_as_gpu> shared_parent;
     if (m_extended_abi && params.as_fd != 0) {
-        if (params.as_fd == m_fd || params.flags != 5 || params.big_page_size != 0x1000 ||
-            params.reserved != 0 || params.va_range_split != 0) { return NvResult::BadParameter; }
+        // Shared views come in two forms: flags 5 with no split, and flags 0 with the
+        // split equal to the end. Both describe a range made only of small pages.
+        const bool small_page_view = params.va_range_split == 0 ||
+                                     params.va_range_split == params.va_range_end;
+        if (params.as_fd == m_fd || (params.flags != 5 && params.flags != 0) ||
+            params.big_page_size != 0x1000 || params.reserved != 0 || !small_page_view) {
+            LOG_WARNING(Service_NVDRV, "rejected shared AS view flags={:#x}, as_fd={}, VA={:#x}/{:#x}/{:#x}",
+                        params.flags, params.as_fd, params.va_range_start, params.va_range_split,
+                        params.va_range_end);
+            return NvResult::BadParameter;
+        }
         const auto device = module.GetDevice<nvdevice>(params.as_fd);
         if (!device || device->GetType() != Type::GpuAddressSpace) { return NvResult::BadParameter; }
         shared_parent = std::static_pointer_cast<nvhost_as_gpu>(device);
@@ -196,7 +205,12 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
             shared_parent->m_owner_process != m_owner_process ||
             params.va_range_start < shared_parent->vm.va_range_start ||
             params.va_range_start >= params.va_range_end ||
-            params.va_range_end > shared_parent->vm.va_range_split) { return NvResult::BadParameter; }
+            params.va_range_end > shared_parent->vm.va_range_split) {
+            LOG_WARNING(Service_NVDRV, "shared AS view outside parent fd={} ({:#x}..{:#x}), VA={:#x}..{:#x}",
+                        params.as_fd, shared_parent->vm.va_range_start, shared_parent->vm.va_range_split,
+                        params.va_range_start, params.va_range_end);
+            return NvResult::BadParameter;
+        }
     }
 
     const u32 big_page_size = GetGpuAddressSpaceBigPageSize(m_extended_abi, params.big_page_size);
@@ -232,7 +246,7 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
     }
 
     if (shared_parent) {
-        // Native flags 5 expose the parent's small-page region as a separate
+        // Shared views expose part of the parent's small-page region as a separate
         // reservation view. GPU mappings must resolve through the same page table.
         vm.va_range_split = params.va_range_end;
     }

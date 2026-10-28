@@ -56,3 +56,7 @@
 - Diagnostics: GPU session, VI2, and native nvdrv logs raised from Debug to
   Info (failed native ioctls to Warning) to trace "NVNdeviceInitialize failed".
   The svcBreak stack scan now stops at the end of the mapped stack.
+- nvhost_as_gpu.cpp: shared GPU address-space views (AllocAsEx with as_fd) are
+  accepted with flags 0 and va_range_split == va_range_end, in addition to the
+  original flags 5 / split 0 form. The title's NVN2 driver creates such a view
+  during nvnDeviceInitialize; rejecting it made the device init fail.
