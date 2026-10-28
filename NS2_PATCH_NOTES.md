@@ -92,3 +92,9 @@
   constant operands, LOP3 XOR (LUT 0x3c), LDG cache-hint bit, SHF.R.U32 low-word
   right shift, and FMUL scale codes /4, /8, *8. 31 of 57 logged programs now
   lower and translate through the shader frontend.
+- graphics_supervisor.cpp: commands 902/1002 return a session (IContextNotifier)
+  whose command 1 returns an event, as the title's SDK expects; 903/1003 accepted.
+  The title aborted (result 0x2) when 902 returned no handle.
+- lower_to_maxwell.h: UBREV/UPOPC (0x2be/0x2bf), I2F from 8/16/32-bit sources with
+  byte/half selection and uniform sources (0x306/0xd06), VOTE (0x806). 33 of 69
+  logged programs now lower and translate.
