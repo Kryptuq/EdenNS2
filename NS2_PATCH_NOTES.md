@@ -85,3 +85,10 @@
   TEX.B/TLD4.B, which the existing bindless handle tracking resolves).
 - tests: "[.native-shader-dir]" runs every program in EDEN_NATIVE_SHADER_DIR
   through lowering and the full shader frontend.
+- graphics_supervisor.cpp: context commands 901/902/1001/1002 (no arguments,
+  result only) are accepted; the title aborted with 2001-0033 on 901.
+- lower_to_maxwell.h: IMAD.IADD with negated C (subtraction), IADD3 carry-out to
+  an ordinary predicate (bounds-check pattern), LEA/IADD3/IMNMX with uniform or
+  constant operands, LOP3 XOR (LUT 0x3c), LDG cache-hint bit, SHF.R.U32 low-word
+  right shift, and FMUL scale codes /4, /8, *8. 31 of 57 logged programs now
+  lower and translate through the shader frontend.
