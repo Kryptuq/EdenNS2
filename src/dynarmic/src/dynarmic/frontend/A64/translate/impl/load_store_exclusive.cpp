@@ -50,7 +50,7 @@ bool TranslatorVisitor::LDAPR(Imm<2> size, Reg Rn, Reg Rt) {
     return LDAR(size, Rn, Rt);
 }
 
-enum class AtomicRegisterOperation { Add, Set, Clear, Swap };
+enum class AtomicRegisterOperation { Add, Clear, Eor, Set, SignedMax, SignedMin, UnsignedMax, UnsignedMin, Swap };
 
 static bool AtomicRegisterOperationImpl(TranslatorVisitor& v, size_t bits, bool A, bool R,
                                         Reg Rs, Reg Rn, Reg Rt, AtomicRegisterOperation operation) {
@@ -71,6 +71,23 @@ static bool AtomicRegisterOperationImpl(TranslatorVisitor& v, size_t bits, bool 
         break;
     case AtomicRegisterOperation::Clear:
         replacement = v.ir.And(observed, v.ir.Not(operand));
+        break;
+    case AtomicRegisterOperation::Eor:
+        replacement = v.ir.Eor(observed, operand);
+        break;
+    case AtomicRegisterOperation::SignedMax:
+    case AtomicRegisterOperation::SignedMin: {
+        // Narrow values are compared as signed quantities of their access size.
+        const IR::U32U64 a = bits < reg_bits ? v.SignExtend(v.ir.LeastSignificant(bits, observed), reg_bits) : observed;
+        const IR::U32U64 b = bits < reg_bits ? v.SignExtend(v.ir.LeastSignificant(bits, operand), reg_bits) : operand;
+        replacement = operation == AtomicRegisterOperation::SignedMax ? v.ir.MaxSigned(a, b) : v.ir.MinSigned(a, b);
+        break;
+    }
+    case AtomicRegisterOperation::UnsignedMax:
+        replacement = v.ir.MaxUnsigned(observed, operand);
+        break;
+    case AtomicRegisterOperation::UnsignedMin:
+        replacement = v.ir.MinUnsigned(observed, operand);
         break;
     case AtomicRegisterOperation::Swap:
         break;
@@ -93,28 +110,40 @@ static bool AtomicRegisterOperationImpl(TranslatorVisitor& v, size_t bits, bool 
     return false;
 }
 
-bool TranslatorVisitor::LDADD(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
-    return AtomicRegisterOperationImpl(*this, sz ? 64 : 32, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Add);
+bool TranslatorVisitor::LDADD(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::Add);
 }
 
-bool TranslatorVisitor::LDCLR(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
-    return AtomicRegisterOperationImpl(*this, sz ? 64 : 32, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Clear);
+bool TranslatorVisitor::LDCLR(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::Clear);
 }
 
-bool TranslatorVisitor::LDSET(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
-    return AtomicRegisterOperationImpl(*this, sz ? 64 : 32, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Set);
+bool TranslatorVisitor::LDEOR(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::Eor);
 }
 
-bool TranslatorVisitor::SWPB(bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
-    return AtomicRegisterOperationImpl(*this, 8, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Swap);
+bool TranslatorVisitor::LDSET(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::Set);
 }
 
-bool TranslatorVisitor::SWPH(bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
-    return AtomicRegisterOperationImpl(*this, 16, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Swap);
+bool TranslatorVisitor::LDSMAX(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::SignedMax);
 }
 
-bool TranslatorVisitor::SWP(bool sz, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
-    return AtomicRegisterOperationImpl(*this, sz ? 64 : 32, A, R, Rs, Rn, Rt, AtomicRegisterOperation::Swap);
+bool TranslatorVisitor::LDSMIN(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::SignedMin);
+}
+
+bool TranslatorVisitor::LDUMAX(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::UnsignedMax);
+}
+
+bool TranslatorVisitor::LDUMIN(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::UnsignedMin);
+}
+
+bool TranslatorVisitor::SWP(Imm<2> size, bool A, bool R, Reg Rs, Reg Rn, Reg Rt) {
+    return AtomicRegisterOperationImpl(*this, 8U << size.ZeroExtend<size_t>(), A, R, Rs, Rn, Rt, AtomicRegisterOperation::Swap);
 }
 
 static bool ExclusiveSharedDecodeAndOperation(TranslatorVisitor& v, bool pair, size_t size, bool L, bool o0, std::optional<Reg> Rs, std::optional<Reg> Rt2, Reg Rn, Reg Rt) {

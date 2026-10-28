@@ -525,3 +525,77 @@ TEST_CASE("A64: observed LDCLRL retries with a destination that is also its addr
     REQUIRE(jit.GetPstate() == 0xA0000000);
 }
 
+
+TEST_CASE("A64: atomic memory operations cover all sizes and opcodes", "[a64][lse]") {
+    const u32 size = GENERATE(0U, 1U, 2U, 3U);
+    const u32 opc = GENERATE(0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U); // 0-7: LDADD..LDUMIN, 8: SWP
+    const bool retry = GENERATE(false, true);
+    const size_t bytes = size_t{1} << size;
+    const u64 mask = bytes == 8 ? ~u64{0} : (u64{1} << (bytes * 8)) - 1;
+    const u64 sign = u64{1} << (bytes * 8 - 1);
+    // Observed value is negative when signed, operand is positive and smaller unsigned.
+    const u64 observed = (0xF0E1D2C3B4A59687ULL & mask) | sign;
+    const u64 operand = 0x0102030405060708ULL & mask & ~sign;
+    const auto to_signed = [&](u64 v) { return static_cast<s64>((v & sign) ? (v | ~mask) : v); };
+    u64 expected = 0;
+    switch (opc) {
+    case 0: expected = observed + operand; break;
+    case 1: expected = observed & ~operand; break;
+    case 2: expected = observed ^ operand; break;
+    case 3: expected = observed | operand; break;
+    case 4: expected = to_signed(observed) > to_signed(operand) ? observed : operand; break;
+    case 5: expected = to_signed(observed) < to_signed(operand) ? observed : operand; break;
+    case 6: expected = observed > operand ? observed : operand; break;
+    case 7: expected = observed < operand ? observed : operand; break;
+    case 8: expected = operand; break;
+    }
+    expected &= mask;
+    const u32 opbits = opc == 8 ? 0x8000U : (opc << 12);
+    // LD<op>AL{B,H,,} X2/W2, X1/W1, [X0]
+    const u32 instruction = 0x38E00000U | (size << 30) | (1U << 16) | opbits | 2U;
+    AtomicTestEnv env;
+    env.code_mem = {instruction, 0x14000000};
+    env.MemoryWrite(0x1000, 0x5A5A5A5A5A5A5A5AULL, 8);
+    env.MemoryWrite(0x1008, 0x5A5A5A5A5A5A5A5AULL, 8);
+    env.MemoryWrite(0x1000, observed, bytes);
+    env.fail_once = retry;
+    Dynarmic::A64::UserConfig config;
+    config.callbacks = &env;
+    config.global_monitor = &env.monitor;
+    config.code_cache_size = 16 * 1024 * 1024;
+    Dynarmic::A64::Jit jit{config};
+    jit.SetRegister(0, 0x1000);
+    jit.SetRegister(1, operand | (bytes == 8 ? 0 : ~mask)); // upper bits must be ignored
+    jit.SetRegister(2, ~u64{0});
+    jit.SetPstate(0x60000000);
+    env.ticks_left = 4;
+    jit.Run();
+    INFO("size=" << size << " opc=" << opc);
+    REQUIRE(jit.GetPC() == 4);
+    REQUIRE(jit.GetRegister(2) == observed);
+    REQUIRE(jit.GetPstate() == 0x60000000);
+    REQUIRE(env.MemoryRead(0x1000, bytes) == expected);
+    if (bytes < 8) {
+        REQUIRE(env.MemoryRead(0x1000 + bytes, 1) == 0x5A);
+    }
+}
+
+TEST_CASE("A64: LDADDALB from Switch 2 boot path", "[a64][lse]") {
+    AtomicTestEnv env;
+    env.code_mem = {0x38E80308U, 0x14000000}; // LDADDALB W8, W8, [X24]
+    env.MemoryWrite(0x2000, 0xFF, 1);
+    env.MemoryWrite(0x2001, 0x77, 1);
+    Dynarmic::A64::UserConfig config;
+    config.callbacks = &env;
+    config.global_monitor = &env.monitor;
+    config.code_cache_size = 16 * 1024 * 1024;
+    Dynarmic::A64::Jit jit{config};
+    jit.SetRegister(24, 0x2000);
+    jit.SetRegister(8, 1);
+    env.ticks_left = 4;
+    jit.Run();
+    REQUIRE(jit.GetPC() == 4);
+    REQUIRE(jit.GetRegister(8) == 0xFF);
+    REQUIRE(env.MemoryRead(0x2000, 1) == 0x00);
+    REQUIRE(env.MemoryRead(0x2001, 1) == 0x77);
+}
