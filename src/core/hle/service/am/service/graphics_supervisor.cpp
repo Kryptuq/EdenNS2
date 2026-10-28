@@ -173,7 +173,7 @@ public:
             {11, &IVi2Session::GetNotificationEvent, "GetNotificationEvent"},
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
-            {31, &IVi2Session::Unknown31, "Unknown31"},
+            {31, &IVi2Session::GetRequestEvent, "GetRequestEvent"},
             {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
             {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
@@ -202,6 +202,9 @@ public:
         }
         if (m_default_display) { m_display_service->CloseDisplay(*m_default_display); }
         m_context.CloseEvent(m_event);
+        for (auto* event : m_request_events) {
+            if (event) m_context.CloseEvent(event);
+        }
     }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
@@ -275,7 +278,7 @@ private:
                 if (--m_player_display_references[player] == 0) {
                     const auto notification = m_player_display_notifications[player];
                     m_notifications[notification / 32] |= 1U << (notification % 32);
-                    if (m_event) m_event->Signal(kernel);
+                    SignalNotification();
                 }
                 result = ResultSuccess;
             }
@@ -291,7 +294,7 @@ private:
                     --m_display_references;
                     if (!m_display_references) {
                         m_notifications[m_display_notification / 32] |= 1U << (m_display_notification % 32);
-                        if (m_event) m_event->Signal(kernel);
+                        SignalNotification();
                         LOG_DEBUG(Service_AM, "VI2 display retired notification={}", m_display_notification);
                     }
                 }
@@ -341,7 +344,7 @@ private:
                 if (m_default_endpoint == token) { m_default_endpoint.reset(); }
                 if (state->layer) m_display_service->GetContainer()->DestroyManagedLayer(*state->layer);
                 m_notifications[state->retire_notification / 32] |= 1U << (state->retire_notification % 32);
-                if (m_event) m_event->Signal(kernel);
+                SignalNotification();
                 LOG_DEBUG(Service_AM, "VI2 client retired token={:#x}, notification={}", token, state->retire_notification);
                 m_client_slots &= ~state->slots;
                 *state = {};
@@ -427,7 +430,7 @@ private:
             }
             if (changed) {
                 m_notifications[state.available_notification / 32] |= 1U << (state.available_notification % 32);
-                if (m_event) m_event->Signal(kernel);
+                SignalNotification();
             }
         }
     }
@@ -660,13 +663,35 @@ private:
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
     }
-    void Unknown31(HLERequestContext& ctx) {
-        // Seen during Switch 2 boot with a single u32 argument (0). Purpose unknown;
-        // the title aborts if this fails, so accept it without side effects.
+    void GetRequestEvent(HLERequestContext& ctx) {
+        // The SDK allocates request slots from a bitmap and fetches one event per slot,
+        // which it later waits on. Request completion is not tracked yet, so the events
+        // are signaled whenever the session raises a notification.
         const auto* packet = ctx.CommandBuffer();
-        LOG_WARNING(Service_AM, "(STUBBED) VI2 command 31 called, arg={:#x}", packet[1] >= 1 ? packet[2] : 0);
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (packet[0] == 0x2f && packet[1] == 1 && packet[2] < m_request_events.size()) {
+            auto& event = m_request_events[packet[2]];
+            if (!event) {
+                event = m_context.CreateEvent(fmt::format("Vi2Request{}", packet[2]));
+                if (event) event->Signal(kernel);
+            }
+            result = event ? ResultSuccess : Kernel::ResultOutOfResource;
+            if (event) {
+                readable = &event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+        }
+        LOG_DEBUG(Service_AM, "VI2 GetRequestEvent index={} result={:#x}", packet[1] >= 1 ? packet[2] : 0, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+    void SignalNotification() {
+        if (m_event) m_event->Signal(kernel);
+        for (auto* event : m_request_events) {
+            if (event) event->Signal(kernel);
+        }
     }
     void ReleaseNotificationEvent(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
@@ -712,6 +737,7 @@ private:
     const u64 m_aruid;
     KernelHelpers::ServiceContext m_context;
     Kernel::KEvent* m_event{};
+    std::array<Kernel::KEvent*, 64> m_request_events{};
 };
 
 } // namespace
