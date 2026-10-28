@@ -53,3 +53,6 @@
   the loaded modules is logged ("Stack code pointers"), and module load
   addresses are logged at Info level, so aborts can be traced in titles whose
   frame records are not reliable.
+- Diagnostics: GPU session, VI2, and native nvdrv logs raised from Debug to
+  Info (failed native ioctls to Warning) to trace "NVNdeviceInitialize failed".
+  The svcBreak stack scan now stops at the end of the mapped stack.

@@ -174,7 +174,7 @@ NvResult nvhost_as_gpu::UnmapNative4K(u64 address, u64 size) {
 
 
 NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
-    LOG_DEBUG(Service_NVDRV, "called, flags={:#x}, as_fd={}, big_page_size={:#x}, reserved={:#x}, VA={:#x}/{:#x}/{:#x}",
+    LOG_INFO(Service_NVDRV, "called, flags={:#x}, as_fd={}, big_page_size={:#x}, reserved={:#x}, VA={:#x}/{:#x}/{:#x}",
               params.flags, params.as_fd, params.big_page_size, params.reserved,
               params.va_range_start, params.va_range_split, params.va_range_end);
 
@@ -251,7 +251,7 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
     if (shared_parent) {
         m_shared_parent = std::move(shared_parent);
         gmmu = m_shared_parent->gmmu;
-        LOG_DEBUG(Service_NVDRV, "native AS view fd={} shares page table with fd={}", m_fd, params.as_fd);
+        LOG_INFO(Service_NVDRV, "native AS view fd={} shares page table with fd={}", m_fd, params.as_fd);
     } else {
         gmmu = std::make_shared<Tegra::MemoryManager>(system, max_big_page_bits, vm.va_range_split, vm.big_page_size_bits, VM::PAGE_SIZE_BITS);
         system.GPU().InitAddressSpace(*gmmu);
@@ -262,7 +262,7 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
 }
 
 NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
-    LOG_DEBUG(Service_NVDRV, "called, pages={:X}, page_size={:X}, flags={:X}", params.pages,
+    LOG_INFO(Service_NVDRV, "called, pages={:X}, page_size={:X}, flags={:X}", params.pages,
               params.page_size, params.flags);
 
     std::scoped_lock lock(mutex);
@@ -340,7 +340,7 @@ bool nvhost_as_gpu::FreeMappingLocked(u64 offset) noexcept {
 }
 
 NvResult nvhost_as_gpu::FreeSpace(IoctlFreeSpace& params) {
-    LOG_DEBUG(Service_NVDRV, "called, offset={:X}, pages={:X}, page_size={:X}", params.offset, params.pages, params.page_size);
+    LOG_INFO(Service_NVDRV, "called, offset={:X}, pages={:X}, page_size={:X}", params.offset, params.pages, params.page_size);
     std::scoped_lock lock(mutex);
     if (!vm.initialised) {
         return NvResult::BadValue;
@@ -394,7 +394,7 @@ NvResult nvhost_as_gpu::GetSyncpointShimInfo(IoctlSyncpointShimInfo& params) {
     params.address = address;
     params.stride = stride;
     params.count = count;
-    LOG_DEBUG(Service_NVDRV, "native syncpoint shim address={:#x}, stride={}, count={}, result={}",
+    LOG_INFO(Service_NVDRV, "native syncpoint shim address={:#x}, stride={}, count={}, result={}",
               address, stride, count, static_cast<u32>(result));
     return result;
 }
@@ -414,7 +414,7 @@ NvResult nvhost_as_gpu::ModifyKind(IoctlModifyKind& params) {
     const u64 base = params.mapping_base;
     const u64 offset = params.buffer_offset;
     const u64 size = params.size;
-    LOG_DEBUG(Service_NVDRV, "native modify kind base={:#x}, offset={:#x}, size={:#x}, kinds={:#x}/{:#x}",
+    LOG_INFO(Service_NVDRV, "native modify kind base={:#x}, offset={:#x}, size={:#x}, kinds={:#x}/{:#x}",
               base, offset, size, requested, fallback);
     if (!m_extended_abi || params.reserved != 0 || fallback > 255 ||
         (requested > 255 && requested != 0xffff) || !size ||
@@ -440,7 +440,7 @@ NvResult nvhost_as_gpu::ModifyKind(IoctlModifyKind& params) {
 }
 
 NvResult nvhost_as_gpu::Remap(std::span<IoctlRemapEntry> entries) {
-    LOG_DEBUG(Service_NVDRV, "called, num_entries={:#x}", entries.size());
+    LOG_INFO(Service_NVDRV, "called, num_entries={:#x}", entries.size());
 
     if (!vm.initialised) {
         return NvResult::BadValue;
@@ -486,7 +486,7 @@ NvResult nvhost_as_gpu::Remap(std::span<IoctlRemapEntry> entries) {
 }
 
 NvResult nvhost_as_gpu::MapBufferEx(IoctlMapBufferEx& params) {
-    LOG_DEBUG(Service_NVDRV,
+    LOG_INFO(Service_NVDRV,
               "called, flags={:X}, nvmap_handle={:X}, buffer_offset={}, mapping_size={}"
               ", offset={:#x}",
               params.flags, params.handle, params.buffer_offset, params.mapping_size,
@@ -571,7 +571,7 @@ NvResult nvhost_as_gpu::MapBufferEx(IoctlMapBufferEx& params) {
 NvResult nvhost_as_gpu::UnmapBuffer(IoctlUnmapBuffer& params) {
     std::scoped_lock lock(mutex);
     if (auto const offset_it = map_buffer_offsets.find(params.offset); offset_it != map_buffer_offsets.end()) {
-        LOG_DEBUG(Service_NVDRV, "called, offset={:#x}", params.offset);
+        LOG_INFO(Service_NVDRV, "called, offset={:#x}", params.offset);
         if (!vm.initialised) {
             return NvResult::BadValue;
         }
@@ -600,7 +600,7 @@ NvResult nvhost_as_gpu::UnmapBuffer(IoctlUnmapBuffer& params) {
 }
 
 NvResult nvhost_as_gpu::BindChannel(IoctlBindChannel& params) {
-    LOG_DEBUG(Service_NVDRV, "called, fd={:X}", params.fd);
+    LOG_INFO(Service_NVDRV, "called, fd={:X}", params.fd);
 
     const auto device = module.GetDevice<nvdevice>(params.fd);
     if (!device || device->GetType() != nvdevice::Type::GpuChannel) { return NvResult::BadParameter; }
@@ -633,7 +633,7 @@ void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
 }
 
 NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {
-    LOG_DEBUG(Service_NVDRV, "called, buf_addr={:X}, buf_size={:X}", params.buf_addr, params.buf_size);
+    LOG_INFO(Service_NVDRV, "called, buf_addr={:X}, buf_size={:X}", params.buf_addr, params.buf_size);
 
     std::scoped_lock lock(mutex);
 
@@ -647,7 +647,7 @@ NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {
 }
 
 NvResult nvhost_as_gpu::GetVARegions3(IoctlGetVaRegions& params, std::span<VaRegion> regions) {
-    LOG_DEBUG(Service_NVDRV, "called, buf_addr={:X}, buf_size={:X}", params.buf_addr,
+    LOG_INFO(Service_NVDRV, "called, buf_addr={:X}, buf_size={:X}", params.buf_addr,
               params.buf_size);
 
     std::scoped_lock lock(mutex);

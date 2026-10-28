@@ -121,7 +121,7 @@ NvResult nvhost_ctrl_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8>
             return WrapFixedInlOut(this, &nvhost_ctrl_gpu::GetTPCMasks3, input, output,
                                    inline_output);
         case 0x13:
-            LOG_DEBUG(Service_NVDRV, "(STUBBED) called.");
+            LOG_INFO(Service_NVDRV, "(STUBBED) called.");
 
             // TODO (jarrodnorwell)
 
@@ -142,7 +142,7 @@ void nvhost_ctrl_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {}
 void nvhost_ctrl_gpu::OnClose(DeviceFD fd) {}
 
 NvResult nvhost_ctrl_gpu::GetCharacteristics1(IoctlCharacteristics& params) {
-    LOG_DEBUG(Service_NVDRV, "called");
+    LOG_INFO(Service_NVDRV, "called");
     params.gc.arch = 0x120;
     params.gc.impl = 0xb;
     params.gc.rev = 0xa1;
@@ -185,7 +185,7 @@ NvResult nvhost_ctrl_gpu::GetCharacteristics1(IoctlCharacteristics& params) {
 
 NvResult nvhost_ctrl_gpu::GetCharacteristics3(
     IoctlCharacteristics& params, std::span<IoctlGpuCharacteristics> gpu_characteristics) {
-    LOG_DEBUG(Service_NVDRV, "called");
+    LOG_INFO(Service_NVDRV, "called");
 
     params.gc.arch = 0x120;
     params.gc.impl = 0xb;
@@ -231,7 +231,7 @@ NvResult nvhost_ctrl_gpu::GetCharacteristics3(
 }
 
 NvResult nvhost_ctrl_gpu::GetTPCMasks1(IoctlGpuGetTpcMasksArgs& params) {
-    LOG_DEBUG(Service_NVDRV, "called, mask_buffer_size={:#x}", params.mask_buffer_size);
+    LOG_INFO(Service_NVDRV, "called, mask_buffer_size={:#x}", params.mask_buffer_size);
     if (params.mask_buffer_size != 0) {
         params.tcp_mask = 3;
     }
@@ -239,7 +239,7 @@ NvResult nvhost_ctrl_gpu::GetTPCMasks1(IoctlGpuGetTpcMasksArgs& params) {
 }
 
 NvResult nvhost_ctrl_gpu::GetTPCMasks3(IoctlGpuGetTpcMasksArgs& params, std::span<u32> tpc_mask) {
-    LOG_DEBUG(Service_NVDRV, "called, mask_buffer_size={:#x}", params.mask_buffer_size);
+    LOG_INFO(Service_NVDRV, "called, mask_buffer_size={:#x}", params.mask_buffer_size);
     if (params.mask_buffer_size != 0) {
         params.tcp_mask = 3;
     }
@@ -250,7 +250,7 @@ NvResult nvhost_ctrl_gpu::GetTPCMasks3(IoctlGpuGetTpcMasksArgs& params, std::spa
 }
 
 NvResult nvhost_ctrl_gpu::GetActiveSlotMask(IoctlActiveSlotMask& params) {
-    LOG_DEBUG(Service_NVDRV, "called");
+    LOG_INFO(Service_NVDRV, "called");
 
     params.slot = 0x07;
     params.mask = 0x01;
@@ -264,13 +264,13 @@ NvResult nvhost_ctrl_gpu::PmuGetGpuLoad(IoctlPmuGetLoad& params) {
 }
 
 NvResult nvhost_ctrl_gpu::ZCullGetCtxSize(IoctlZcullGetCtxSize& params) {
-    LOG_DEBUG(Service_NVDRV, "called");
+    LOG_INFO(Service_NVDRV, "called");
     params.size = 0x1;
     return NvResult::Success;
 }
 
 NvResult nvhost_ctrl_gpu::ZCullGetInfo(IoctlNvgpuGpuZcullGetInfoArgs& params) {
-    LOG_DEBUG(Service_NVDRV, "called");
+    LOG_INFO(Service_NVDRV, "called");
     params.width_align_pixels = 0x20;
     params.height_align_pixels = 0x20;
     params.pixel_squares_by_aliquots = 0x400;
@@ -309,11 +309,11 @@ NvResult nvhost_ctrl_gpu::ZBCSetTable(IoctlZbcSetTable& params) {
 
             if (color_it != zbc_colors.end()) {
                 ++color_it->ref_cnt;
-                LOG_DEBUG(Service_NVDRV, "ZBCSetTable: reused color entry fmt={:#x}, ref_cnt={:#x}",
+                LOG_INFO(Service_NVDRV, "ZBCSetTable: reused color entry fmt={:#x}, ref_cnt={:#x}",
                           params.format, color_it->ref_cnt);
             } else {
                 zbc_colors.push_back(color_entry);
-                LOG_DEBUG(Service_NVDRV, "ZBCSetTable: added color entry fmt={:#x}, index={:#x}",
+                LOG_INFO(Service_NVDRV, "ZBCSetTable: added color entry fmt={:#x}, index={:#x}",
                           params.format, zbc_colors.size() - 1);
             }
             break;
@@ -329,11 +329,11 @@ NvResult nvhost_ctrl_gpu::ZBCSetTable(IoctlZbcSetTable& params) {
 
             if (depth_it != zbc_depths.end()) {
                 ++depth_it->ref_cnt;
-                LOG_DEBUG(Service_NVDRV, "ZBCSetTable: reused depth entry fmt={:#x}, ref_cnt={:#x}",
+                LOG_INFO(Service_NVDRV, "ZBCSetTable: reused depth entry fmt={:#x}, ref_cnt={:#x}",
                           depth_entry.format, depth_it->ref_cnt);
             } else {
                 zbc_depths.push_back(depth_entry);
-                LOG_DEBUG(Service_NVDRV, "ZBCSetTable: added depth entry fmt={:#x}, index={:#x}",
+                LOG_INFO(Service_NVDRV, "ZBCSetTable: added depth entry fmt={:#x}, index={:#x}",
                           depth_entry.format, zbc_depths.size() - 1);
             }
         }
@@ -386,7 +386,7 @@ NvResult nvhost_ctrl_gpu::ZBCQueryTable(IoctlZbcQueryTable& params) {
 }
 
 NvResult nvhost_ctrl_gpu::FlushL2(IoctlFlushL2& params) {
-    LOG_DEBUG(Service_NVDRV, "called {:#x}", params.flush);
+    LOG_INFO(Service_NVDRV, "called {:#x}", params.flush);
     // if ((params.flush & 0x01) != 0) //l2 flush
     //     /* we dont emulate l2 */;
     // if ((params.flush & 0x04) != 0) //fb flush
@@ -395,7 +395,7 @@ NvResult nvhost_ctrl_gpu::FlushL2(IoctlFlushL2& params) {
 }
 
 NvResult nvhost_ctrl_gpu::GetGpuTime(IoctlGetGpuTime& params) {
-    LOG_DEBUG(Service_NVDRV, "called");
+    LOG_INFO(Service_NVDRV, "called");
     params.gpu_time = static_cast<u64_le>(system.CoreTiming().GetGlobalTimeNs().count());
     return NvResult::Success;
 }

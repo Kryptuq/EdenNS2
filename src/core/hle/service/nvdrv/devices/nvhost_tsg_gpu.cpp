@@ -41,7 +41,7 @@ NvResult nvhost_tsg_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> 
                                 std::span<u8> output) {
     std::array<u32, 8> words{};
     if (!input.empty()) { std::memcpy(words.data(), input.data(), std::min(input.size(), sizeof(words))); }
-    LOG_DEBUG(Service_NVDRV, "native TSG ioctl={:#x}, input={}, output={}, words={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
+    LOG_INFO(Service_NVDRV, "native TSG ioctl={:#x}, input={}, output={}, words={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
               command.raw, input.size(), output.size(), words[0], words[1], words[2], words[3],
               words[4], words[5], words[6], words[7]);
     if (command.raw != 0xc0045401 && command.raw != 0xc0045402) { return NvResult::NotImplemented; }

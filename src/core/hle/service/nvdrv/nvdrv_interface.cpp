@@ -44,6 +44,7 @@ void NVDRV::Open(HLERequestContext& ctx) {
     }
 
     DeviceFD fd = nvdrv->Open(device_name, session_id);
+    LOG_INFO(Service_NVDRV, "open device={}, fd={}", device_name, fd);
 
     rb.Push<DeviceFD>(fd);
     rb.PushEnum(fd != INVALID_NVDRV_FD ? NvResult::Success : NvResult::FileOperationFailed);
@@ -73,7 +74,7 @@ void NVDRV::Ioctl1(HLERequestContext& ctx) {
 
     const auto nv_result = nvdrv->Ioctl1(fd, command, input_buffer, output_buffer);
     if (nv_result != NvResult::Success && ctx.GetThread().GetOwnerProcess()->UsesPAuthReturns()) {
-        LOG_DEBUG(Service_NVDRV, "native ioctl failure fd={}, ioctl={:#x}, result={}, caller={:#x}",
+        LOG_WARNING(Service_NVDRV, "native ioctl failure fd={}, ioctl={:#x}, result={}, caller={:#x}",
                   fd, command.raw, static_cast<u32>(nv_result), ctx.GetThread().GetContext().lr);
     }
     if (command.is_out != 0) {
@@ -104,7 +105,7 @@ void NVDRV::Ioctl2(HLERequestContext& ctx) {
     const auto nv_result =
         nvdrv->Ioctl2(fd, command, input_buffer, input_inlined_buffer, output_buffer);
     if (nv_result != NvResult::Success && ctx.GetThread().GetOwnerProcess()->UsesPAuthReturns()) {
-        LOG_DEBUG(Service_NVDRV, "native ioctl failure fd={}, ioctl={:#x}, result={}, caller={:#x}",
+        LOG_WARNING(Service_NVDRV, "native ioctl failure fd={}, ioctl={:#x}, result={}, caller={:#x}",
                   fd, command.raw, static_cast<u32>(nv_result), ctx.GetThread().GetContext().lr);
     }
     if (command.is_out != 0) {
@@ -135,7 +136,7 @@ void NVDRV::Ioctl3(HLERequestContext& ctx) {
     const auto nv_result =
         nvdrv->Ioctl3(fd, command, input_buffer, output_buffer, inline_output_buffer);
     if (command.raw == 0xc0e04705) {
-        LOG_DEBUG(Service_NVDRV, "native characteristics input={}, output={}, inline={}, result={}",
+        LOG_INFO(Service_NVDRV, "native characteristics input={}, output={}, inline={}, result={}",
                   input_buffer.size(), output_buffer.size(), inline_output_buffer.size(),
                   static_cast<u32>(nv_result));
     }
@@ -199,7 +200,7 @@ void NVDRV::QueryEvent(HLERequestContext& ctx) {
     const auto fd = rp.Pop<DeviceFD>();
     const auto event_id = rp.Pop<u32>();
     if (ctx.GetThread().GetOwnerProcess()->UsesPAuthReturns()) {
-        LOG_DEBUG(Service_NVDRV, "native QueryEvent fd={}, id={}, caller={:#x}", fd, event_id,
+        LOG_INFO(Service_NVDRV, "native QueryEvent fd={}, id={}, caller={:#x}", fd, event_id,
                   ctx.GetThread().GetContext().lr);
     }
 

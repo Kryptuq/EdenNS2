@@ -97,7 +97,7 @@ public:
             return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
         }
         const auto guard = LockService();
-        LOG_DEBUG(Service_AM, "syncpoint unsupported command={}, words={:08x}", ctx.GetCommand(),
+        LOG_INFO(Service_AM, "syncpoint unsupported command={}, words={:08x}", ctx.GetCommand(),
                   fmt::join(std::span<const u32>(ctx.CommandBuffer() + 2, std::min<u32>(ctx.CommandBuffer()[1], 32)), ","));
         InvokeRequestTipc(ctx);
         IPC::ResponseBuilder rb{ctx, 2};
@@ -115,7 +115,7 @@ private:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(result.raw);
         rb.Push(MaximumEventCount);
-        LOG_DEBUG(Service_AM, "syncpoint maximum events={}", MaximumEventCount);
+        LOG_INFO(Service_AM, "syncpoint maximum events={}", MaximumEventCount);
     }
 
     void SetEventCount(HLERequestContext& ctx) {
@@ -127,7 +127,7 @@ private:
         }
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
-        LOG_DEBUG(Service_AM, "syncpoint event count={}, result={:#x}", m_event_count, result.raw);
+        LOG_INFO(Service_AM, "syncpoint event count={}, result={:#x}", m_event_count, result.raw);
     }
 
     void QueryCounter(HLERequestContext& ctx) {
@@ -139,7 +139,7 @@ private:
             auto current = m_module->GetContainer().GetSyncpointManager().ReadAllocatedSyncpoint(id);
             result = current ? ResultSuccess : Kernel::ResultNotFound;
             value = current.value_or(0);
-            LOG_DEBUG(Service_AM, "query syncpoint id={}, value={}, result={:#x}", id, value, result.raw);
+            LOG_INFO(Service_AM, "query syncpoint id={}, value={}, result={:#x}", id, value, result.raw);
         }
         IPC::ResponseBuilder rb{ctx, 5};
         rb.Push(result.raw);
@@ -245,7 +245,7 @@ public:
             return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
         }
         const auto guard = LockService();
-        LOG_DEBUG(Service_AM, "VI2 unsupported command={}, words={:08x}", ctx.GetCommand(),
+        LOG_INFO(Service_AM, "VI2 unsupported command={}, words={:08x}", ctx.GetCommand(),
                   fmt::join(std::span<const u32>(ctx.CommandBuffer() + 2, std::min<u32>(ctx.CommandBuffer()[1], 32)), ","));
         InvokeRequestTipc(ctx);
         IPC::ResponseBuilder rb{ctx, 2};
@@ -295,7 +295,7 @@ private:
         const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
         const auto result = packet[0] == 0x75 && packet[1] == 3
             ? OpenDefaultDisplay(name, packet[4]) : Kernel::ResultInvalidCombination;
-        LOG_DEBUG(Service_AM, "VI2 open display name={:#x}, flags={:#x}, references={}, result={:#x}",
+        LOG_INFO(Service_AM, "VI2 open display name={:#x}, flags={:#x}, references={}, result={:#x}",
                   name, packet[4], m_display_references, result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -328,7 +328,7 @@ private:
                     if (!m_display_references) {
                         m_notifications[m_display_notification / 32] |= 1U << (m_display_notification % 32);
                         SignalNotification();
-                        LOG_DEBUG(Service_AM, "VI2 display retired notification={}", m_display_notification);
+                        LOG_INFO(Service_AM, "VI2 display retired notification={}", m_display_notification);
                     }
                 }
             }
@@ -361,7 +361,7 @@ private:
                 }
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 register client state token={:#x}, slots={}/{}, result={:#x}",
+        LOG_INFO(Service_AM, "VI2 register client state token={:#x}, slots={}/{}, result={:#x}",
                   token, first, second, result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -378,7 +378,7 @@ private:
                 if (state->layer) m_display_service->GetContainer()->DestroyManagedLayer(*state->layer);
                 m_notifications[state->retire_notification / 32] |= 1U << (state->retire_notification % 32);
                 SignalNotification();
-                LOG_DEBUG(Service_AM, "VI2 client retired token={:#x}, notification={}", token, state->retire_notification);
+                LOG_INFO(Service_AM, "VI2 client retired token={:#x}, notification={}", token, state->retire_notification);
                 m_client_slots &= ~state->slots;
                 *state = {};
                 result = ResultSuccess;
@@ -410,7 +410,7 @@ private:
         }
         const auto state = std::ranges::find(m_client_states, token, &ClientState::token);
         const u64 available = result.IsSuccess() ? state->available : 0;
-        LOG_DEBUG(Service_AM, "VI2 client availability token={:#x}, layer={}, mask={:#x}, result={:#x}", token, id, available, result.raw);
+        LOG_INFO(Service_AM, "VI2 client availability token={:#x}, layer={}, mask={:#x}, result={:#x}", token, id, available, result.raw);
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(result.raw);
         rb.Push(available);
@@ -431,7 +431,7 @@ private:
                 result = ResultSuccess;
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 cancel buffer token={:#x}, slot={}, mask={:#x}, result={:#x}", token, slot, available, result.raw);
+        LOG_INFO(Service_AM, "VI2 cancel buffer token={:#x}, slot={}, mask={:#x}, result={:#x}", token, slot, available, result.raw);
         IPC::ResponseBuilder rb{ctx, 8};
         rb.Push(result.raw);
         rb.Push(available);
@@ -458,7 +458,7 @@ private:
                 if (!complete) continue;
                 state.queued[slot].reset();
                 state.available |= u64{1} << slot;
-                LOG_DEBUG(Service_AM, "Native display buffer retired: slot={}, mask={:#x}", slot, state.available);
+                LOG_INFO(Service_AM, "Native display buffer retired: slot={}, mask={:#x}", slot, state.available);
                 changed = true;
             }
             if (changed) {
@@ -544,7 +544,7 @@ private:
                 available = state->available;
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 present token={:#x}, image={}, slot={}, mask={:#x}, result={:#x}", token, packet[5], packet[4], available, result.raw);
+        LOG_INFO(Service_AM, "VI2 present token={:#x}, image={}, slot={}, mask={:#x}, result={:#x}", token, packet[5], packet[4], available, result.raw);
         IPC::ResponseBuilder rb{ctx, 8};
         rb.Push(result.raw);
         rb.Push(available);
@@ -567,7 +567,7 @@ private:
                 }
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 output encoding token={:#x}, encoding={:#x}, result={:#x}", token, encoding, result.raw);
+        LOG_INFO(Service_AM, "VI2 output encoding token={:#x}, encoding={:#x}, result={:#x}", token, encoding, result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
     }
@@ -602,7 +602,7 @@ private:
                 }
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 bind client token={:#x}, display={:#x}, result={:#x}",
+        LOG_INFO(Service_AM, "VI2 bind client token={:#x}, display={:#x}, result={:#x}",
                   token, name, result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -642,7 +642,7 @@ private:
                 }
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 open endpoint name={:#x}, display={:#x}, client={:#x}, result={:#x}",
+        LOG_INFO(Service_AM, "VI2 open endpoint name={:#x}, display={:#x}, client={:#x}, result={:#x}",
                   name, display_name, token, result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -688,7 +688,7 @@ private:
         Result result = Kernel::ResultInvalidSize;
         if (ctx.GetWriteBufferSize() >= sizeof(m_notifications)) {
             ctx.WriteBuffer(m_notifications);
-            LOG_DEBUG(Service_AM, "VI2 notifications={:08x}", fmt::join(m_notifications, ","));
+            LOG_INFO(Service_AM, "VI2 notifications={:08x}", fmt::join(m_notifications, ","));
             m_notifications.fill(0);
             if (m_event) m_event->Clear(kernel);
             result = ResultSuccess;
@@ -731,7 +731,7 @@ private:
                 readable->Open(kernel);
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 request event cmd={} index={} result={:#x}", ctx.GetCommand(), index, result.raw);
+        LOG_INFO(Service_AM, "VI2 request event cmd={} index={} result={:#x}", ctx.GetCommand(), index, result.raw);
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(result.raw);
         ctx.AddMoveObject(readable);
@@ -928,7 +928,7 @@ void IGraphicsSupervisor::Initialize(HLERequestContext& ctx) {
             m_phase = Phase::Initialized;
             result = ResultSuccess;
         }
-        LOG_DEBUG(Service_AM, "graphics bootstrap aruid={:#x}, flags={:#x}, result={:#x}",
+        LOG_INFO(Service_AM, "graphics bootstrap aruid={:#x}, flags={:#x}, result={:#x}",
                   request->applet_resource_user_id, request->flags, result.raw);
     }
     IPC::ResponseBuilder rb{ctx, 2};
@@ -949,7 +949,7 @@ void IGraphicsSupervisor::BindProcess(HLERequestContext& ctx) {
             result = ResultSuccess;
         }
     }
-    LOG_DEBUG(Service_AM, "graphics process binding result={:#x}", result.raw);
+    LOG_INFO(Service_AM, "graphics process binding result={:#x}", result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -965,7 +965,7 @@ void IGraphicsSupervisor::CompleteBootstrap(HLERequestContext& ctx) {
             result = ResultSuccess;
         }
     }
-    LOG_DEBUG(Service_AM, "graphics bootstrap completion result={:#x}", result.raw);
+    LOG_INFO(Service_AM, "graphics bootstrap completion result={:#x}", result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -986,7 +986,7 @@ void IGraphicsSupervisor::InitializeImageContext(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidState;
         }
     }
-    LOG_DEBUG(Service_AM, "empty image context command={}, result={:#x}",
+    LOG_INFO(Service_AM, "empty image context command={}, result={:#x}",
               ctx.GetCommand(), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
@@ -1009,7 +1009,7 @@ void IGraphicsSupervisor::OpenGpuSession(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "GPU control session flags={:#x}, result={:#x}", flags, result.raw);
+    LOG_INFO(Service_AM, "GPU control session flags={:#x}, result={:#x}", flags, result.raw);
     // This SDK reads the move-handle slot before the result, including on failure.
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(result.raw);
@@ -1032,7 +1032,7 @@ void IGraphicsSupervisor::RegisterGpuAddressSpace(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "register GPU address space id={}, result={:#x}", packet[2], result.raw);
+    LOG_INFO(Service_AM, "register GPU address space id={}, result={:#x}", packet[2], result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1046,7 +1046,7 @@ void IGraphicsSupervisor::InitializeDisplayContext(HLERequestContext& ctx) {
             m_display_context_initialized = true;
         }
     }
-    LOG_DEBUG(Service_AM, "display context initialization result={:#x}", result.raw);
+    LOG_INFO(Service_AM, "display context initialization result={:#x}", result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1063,7 +1063,7 @@ void IGraphicsSupervisor::OpenDisplaySession(HLERequestContext& ctx) {
                                            &client);
         }
     }
-    LOG_DEBUG(Service_AM, "VI2 session flags={:#x}, result={:#x}", flags, result.raw);
+    LOG_INFO(Service_AM, "VI2 session flags={:#x}, result={:#x}", flags, result.raw);
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(result.raw);
     ctx.AddMoveObject(client);
@@ -1085,7 +1085,7 @@ void IGraphicsSupervisor::InitializeGpuContext(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidState;
         }
     }
-    LOG_DEBUG(Service_AM, "GPU context command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    LOG_INFO(Service_AM, "GPU context command={}, result={:#x}", ctx.GetCommand(), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1106,7 +1106,7 @@ void IGraphicsSupervisor::InitializeFrameContext(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidState;
         }
     }
-    LOG_DEBUG(Service_AM, "empty frame context command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    LOG_INFO(Service_AM, "empty frame context command={}, result={:#x}", ctx.GetCommand(), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1122,7 +1122,7 @@ void IGraphicsSupervisor::ConfigureNativeMemory(HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 4};
     rb.Push(result.raw);
     rb.Push<u64>(0);
-    LOG_DEBUG(Service_AM, "native memory uses NVDRV-compatible mode, result={:#x}", result.raw);
+    LOG_INFO(Service_AM, "native memory uses NVDRV-compatible mode, result={:#x}", result.raw);
 }
 
 void IGraphicsSupervisor::InitializeSyncpointContext(HLERequestContext& ctx) {
@@ -1136,7 +1136,7 @@ void IGraphicsSupervisor::InitializeSyncpointContext(HLERequestContext& ctx) {
             result = ResultSuccess;
         }
     }
-    LOG_DEBUG(Service_AM, "syncpoint context initialization result={:#x}", result.raw);
+    LOG_INFO(Service_AM, "syncpoint context initialization result={:#x}", result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1157,7 +1157,7 @@ void IGraphicsSupervisor::GetSyncpointSession(HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(ResultSuccess.raw);
     rb.PushMoveObjects(ctx, client);
-    LOG_DEBUG(Service_AM, "opened syncpoint-supervisor session");
+    LOG_INFO(Service_AM, "opened syncpoint-supervisor session");
 }
 
 void IGraphicsSupervisor::GetNvidiaDriver(HLERequestContext& ctx) {
@@ -1188,7 +1188,7 @@ void IGraphicsSupervisor::GetNvidiaDriver(HLERequestContext& ctx) {
         Fail(result);
         return;
     }
-    LOG_DEBUG(Service_AM, "opened process-bound NVDRV session for aruid={:#x}", m_aruid);
+    LOG_INFO(Service_AM, "opened process-bound NVDRV session for aruid={:#x}", m_aruid);
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(ResultSuccess.raw);
     rb.PushMoveObjects(ctx, client);
@@ -1259,7 +1259,7 @@ void IGraphicsSupervisor::BindSyncpointMemory(HLERequestContext& ctx) {
     rb.Push(ResultSuccess.raw);
     ctx.AddMoveObject(request_event);
     ctx.AddMoveObject(completed);
-    LOG_DEBUG(Service_AM, "bound syncpoint cache: {} real counters, rw={:#x}, ro={:#x}",
+    LOG_INFO(Service_AM, "bound syncpoint cache: {} real counters, rw={:#x}, ro={:#x}",
               CounterCount, GetInteger(rw_base), GetInteger(ro_base));
 }
 
@@ -1314,7 +1314,7 @@ void IGraphicsSupervisor::CalculateImageRequirements(HLERequestContext& ctx) {
             result = requirements ? ResultSuccess : Kernel::ResultNotImplemented;
         }
     }
-    LOG_DEBUG(Service_AM, "native image requirements dimensions={:#x}, block={}, pitch={}, size={:#x}, alignment={:#x}, result={:#x}",
+    LOG_INFO(Service_AM, "native image requirements dimensions={:#x}, block={}, pitch={}, size={:#x}, alignment={:#x}, result={:#x}",
               packet[4], packet[6], packet[7], requirements ? requirements->size : 0,
               requirements ? requirements->alignment : 0, result.raw);
     IPC::ResponseBuilder rb{ctx, gpu_image ? 4U : 6U};
@@ -1345,7 +1345,7 @@ void IGraphicsSupervisor::CreateNativeMemory(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "native memory create size={:#x}, id={}, result={:#x}", size, id, result.raw);
+    LOG_INFO(Service_AM, "native memory create size={:#x}, id={}, result={:#x}", size, id, result.raw);
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(result.raw);
     rb.Push(id);
@@ -1399,7 +1399,7 @@ void IGraphicsSupervisor::BindNativeMemory(HLERequestContext& ctx) {
     const auto result = packet[0] == 0x82 && packet[1] == 9
         ? BindNativeMemoryBacking(packet[2], pair(3), pair(5), pair(7), pair(9))
         : Kernel::ResultInvalidCombination;
-    LOG_DEBUG(Service_AM, "native memory bind id={}, address={:#x}, size={:#x}, flags={:#x}, result={:#x}",
+    LOG_INFO(Service_AM, "native memory bind id={}, address={:#x}, size={:#x}, flags={:#x}, result={:#x}",
               packet[2], pair(3), pair(5), pair(7), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
@@ -1431,7 +1431,7 @@ void IGraphicsSupervisor::DestroyNativeMemory(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     const auto result = packet[0] == 0x80 && packet[1] == 1
         ? ReleaseNativeMemory(packet[2]) : Kernel::ResultInvalidCombination;
-    LOG_DEBUG(Service_AM, "native memory destroy id={}, result={:#x}", packet[2], result.raw);
+    LOG_INFO(Service_AM, "native memory destroy id={}, result={:#x}", packet[2], result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1458,7 +1458,7 @@ void IGraphicsSupervisor::BindNativeGpuMemory(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "native GPU memory bind id={}, parent={}, address={:#x}, size={:#x}, offset={:#x}, result={:#x}",
+    LOG_INFO(Service_AM, "native GPU memory bind id={}, parent={}, address={:#x}, size={:#x}, offset={:#x}, result={:#x}",
               packet[2], packet[7], pair(3), pair(5), pair(8), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
@@ -1500,7 +1500,7 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "native image create memory={}, count={}, id={}, result={:#x}",
+    LOG_INFO(Service_AM, "native image create memory={}, count={}, id={}, result={:#x}",
               packet[19], packet[18], id, result.raw);
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(result.raw);
@@ -1523,7 +1523,7 @@ void IGraphicsSupervisor::DestroyNativeImage(HLERequestContext& ctx) {
             }
         }
     }
-    LOG_DEBUG(Service_AM, "native image destroy id={}, result={:#x}", packet[2], result.raw);
+    LOG_INFO(Service_AM, "native image destroy id={}, result={:#x}", packet[2], result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }
@@ -1547,7 +1547,7 @@ void IGraphicsSupervisor::ConfigureNativeWindowImagePool(HLERequestContext& ctx)
             }
         }
     }
-    LOG_DEBUG(Service_AM, "native window image pool id={}, create={}, result={:#x}",
+    LOG_INFO(Service_AM, "native window image pool id={}, create={}, result={:#x}",
               packet[2], create, result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
