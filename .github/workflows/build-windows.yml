@@ -28,10 +28,31 @@ jobs:
           restore-keys: cpm-windows-
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=OFF -DENABLE_UPDATE_CHECKER=OFF
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=OFF -DENABLE_UPDATE_CHECKER=OFF 2>&1 | tee configure.log
 
       - name: Build
-        run: cmake --build build --parallel
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build --parallel -- -k 0 2>&1 | tee build.log
+
+      # Surface errors as annotations so they are readable through the API
+      - name: Report errors
+        if: failure()
+        shell: bash
+        run: |
+          for f in configure.log build.log; do
+            [ -f "$f" ] || continue
+            grep -n -i -E 'error|fatal|failed' "$f" | grep -v -i 'werror' | head -c 20000 > errs.txt || true
+            tail -c 12000 "$f" > tail.txt
+            for part in errs tail; do
+              msg=$(sed -e 's/%/%25/g' -e 's/\r//g' ${part}.txt | awk '{printf "%s%%0A", $0}')
+              echo "::error title=$f $part::$msg"
+            done
+          done
 
       - name: Package
         shell: pwsh
