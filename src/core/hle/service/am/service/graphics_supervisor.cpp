@@ -174,6 +174,30 @@ public:
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
             {31, &IVi2Session::GetRequestEvent, "GetRequestEvent"},
+            {103, &IVi2Session::StubSuccess, "Unknown103"},
+            {106, &IVi2Session::StubSuccess, "Unknown106"},
+            {107, &IVi2Session::StubSuccess, "Unknown107"},
+            {113, &IVi2Session::StubSuccess, "Unknown113"},
+            {261, &IVi2Session::StubSuccess, "Unknown261"},
+            {262, &IVi2Session::StubSuccess, "Unknown262"},
+            {263, &IVi2Session::StubSuccess, "Unknown263"},
+            {264, &IVi2Session::StubSuccess, "Unknown264"},
+            {265, &IVi2Session::StubSuccess, "Unknown265"},
+            {266, &IVi2Session::StubSuccess, "Unknown266"},
+            {267, &IVi2Session::StubSuccess, "Unknown267"},
+            {268, &IVi2Session::StubSuccess, "Unknown268"},
+            {269, &IVi2Session::StubSuccess, "Unknown269"},
+            {270, &IVi2Session::StubSuccess, "Unknown270"},
+            {271, &IVi2Session::StubSuccess, "Unknown271"},
+            {272, &IVi2Session::StubSuccess, "Unknown272"},
+            {301, &IVi2Session::StubSuccess, "Unknown301"},
+            {302, &IVi2Session::StubSuccess, "Unknown302"},
+            {303, &IVi2Session::StubSuccess, "Unknown303"},
+            {315, &IVi2Session::StubSuccess, "Unknown315"},
+            {352, &IVi2Session::StubSuccess, "Unknown352"},
+            {353, &IVi2Session::StubSuccess, "Unknown353"},
+            {361, &IVi2Session::StubSuccess, "Unknown361"},
+            {104, &IVi2Session::StubZeroResult104, "Unknown104"},
             {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
             {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
@@ -686,6 +710,23 @@ private:
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(result.raw);
         ctx.AddMoveObject(readable);
+    }
+    void StubSuccess(HLERequestContext& ctx) {
+        // Commands the SDK only checks for a result code. Their effects are not emulated.
+        const auto* packet = ctx.CommandBuffer();
+        const u32 words = packet[1] & 0x3ff;
+        LOG_WARNING(Service_AM, "(STUBBED) VI2 command {} called, args={:08x}", ctx.GetCommand(),
+                    fmt::join(std::span{packet + 2, std::min<u32>(words, 8)}, ","));
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+    void StubZeroResult104(HLERequestContext& ctx) {
+        // Returns a u64 and a u16; both reported as zero until the meaning is known.
+        LOG_WARNING(Service_AM, "(STUBBED) VI2 command 104 called, display={:#x}", ctx.CommandBuffer()[2]);
+        IPC::ResponseBuilder rb{ctx, 5};
+        rb.Push(ResultSuccess);
+        rb.Push<u64>(0);
+        rb.Push<u32>(0);
     }
     void SignalNotification() {
         if (m_event) m_event->Signal(kernel);
