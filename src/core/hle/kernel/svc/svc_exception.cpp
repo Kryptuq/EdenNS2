@@ -5,9 +5,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cctype>
+#include <string>
+#include <vector>
 #include "core/core.h"
 #include "core/debugger/debugger.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/physical_core.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/svc_types.h"
@@ -17,6 +20,47 @@
 namespace Kernel::Svc {
 
 /// Break program execution
+namespace {
+// Diagnostic: titles built without reliable frame records leave the regular backtrace
+// incomplete, so log every stack word that looks like a code address.
+void LogStackCodePointers(Core::System& system) {
+    auto* process = GetCurrentProcessPointer(system.Kernel());
+    if (!process) {
+        return;
+    }
+    auto* arm = process->GetArmInterface(system.CurrentPhysicalCore().CoreIndex());
+    if (!arm) {
+        return;
+    }
+    Svc::ThreadContext ctx{};
+    arm->GetContext(ctx);
+    constexpr size_t Words = 2048;
+    std::vector<u64> stack(Words);
+    if (!process->GetMemory().ReadBlock(ctx.sp, stack.data(), Words * sizeof(u64))) {
+        LOG_ERROR(Debug_Emulated, "Stack dump: could not read sp={:#x}", ctx.sp);
+        return;
+    }
+    // Loaded modules start at the entry point; 512 MiB covers all of them.
+    const u64 code_start = GetInteger(process->GetEntryPoint());
+    const u64 code_end = code_start + 0x20000000;
+    LOG_ERROR(Debug_Emulated, "Stack dump: sp={:#x} code={:#x}-{:#x}", ctx.sp, code_start, code_end);
+    std::string line;
+    size_t count = 0;
+    for (size_t i = 0; i < Words; ++i) {
+        if (stack[i] >= code_start && stack[i] < code_end) {
+            line += fmt::format(" +{:x}={:x}", i * 8, stack[i]);
+            if (++count % 8 == 0) {
+                LOG_ERROR(Debug_Emulated, "Stack code pointers:{}", line);
+                line.clear();
+            }
+        }
+    }
+    if (!line.empty()) {
+        LOG_ERROR(Debug_Emulated, "Stack code pointers:{}", line);
+    }
+}
+} // namespace
+
 void Break(Core::System& system, BreakReason reason, u64 info1, u64 info2) {
     BreakReason break_reason =
         reason & static_cast<BreakReason>(~BreakReason::NotificationOnlyFlag);
@@ -108,6 +152,7 @@ void Break(Core::System& system, BreakReason reason, u64 info1, u64 info2) {
         handle_debug_buffer(info1, info2);
 
         system.CurrentPhysicalCore().LogBacktrace(system.Kernel());
+        LogStackCodePointers(system);
     }
 
     const bool should_break = !notification_only;

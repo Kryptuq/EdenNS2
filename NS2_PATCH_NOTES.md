@@ -49,3 +49,7 @@
   slot index) returns the same per-slot event as command 31. Commands 312, 314
   and 391 are stubbed as success, 105, 311 and 321 return zero, and 305 returns
   an event handle signaled with notifications.
+- Diagnostics: on svcBreak the stack is scanned and every word that points into
+  the loaded modules is logged ("Stack code pointers"), and module load
+  addresses are logged at Info level, so aborts can be traced in titles whose
+  frame records are not reliable.
