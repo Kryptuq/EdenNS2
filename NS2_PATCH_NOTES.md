@@ -45,3 +45,7 @@
   315, 352, 353 and 361 are stubbed as success. The title's SDK only checks
   their result code; their effects are not emulated. Command 104 returns zeros
   for its u64/u16 outputs. Command 53 (takes a buffer) is still unimplemented.
+- graphics_supervisor.cpp: VI2 command 32 (client passes a copy handle plus a
+  slot index) returns the same per-slot event as command 31. Commands 312, 314
+  and 391 are stubbed as success, 105, 311 and 321 return zero, and 305 returns
+  an event handle signaled with notifications.

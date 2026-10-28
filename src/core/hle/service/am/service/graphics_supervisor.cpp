@@ -174,6 +174,7 @@ public:
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
             {31, &IVi2Session::GetRequestEvent, "GetRequestEvent"},
+            {32, &IVi2Session::GetRequestEventWithHandle, "GetRequestEventWithHandle"},
             {103, &IVi2Session::StubSuccess, "Unknown103"},
             {106, &IVi2Session::StubSuccess, "Unknown106"},
             {107, &IVi2Session::StubSuccess, "Unknown107"},
@@ -198,6 +199,13 @@ public:
             {353, &IVi2Session::StubSuccess, "Unknown353"},
             {361, &IVi2Session::StubSuccess, "Unknown361"},
             {104, &IVi2Session::StubZeroResult104, "Unknown104"},
+            {312, &IVi2Session::StubSuccess, "Unknown312"},
+            {314, &IVi2Session::StubSuccess, "Unknown314"},
+            {391, &IVi2Session::StubSuccess, "Unknown391"},
+            {105, &IVi2Session::StubZeroWord, "Unknown105"},
+            {311, &IVi2Session::StubZeroWord, "Unknown311"},
+            {321, &IVi2Session::StubZeroWord, "Unknown321"},
+            {305, &IVi2Session::GetUnknownEvent305, "Unknown305"},
             {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
             {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
@@ -229,6 +237,7 @@ public:
         for (auto* event : m_request_events) {
             if (event) m_context.CloseEvent(event);
         }
+        if (m_event_305) m_context.CloseEvent(m_event_305);
     }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
@@ -692,12 +701,28 @@ private:
         // which it later waits on. Request completion is not tracked yet, so the events
         // are signaled whenever the session raises a notification.
         const auto* packet = ctx.CommandBuffer();
+        const bool valid = packet[0] == 0x2f && packet[1] == 1;
+        ReplyRequestEvent(ctx, valid, packet[2]);
+    }
+    void GetRequestEventWithHandle(HLERequestContext& ctx) {
+        // Same reply as command 31, but the client also passes one of its own handles
+        // (copy handle) ahead of the slot index. The client handle is not used yet.
+        const auto* packet = ctx.CommandBuffer();
+        u32 offset = 2;
+        if (packet[1] & 0x80000000) {
+            const u32 special = packet[offset++];
+            offset += ((special & 1) ? 2 : 0) + ((special >> 1) & 0xf) + ((special >> 5) & 0xf);
+        }
+        const bool valid = packet[0] == 0x30 && (packet[1] & 0x3ff) == 1;
+        ReplyRequestEvent(ctx, valid, packet[offset]);
+    }
+    void ReplyRequestEvent(HLERequestContext& ctx, bool valid, u32 index) {
         Result result = Kernel::ResultInvalidCombination;
         Kernel::KReadableEvent* readable{};
-        if (packet[0] == 0x2f && packet[1] == 1 && packet[2] < m_request_events.size()) {
-            auto& event = m_request_events[packet[2]];
+        if (valid && index < m_request_events.size()) {
+            auto& event = m_request_events[index];
             if (!event) {
-                event = m_context.CreateEvent(fmt::format("Vi2Request{}", packet[2]));
+                event = m_context.CreateEvent(fmt::format("Vi2Request{}", index));
                 if (event) event->Signal(kernel);
             }
             result = event ? ResultSuccess : Kernel::ResultOutOfResource;
@@ -706,7 +731,7 @@ private:
                 readable->Open(kernel);
             }
         }
-        LOG_DEBUG(Service_AM, "VI2 GetRequestEvent index={} result={:#x}", packet[1] >= 1 ? packet[2] : 0, result.raw);
+        LOG_DEBUG(Service_AM, "VI2 request event cmd={} index={} result={:#x}", ctx.GetCommand(), index, result.raw);
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(result.raw);
         ctx.AddMoveObject(readable);
@@ -728,7 +753,31 @@ private:
         rb.Push<u64>(0);
         rb.Push<u32>(0);
     }
+    void StubZeroWord(HLERequestContext& ctx) {
+        // Commands whose reply is a single small value; reported as zero.
+        LOG_WARNING(Service_AM, "(STUBBED) VI2 command {} called", ctx.GetCommand());
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push<u32>(0);
+    }
+    void GetUnknownEvent305(HLERequestContext& ctx) {
+        // Replies with a move handle like command 31. Signaled together with notifications.
+        LOG_WARNING(Service_AM, "(STUBBED) VI2 command 305 called");
+        if (!m_event_305) {
+            m_event_305 = m_context.CreateEvent("Vi2Event305");
+            if (m_event_305) m_event_305->Signal(kernel);
+        }
+        Kernel::KReadableEvent* readable{};
+        if (m_event_305) {
+            readable = &m_event_305->GetReadableEvent();
+            readable->Open(kernel);
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(m_event_305 ? ResultSuccess : Kernel::ResultOutOfResource);
+        ctx.AddMoveObject(readable);
+    }
     void SignalNotification() {
+        if (m_event_305) m_event_305->Signal(kernel);
         if (m_event) m_event->Signal(kernel);
         for (auto* event : m_request_events) {
             if (event) event->Signal(kernel);
@@ -779,6 +828,7 @@ private:
     KernelHelpers::ServiceContext m_context;
     Kernel::KEvent* m_event{};
     std::array<Kernel::KEvent*, 64> m_request_events{};
+    Kernel::KEvent* m_event_305{};
 };
 
 } // namespace
