@@ -862,6 +862,10 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {430, &IGraphicsSupervisor::DestroyNativeImage, "DestroyNativeImage"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
+        {901, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext901"},
+        {902, &IGraphicsSupervisor::InitializeEmptyContext, "ActivateContext902"},
+        {1001, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext1001"},
+        {1002, &IGraphicsSupervisor::InitializeEmptyContext, "ActivateContext1002"},
         {1101, &IGraphicsSupervisor::InitializeFrameContext, "InitializeFrameContext"},
         {1102, &IGraphicsSupervisor::InitializeFrameContext, "ActivateFrameContext"},
         {1402, &IGraphicsSupervisor::GetNvidiaDriver, "GetNvidiaDriver"},
@@ -1087,6 +1091,17 @@ void IGraphicsSupervisor::InitializeGpuContext(HLERequestContext& ctx) {
         }
     }
     LOG_INFO(Service_AM, "GPU context command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
+}
+
+void IGraphicsSupervisor::InitializeEmptyContext(HLERequestContext& ctx) {
+    // Context setup commands (x01/x02 pairs) that carry no arguments and return only a
+    // result in the title's SDK. Nothing is emulated behind them yet.
+    const auto* packet = ctx.CommandBuffer();
+    const bool valid = packet[0] == 16 + ctx.GetCommand() && packet[1] == 0;
+    const Result result = valid ? ResultSuccess : Kernel::ResultInvalidCombination;
+    LOG_INFO(Service_AM, "empty context command={}, result={:#x}", ctx.GetCommand(), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }

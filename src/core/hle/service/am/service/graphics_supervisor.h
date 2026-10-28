@@ -53,6 +53,7 @@ private:
     Result ReleaseNativeMemory(u32 id);
     void ConfigureNativeMemory(HLERequestContext& ctx);
     void InitializeFrameContext(HLERequestContext& ctx);
+    void InitializeEmptyContext(HLERequestContext& ctx);
     void RegisterGpuAddressSpace(HLERequestContext& ctx);
     void OpenGpuSession(HLERequestContext& ctx);
     void OpenDisplaySession(HLERequestContext& ctx);
