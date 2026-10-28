@@ -68,3 +68,8 @@
   registrations, GPU mappings, native memories and native images raised from
   1024 to 65536. The first Unreal Engine title had 1024 live registrations
   while still loading, and the next one failed with OutOfResource.
+- Untranslatable native GPU work (rejected compute/graphics shaders, indirect
+  draws) is skipped by default instead of blocking all submission completion,
+  which left titles waiting forever on a black screen. Set EDEN_NATIVE_STRICT=1
+  to restore the original behavior. Rejected native shaders are logged once
+  each (failing instruction and full program, up to 64 per session).

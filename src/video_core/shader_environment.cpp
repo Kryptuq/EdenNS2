@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string>
+#include <set>
+#include <mutex>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -320,6 +323,36 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
     return entry;
 }
+namespace {
+// Logs a rejected native shader once per program so missing lowerings can be added
+// from an ordinary log. Bounded to keep logs readable.
+void LogRejectedNativeShader(const std::vector<Shader::Ampere::Instruction>& native, GPUVAddr base,
+                             u32 error_offset, std::string_view error) {
+    static std::mutex mutex;
+    static std::set<u64> logged;
+    const u64 key = Shader::Ampere::NativeProgramKey(native);
+    {
+        std::scoped_lock lock{mutex};
+        if (logged.size() >= 64 || !logged.insert(key).second) return;
+    }
+    const size_t failing = error_offset / sizeof(Shader::Ampere::Instruction);
+    if (failing < native.size()) {
+        const auto& w = native[failing].words;
+        LOG_ERROR(Shader, "Native shader {:016x} rejected at {:#x} ({}): {:08x} {:08x} {:08x} {:08x}",
+                  key, error_offset, error, w[0], w[1], w[2], w[3]);
+    }
+    LOG_ERROR(Shader, "Native shader {:016x} base={:#x} instructions={}", key, base, native.size());
+    for (size_t i = 0; i < native.size(); i += 4) {
+        std::string line;
+        for (size_t k = i; k < std::min(native.size(), i + 4); ++k) {
+            const auto& w = native[k].words;
+            line += fmt::format(" {:08x}{:08x}{:08x}{:08x}", w[3], w[2], w[1], w[0]);
+        }
+        LOG_ERROR(Shader, "Native shader {:016x} +{:04x}:{}", key, i * sizeof(Shader::Ampere::Instruction), line);
+    }
+}
+} // namespace
+
 
 void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     using Shader::Ampere::Instruction;
@@ -393,6 +426,7 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         }
     }
     if (!lowered) {
+        LogRejectedNativeShader(native, program_base, lowered.error_offset, lowered.error);
         throw Shader::RuntimeError("Native shader at {:#x}, instruction {:#x}: {}",
                                    program_base, lowered.error_offset, lowered.error);
     }
