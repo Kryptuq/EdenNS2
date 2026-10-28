@@ -37,3 +37,5 @@
   The original patch only handled 32/64-bit LDADD/LDCLR/LDSET/SWP, so Switch 2
   code using e.g. LDADDALB raised an exception during boot. Tests added in
   src/dynarmic/tests/A64/lse.cpp.
+- graphics_supervisor.cpp: VI2 command 31 (unknown, one u32 argument) is now
+  accepted as a stub. Titles aborted with error 2001-0114 when it failed.

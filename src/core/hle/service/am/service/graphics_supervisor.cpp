@@ -173,6 +173,7 @@ public:
             {11, &IVi2Session::GetNotificationEvent, "GetNotificationEvent"},
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
+            {31, &IVi2Session::Unknown31, "Unknown31"},
             {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
             {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
@@ -658,6 +659,14 @@ private:
         }
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
+    }
+    void Unknown31(HLERequestContext& ctx) {
+        // Seen during Switch 2 boot with a single u32 argument (0). Purpose unknown;
+        // the title aborts if this fails, so accept it without side effects.
+        const auto* packet = ctx.CommandBuffer();
+        LOG_WARNING(Service_AM, "(STUBBED) VI2 command 31 called, arg={:#x}", packet[1] >= 1 ? packet[2] : 0);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
     }
     void ReleaseNotificationEvent(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
