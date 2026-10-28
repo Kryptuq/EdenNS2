@@ -376,6 +376,77 @@ TEST_CASE("Captured native shader pair compiles through existing control flow an
     }
 }
 
+// Developer check for programs extracted from "Native shader ... +offset" log lines:
+// every program in EDEN_NATIVE_SHADER_DIR that lowers must also translate to IR.
+TEST_CASE("Logged native programs translate through the shader frontend", "[.native-shader-dir]") {
+    const char* directory = std::getenv("EDEN_NATIVE_SHADER_DIR");
+    REQUIRE(directory != nullptr);
+    class DirectoryEnvironment final : public EmptyEnvironment {
+    public:
+        DirectoryEnvironment(const std::vector<u64>& code_, Shader::Stage stage_) : code{code_} {
+            stage = stage_;
+            start_address = 0;
+            is_proprietary_driver = true;
+            sph.common0.shader_type.Assign(stage_ == Shader::Stage::Fragment ? 5 : 1);
+        }
+        u64 ReadInstruction(u32 address) override { return code.at(address / 8); }
+        u32 TranslateProgramAddress(u32 address) const override {
+            const auto translated = Shader::Ampere::NativeProgramAddress(code, address);
+            if (!translated) throw std::logic_error("invalid native branch target");
+            return *translated;
+        }
+        u32 TextureBoundBuffer() const override { return 2; }
+        u32 ReadCbufValue(u32, u32 offset) override { return offset; } // synthetic handles
+        Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
+        std::array<u32, 3> WorkgroupSize() const override { return {64, 1, 1}; }
+        const std::vector<u64>& code;
+    };
+    u32 lowered_count = 0, translated = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (entry.path().extension() != ".bin") continue;
+        std::ifstream file(entry.path(), std::ios::binary | std::ios::ate);
+        const auto size = static_cast<size_t>(file.tellg());
+        std::vector<Native> input(size / 16);
+        file.seekg(0);
+        file.read(reinterpret_cast<char*>(input.data()), input.size() * 16);
+        const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+        if (!lowered) continue;
+        ++lowered_count;
+        Shader::Stage stage = Shader::Stage::Compute;
+        for (const auto& insn : input) {
+            const u32 op = insn.Bits(0, 12);
+            if (op == 0x326 || op == 0x95b) stage = Shader::Stage::Fragment;
+            if ((op == 0x321 || op == 0x322) && stage != Shader::Stage::Fragment) stage = Shader::Stage::VertexB;
+        }
+        std::vector<u64> code(0x50 / 8);
+        for (const u64 word : lowered.instructions) {
+            if ((code.size() * 8) % 32 == 0) code.push_back(0);
+            code.push_back(word);
+        }
+        code.push_back(0);
+        Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
+        DirectoryEnvironment env{code, stage};
+        Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_pool;
+        Shader::ObjectPool<IR::Inst> inst_pool;
+        Shader::ObjectPool<IR::Block> block_pool;
+        Shader::HostTranslateInfo host;
+        host.support_int64 = true;
+        host.support_float64 = true;
+        host.support_float16 = true;
+        try {
+            Shader::Maxwell::Flow::CFG cfg{env, flow_pool, 0x50};
+            const auto program = Shader::Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host);
+            REQUIRE_FALSE(program.blocks.empty());
+            ++translated;
+        } catch (const std::exception& error) {
+            FAIL_CHECK(entry.path().filename().string() << ": " << error.what());
+        }
+    }
+    INFO("lowered=" << lowered_count << " translated=" << translated);
+    CHECK(translated == lowered_count);
+    WARN("lowered=" << lowered_count << " translated=" << translated);
+}
+
 TEST_CASE("Native scalar texture sampling preserves coordinates and split outputs", "[native-shader]") {
     std::array<Native, 2> input{{
         {{0x04007b60, 0x30800805, 0x041e0f02, 0x100fc200}},

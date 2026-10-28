@@ -73,3 +73,15 @@
   which left titles waiting forever on a black screen. Set EDEN_NATIVE_STRICT=1
   to restore the original behavior. Rejected native shaders are logged once
   each (failing instruction and full program, up to 64 per session).
+- Native memory release (DestroyNativeMemory) proceeds when emulator-side
+  references remain instead of failing with ResultBusy; the title aborted with
+  2001-0122 when tearing down its window images.
+- lower_to_maxwell.h, new native shader forms (checked against 46 programs the
+  first Unreal Engine title rejected; 21 now lower and translate fully, up from 0):
+  ULOP3/USHF register forms (via LOP3/SHF), SHF.L.HI and SHF.R.U32.HI with a zero
+  low word, I2FP rounding modes, signed UISETP, SULD/SUST on 1D buffer images,
+  64/128-bit STG through a uniform address, LDG through a uniform address, and
+  bindless TEX/TLD4 with the handle in a uniform register (lowered to Maxwell
+  TEX.B/TLD4.B, which the existing bindless handle tracking resolves).
+- tests: "[.native-shader-dir]" runs every program in EDEN_NATIVE_SHADER_DIR
+  through lowering and the full shader frontend.

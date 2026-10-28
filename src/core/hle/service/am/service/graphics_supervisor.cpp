@@ -21,6 +21,7 @@
 #include "core/hle/kernel/svc_results.h"
 #include "core/hle/service/am/service/graphics_supervisor.h"
 #include "core/hle/service/am/service/graphics_session.h"
+#include "video_core/native_strict.h"
 #include "core/hle/service/am/service/gpu_session.h"
 #include "core/hle/service/am/service/graphics_supervisor_protocol.h"
 #include "core/hle/service/am/service/graphics_syncpoint_cache.h"
@@ -1413,15 +1414,25 @@ Result IGraphicsSupervisor::ReleaseNativeMemory(u32 id) {
     R_UNLESS(handle, Kernel::ResultNotFound);
     {
         const std::scoped_lock lock{handle->mutex};
-        R_UNLESS(handle->pins == 0 && handle->internal_dupes == 0 && handle->dupes == 1,
-                 Kernel::ResultBusy);
+        if (handle->pins != 0 || handle->internal_dupes != 0 || handle->dupes != 1) {
+            // Emulator-side references (presentation, texture cache) are not always
+            // balanced. Freeing the last user duplicate force-unmaps the handle, so
+            // proceed instead of failing the title's teardown.
+            LOG_WARNING(Service_AM, "native memory {} released while referenced: pins={}, internal={}, dupes={}",
+                        id, handle->pins, handle->internal_dupes, handle->dupes);
+            R_UNLESS(!VideoCommon::NativeStrict(), Kernel::ResultBusy);
+        }
     }
     const bool allocated = handle->allocated;
     handle.reset();
     const auto info = nvmap.FreeHandle(id, false);
     m_native_memories.erase(it);
     if (allocated) {
-        R_UNLESS(info && info->can_unlock, Kernel::ResultInvalidState);
+        if (!info || !info->can_unlock) {
+            LOG_WARNING(Service_AM, "native memory {} still in use after release; keeping it locked", id);
+            R_UNLESS(!VideoCommon::NativeStrict(), Kernel::ResultInvalidState);
+            R_SUCCEED();
+        }
         R_TRY(m_process->GetPageTable().UnlockForDeviceAddressSpace(info->address, info->size));
     }
     R_SUCCEED();
