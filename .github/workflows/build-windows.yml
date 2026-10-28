@@ -20,12 +20,13 @@ jobs:
         with:
           arch: x64
 
-      - name: Install glslangValidator
+      - name: Install Vulkan SDK (glslangValidator)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/KhronosGroup/glslang/releases/download/main-tot/glslang-master-windows-Release.zip" -OutFile glslang.zip
-          Expand-Archive glslang.zip -DestinationPath "$env:RUNNER_TEMP\glslang"
-          $bin = Get-ChildItem "$env:RUNNER_TEMP\glslang" -Recurse -Filter glslangValidator.exe | Select-Object -First 1
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe" -OutFile "$env:RUNNER_TEMP\vulkan_sdk.exe"
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\vulkan_sdk.exe" -ArgumentList "--root","C:\VulkanSDK","--accept-licenses","--default-answer","--confirm-command","install" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK install failed: $($p.ExitCode)" }
+          $bin = Get-ChildItem "C:\VulkanSDK" -Recurse -Filter glslangValidator.exe | Select-Object -First 1
           $bin.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           & $bin.FullName --version
 
