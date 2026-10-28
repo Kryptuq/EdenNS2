@@ -62,7 +62,7 @@ jobs:
         run: |
           for f in configure.log build.log; do
             [ -f "$f" ] || continue
-            grep -n -E 'LNK[0-9]{4}|error C[0-9]{4}|fatal error|FAILED:|CMake Error|undefined reference|: error:' "$f" | head -c 30000 > errs.txt || true
+            grep -n -E 'LNK[0-9]{4}|error C[0-9]{4}|fatal error|FAILED:|CMake Error|undefined reference|: error:' "$f" | grep -v -E 'warning (LNK|C)[0-9]{4}' | head -c 30000 > errs.txt || true
             tail -c 12000 "$f" > tail.txt
             for part in errs tail; do
               msg=$(sed -e 's/%/%25/g' -e 's/\r//g' ${part}.txt | awk '{printf "%s%%0A", $0}')
