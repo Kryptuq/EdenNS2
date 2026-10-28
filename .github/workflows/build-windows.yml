@@ -8,6 +8,9 @@ on:
 env:
   SCCACHE_GHA_ENABLED: "true"
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-2025
@@ -88,3 +91,21 @@ jobs:
           name: eden-ns2-windows-x64
           path: dist/
           retention-days: 30
+
+      - name: Zip for release
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath eden-ns2-windows-x64.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Eden NS2 build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          files: eden-ns2-windows-x64.zip
+          body: |
+            Windows x64 build of Eden with the experimental NS2 (Switch 2) patch, built from ${{ github.sha }}.
+
+            Unzip and run `eden.exe`. The Qt libraries and the Visual C++ runtime are included.
+            Experimental: Switch 2 titles will most likely not run, and regular Switch games may behave differently than in stock Eden.
