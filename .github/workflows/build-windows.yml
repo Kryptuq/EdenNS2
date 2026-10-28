@@ -1,0 +1,53 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache downloaded dependencies
+        uses: actions/cache@v4
+        with:
+          path: .cache/cpm
+          key: cpm-windows-${{ hashFiles('**/cpmfile.json') }}
+          restore-keys: cpm-windows-
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=OFF -DENABLE_UPDATE_CHECKER=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item -Recurse build/bin/* dist/
+          Get-ChildItem dist -Recurse -Include *.pdb,*.lib,*.exp,*.ilk | Remove-Item -Force
+          # Include the Visual C++ runtime so eden.exe starts without installing it separately
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          if ($crt) { Copy-Item "$($crt.FullName)\*.dll" dist/ }
+          Copy-Item NS2_PATCH_NOTES.md dist/
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-ns2-windows-x64
+          path: dist/
+          retention-days: 30
