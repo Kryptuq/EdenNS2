@@ -1333,7 +1333,7 @@ void IGraphicsSupervisor::CreateNativeMemory(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidSize;
             if (size && size <= (1ULL << 32) && Common::IsAligned(size, Kernel::PageSize)) {
                 result = Kernel::ResultOutOfResource;
-                if (m_native_memories.size() < 1024) {
+                if (m_native_memories.size() < 65536) {
                     auto& nvmap = m_nv_module->GetContainer().GetNvMapFile();
                     std::shared_ptr<Nvidia::NvCore::NvMap::Handle> handle;
                     if (nvmap.CreateHandle(size, handle) == Nvidia::NvResult::Success) {
@@ -1483,7 +1483,7 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
                     result = Kernel::ResultInvalidSize;
                     if (memory->size >= requirements->size) {
                         result = Kernel::ResultOutOfResource;
-                        if (m_image_registry->images.size() < 1024 && m_next_native_image_id != 0 &&
+                        if (m_image_registry->images.size() < 65536 && m_next_native_image_id != 0 &&
                             memory->Duplicate(true) == Nvidia::NvResult::Success) {
                             NativeImage image{m_next_native_image_id++, packet[19], {}, requirements->size};
                             std::copy_n(packet + 2, image.preference.size(), image.preference.begin());
