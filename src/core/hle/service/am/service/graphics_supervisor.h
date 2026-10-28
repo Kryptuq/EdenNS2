@@ -54,6 +54,7 @@ private:
     void ConfigureNativeMemory(HLERequestContext& ctx);
     void InitializeFrameContext(HLERequestContext& ctx);
     void InitializeEmptyContext(HLERequestContext& ctx);
+    void OpenContextNotifier(HLERequestContext& ctx);
     void RegisterGpuAddressSpace(HLERequestContext& ctx);
     void OpenGpuSession(HLERequestContext& ctx);
     void OpenDisplaySession(HLERequestContext& ctx);

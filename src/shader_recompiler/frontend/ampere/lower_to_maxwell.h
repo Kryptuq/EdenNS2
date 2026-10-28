@@ -52,7 +52,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     bool uses_uniform_bank = false;
     for (const auto& instruction : code) {
         const u32 op = instruction.Bits(0, 12);
-        uses_uniform_bank |= op == 0x3c4 || op == 0xf60 || op == 0xf63 || op == 0x292 || op == 0x299 || op == 0x981 || op == 0x2bd || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
+        uses_uniform_bank |= op == 0x3c4 || op == 0xd06 || op == 0x2be || op == 0x2bf || op == 0xf60 || op == 0xf63 || op == 0x292 || op == 0x299 || op == 0x981 || op == 0x2bd || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || (op == 0x81c && instruction.Bits(67, 1));
     }
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
@@ -745,6 +745,18 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (u64{15} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
+        case 0x2be: case 0x2bf: { // UBREV / UPOPC, uniform counterparts of BREV (0x301) and POPC (0x309).
+            const u32 dst = uniform_register(insn.Bits(16, 8)), src = uniform_register(insn.words[1] & 0xff);
+            if (insn.words[2] != 0x08000000U || insn.words[1] > 0x3f || insn.Bits(24, 8) ||
+                native_predicate != 7 || dst == ~0U || dst == 255 || src == ~0U)
+                return fail(index, "native uniform bit operation mode");
+            if (opcode == 0x2be) {
+                emit(0x3828000000000000ULL | predicate | dst | (u64{src} << 8) | (u64{1} << 39) | (u64{1} << 40));
+            } else {
+                emit(0x5c08000000000000ULL | predicate | dst | (u64{src} << 20));
+            }
+            break;
+        }
         case 0x301: // BREV register.
             if (insn.words[2] || insn.words[1] > 255) return fail(index, "native bit reverse mode");
             emit(base(0x3828000000000000ULL) | (u64{insn.words[1]} << 8) |
@@ -1324,10 +1336,27 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             mov_imm(static_cast<u32>(dest) + 1, 0);
             break;
         }
-        case 0x306: { // I2F.F32.U8, low byte, round-to-nearest
-            if (insn.words[2] != 0x1000 || (insn.words[1] & 0xffffff00U))
+        case 0x306: case 0xd06: { // I2F.F32 from 8/16/32-bit integers, register or uniform source
+            // Bits 84-85: source width (U8/U16/U32), bit 74: signed, bits 78-79: rounding,
+            // bits 60-61: byte (U8) or half (U16) selector. Maxwell I2F has the same fields.
+            const u32 width = insn.Bits(84, 2), selector = insn.Bits(60, 2);
+            const u32 expected = 0x1000U | (width << 20) | (opcode == 0xd06 ? 0x08000000U : 0U);
+            const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 6)) : insn.Bits(32, 8);
+            if ((insn.words[2] & ~(0x400U | 0xc000U)) != expected || width > 2 || insn.Bits(40, 20) ||
+                insn.Bits(62, 2) || (opcode == 0xd06 && insn.Bits(38, 2)) || source == ~0U ||
+                (width == 1 && selector > 1) || (width == 2 && selector))
                 return fail(index, "native byte-to-float conversion mode");
-            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{insn.Bits(32, 8)} << 20));
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{width} << 10) |
+                 (u64{insn.Bits(74, 1)} << 13) | (u64{source} << 20) | (u64{insn.Bits(78, 2)} << 39) |
+                 (u64{width == 1 ? selector * 2 : selector} << 41));
+            break;
+        }
+        case 0x806: { // VOTE ballot into a register, optional predicate output.
+            if (insn.words[1] || insn.Bits(72, 2) > 2 ||
+                (insn.words[2] & ~(0x07800000U | 0x000e0000U | 0x300U)))
+                return fail(index, "native vote mode");
+            emit(0x50d8000000000000ULL | predicate | dest | (u64{insn.Bits(87, 4)} << 39) |
+                 (u64{insn.Bits(81, 3)} << 45) | (u64{insn.Bits(72, 2)} << 48));
             break;
         }
         case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32

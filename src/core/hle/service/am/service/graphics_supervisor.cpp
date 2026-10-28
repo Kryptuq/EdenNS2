@@ -81,6 +81,53 @@ namespace {
 
 // TIPC payloads follow a 32-bit result, so these handlers push result.raw.
 
+// Session returned by context commands 902/1002. The SDK fetches an event from it with
+// command 1 and closes it on teardown; the event is never signaled for now.
+class IContextNotifier final : public ServiceFramework<IContextNotifier> {
+public:
+    IContextNotifier(Core::System& system_, u32 context)
+        : ServiceFramework{system_, "IContextNotifier"}, m_context_id{context},
+          m_context{system_, "ContextNotifier"} {
+        static const FunctionInfo functions[] = {
+            {1, &IContextNotifier::GetEvent, "GetEvent"},
+        };
+        RegisterHandlersTipc(functions);
+    }
+    ~IContextNotifier() override {
+        if (m_event) m_context.CloseEvent(m_event);
+    }
+
+    Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
+        if (!ctx.IsTipc() || handlers_tipc.contains(ctx.GetCommand())) {
+            return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
+        }
+        const auto guard = LockService();
+        LOG_WARNING(Service_AM, "(STUBBED) context {} notifier command={}", m_context_id, ctx.GetCommand());
+        InvokeRequestTipc(ctx);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess.raw);
+        return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
+    }
+
+private:
+    void GetEvent(HLERequestContext& ctx) {
+        if (!m_event) m_event = m_context.CreateEvent(fmt::format("ContextNotifier{}", m_context_id));
+        Kernel::KReadableEvent* readable{};
+        if (m_event) {
+            readable = &m_event->GetReadableEvent();
+            readable->Open(kernel);
+        }
+        LOG_INFO(Service_AM, "context {} notifier event", m_context_id);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push((m_event ? ResultSuccess : Kernel::ResultOutOfResource).raw);
+        ctx.AddMoveObject(readable);
+    }
+
+    u32 m_context_id;
+    KernelHelpers::ServiceContext m_context;
+    Kernel::KEvent* m_event{};
+};
+
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
 public:
     ISyncpointSupervisor(Core::System& system_, std::shared_ptr<Nvidia::Module> module)
@@ -863,9 +910,11 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
         {901, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext901"},
-        {902, &IGraphicsSupervisor::InitializeEmptyContext, "ActivateContext902"},
+        {902, &IGraphicsSupervisor::OpenContextNotifier, "OpenContextNotifier902"},
+        {903, &IGraphicsSupervisor::InitializeEmptyContext, "FinalizeContext903"},
         {1001, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext1001"},
-        {1002, &IGraphicsSupervisor::InitializeEmptyContext, "ActivateContext1002"},
+        {1002, &IGraphicsSupervisor::OpenContextNotifier, "OpenContextNotifier1002"},
+        {1003, &IGraphicsSupervisor::InitializeEmptyContext, "FinalizeContext1003"},
         {1101, &IGraphicsSupervisor::InitializeFrameContext, "InitializeFrameContext"},
         {1102, &IGraphicsSupervisor::InitializeFrameContext, "ActivateFrameContext"},
         {1402, &IGraphicsSupervisor::GetNvidiaDriver, "GetNvidiaDriver"},
@@ -1093,6 +1142,26 @@ void IGraphicsSupervisor::InitializeGpuContext(HLERequestContext& ctx) {
     LOG_INFO(Service_AM, "GPU context command={}, result={:#x}", ctx.GetCommand(), result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
+}
+
+void IGraphicsSupervisor::OpenContextNotifier(HLERequestContext& ctx) {
+    // Reply carries a move handle to a session (header 0x80000001, one move handle).
+    const auto* packet = ctx.CommandBuffer();
+    Result result = Kernel::ResultInvalidCombination;
+    Kernel::KClientSession* client{};
+    if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 0) {
+        result = CreateGraphicsSession(system, ctx,
+            std::make_shared<IContextNotifier>(system, ctx.GetCommand() / 100), &client);
+    }
+    LOG_INFO(Service_AM, "context notifier command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    if (result.IsError()) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+        return;
+    }
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(ResultSuccess.raw);
+    rb.PushMoveObjects(ctx, client);
 }
 
 void IGraphicsSupervisor::InitializeEmptyContext(HLERequestContext& ctx) {
