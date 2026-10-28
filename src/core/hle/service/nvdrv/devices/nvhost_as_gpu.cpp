@@ -263,6 +263,7 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
     vm.big_page_allocator.emplace(start_big_pages, end_big_pages);
 
     if (shared_parent) {
+        m_view_flags = params.flags;
         m_shared_parent = std::move(shared_parent);
         gmmu = m_shared_parent->gmmu;
         LOG_INFO(Service_NVDRV, "native AS view fd={} shares page table with fd={}", m_fd, params.as_fd);
@@ -644,6 +645,14 @@ void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
             .pages = vm.big_page_allocator->GetVALimit() - vm.big_page_allocator->GetVAStart(),
         },
     };
+
+    if (m_shared_parent && m_view_flags == 0) {
+        // A flags-0 view is one unified range. The NVN2 driver merges regions that share
+        // an offset and rejects empty ones, so describe the range at both page sizes.
+        const auto& small = params.regions[0];
+        params.regions[1].offset = small.offset;
+        params.regions[1].pages = (small.pages * small.page_size) / vm.big_page_size;
+    }
 }
 
 NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {

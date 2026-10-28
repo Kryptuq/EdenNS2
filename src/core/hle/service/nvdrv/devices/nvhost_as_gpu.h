@@ -225,6 +225,7 @@ private:
     DeviceFD m_fd{-1};
     Kernel::KProcess* m_owner_process{};
     std::shared_ptr<nvhost_as_gpu> m_shared_parent;
+    u32 m_view_flags{};
 
     struct VM {
         static constexpr u32 YUZU_PAGESIZE{0x1000};

@@ -60,3 +60,7 @@
   accepted with flags 0 and va_range_split == va_range_end, in addition to the
   original flags 5 / split 0 form. The title's NVN2 driver creates such a view
   during nvnDeviceInitialize; rejecting it made the device init fail.
+- nvhost_as_gpu.cpp: GetVARegions on a flags-0 shared view reports the
+  large-page region at the same offset as the small-page region. The NVN2
+  driver merges regions with equal offsets but fails on an empty region, which
+  sent it into an error path that freed uninitialized pointers and aborted.
