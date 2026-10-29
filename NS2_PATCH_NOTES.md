@@ -158,3 +158,6 @@
 
 ## Build 41
 - Fix build 40 regression: the new decoder replies were one word short (ResponseBuilder size counts the result word plus one), so H.264 initialize (201) got a malformed reply and the game aborted right after launch.
+
+## Build 42
+- Intro movie now runs to its end (frames complete into output images); the game reaches its title screen and starts a second movie, whose decoder image pool uses output code 5 (codec mode 2). Decoder image requirements (991) and pools (911) now accept every nn::codec output code (1-6, 0xa-0xf) with an empty layout, sized as 4 bytes per pixel (8 for 0xe/0xf).

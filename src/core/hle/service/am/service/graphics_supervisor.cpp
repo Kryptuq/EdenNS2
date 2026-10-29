@@ -1654,7 +1654,7 @@ void IGraphicsSupervisor::CalculateImageRequirements(HLERequestContext& ctx) {
     // same 64-byte descriptor (type 1 or 2) as the other two.
     const bool gpu_image = ctx.GetCommand() == 435;
     const u32 expected_header = 16 + ctx.GetCommand();
-    const bool type_ok = ctx.GetCommand() == 991 ? (packet[3] == 1 || packet[3] == 2)
+    const bool type_ok = ctx.GetCommand() == 991 ? IsDecoderImageCode(packet[3])
                                                  : packet[3] == (gpu_image ? 1U : 2U);
     if (packet[0] == expected_header && packet[1] == 17 && type_ok) {
         result = Kernel::ResultInvalidState;
@@ -1829,7 +1829,8 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
     Result result = Kernel::ResultInvalidCombination;
     u32 id{};
     // 429 = CreateNativeImage; 911 = nn::codec InitializeDecoderImagePool (same descriptor).
-    if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 18 && (packet[3] == 1 || packet[3] == 2)) {
+    if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 18 &&
+        (packet[3] == 1 || packet[3] == 2 || (ctx.GetCommand() == 911 && IsDecoderImageCode(packet[3])))) {
         result = Kernel::ResultInvalidState;
         if (m_phase == Phase::Ready && m_gpu_context_ready && m_image_formats_initialized && m_nv_module) {
             const auto requirements = CalculateNativeImageRequirements(std::span{packet + 2, 16}, packet[18]);
