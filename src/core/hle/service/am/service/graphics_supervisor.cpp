@@ -88,11 +88,22 @@ namespace {
 // Session returned by nn::codec's video service manager (CreateVideoDecoderService /
 // CreateVideoEncoderService). The real service drives the hardware video codec; this HLE
 // version records the protocol and acknowledges every request so movie playback can proceed.
+// Session returned by nn::codec's video service manager (CreateVideoDecoderService /
+// CreateVideoEncoderService). The real service drives the hardware video codec; this HLE
+// version records the protocol and acknowledges requests so movie playback can proceed.
+// Reply sizes follow what nn::codec expects (result word first). Command 3 returns the
+// decoder's notification event, which is signaled whenever the guest starts, feeds or
+// flushes the decoder so its worker thread keeps running.
 class IVideoCodecService final : public ServiceFramework<IVideoCodecService> {
 public:
     IVideoCodecService(Core::System& system_, bool encoder)
         : ServiceFramework{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
-          m_encoder{encoder} {}
+          m_encoder{encoder}, m_context{system_, encoder ? "IVideoEncService" : "IVideoDecService"} {}
+    ~IVideoCodecService() override {
+        if (m_event) {
+            m_context.CloseEvent(m_event);
+        }
+    }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
         if (!ctx.IsTipc()) {
@@ -100,6 +111,7 @@ public:
         }
         const auto guard = LockService();
         const auto* packet = ctx.CommandBuffer();
+        const u32 command = ctx.GetCommand();
         const u32 words = (std::min)(packet[1] & 0x3ffU, 24U);
         if (m_logged < 400) {
             ++m_logged;
@@ -108,12 +120,35 @@ public:
                 data += fmt::format("{:08x} ", packet[2 + i]);
             }
             LOG_WARNING(Service_AM, "(STUBBED) video {} service command={} header={:08x}/{:08x} data={}",
-                        m_encoder ? "encoder" : "decoder", ctx.GetCommand(), packet[0], packet[1], data);
+                        m_encoder ? "encoder" : "decoder", command, packet[0], packet[1], data);
         }
-        IPC::ResponseBuilder rb{ctx, 10};
-        rb.Push(ResultSuccess.raw);
-        for (int i = 0; i < 8; ++i) {
-            rb.Push<u32>(0);
+
+        if (!m_encoder && command == 3) {
+            if (!m_event) {
+                m_event = m_context.CreateEvent("VideoDecoderNotification");
+            }
+            IPC::ResponseBuilder rb{ctx, 2, 1, 0};
+            rb.Push((m_event ? ResultSuccess : Kernel::ResultOutOfResource).raw);
+            if (m_event) {
+                ctx.AddCopyObject(&m_event->GetReadableEvent());
+            }
+        } else {
+            // Known reply sizes (in words, including the result); unknown commands get 9.
+            u32 reply_words = 9;
+            switch (command) {
+            case 6: case 8: case 201: case 207: case 212: reply_words = 1; break;
+            case 101: reply_words = 3; break;
+            case 311: case 314: reply_words = 9; break;
+            default: break;
+            }
+            IPC::ResponseBuilder rb{ctx, 1 + reply_words};
+            rb.Push(ResultSuccess.raw);
+            for (u32 i = 1; i < reply_words; ++i) {
+                rb.Push<u32>(0);
+            }
+            if (m_event && (command == 6 || command == 8 || command == 109)) {
+                m_event->Signal(kernel);
+            }
         }
         return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
     }
@@ -121,6 +156,8 @@ public:
 private:
     bool m_encoder;
     u32 m_logged{};
+    KernelHelpers::ServiceContext m_context;
+    Kernel::KEvent* m_event{};
 };
 
 // Video codec service manager opened through graphics supervisor command 902 (decoder) or
@@ -990,6 +1027,8 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {423, &IGraphicsSupervisor::BindNativeGpuMemory, "BindNativeGpuMemory"},
         {429, &IGraphicsSupervisor::CreateNativeImage, "CreateNativeImage"},
         {430, &IGraphicsSupervisor::DestroyNativeImage, "DestroyNativeImage"},
+        {911, &IGraphicsSupervisor::CreateNativeImage, "InitializeDecoderImagePool"},
+        {912, &IGraphicsSupervisor::DestroyNativeImage, "FinalizeDecoderImagePool"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
         {901, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext901"},
@@ -1667,7 +1706,8 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
     u32 id{};
-    if (packet[0] == 0x1bd && packet[1] == 18 && (packet[3] == 1 || packet[3] == 2)) {
+    // 429 = CreateNativeImage; 911 = nn::codec InitializeDecoderImagePool (same descriptor).
+    if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 18 && (packet[3] == 1 || packet[3] == 2)) {
         result = Kernel::ResultInvalidState;
         if (m_phase == Phase::Ready && m_gpu_context_ready && m_image_formats_initialized && m_nv_module) {
             const auto requirements = CalculateNativeImageRequirements(std::span{packet + 2, 16}, packet[18]);
@@ -1710,7 +1750,8 @@ void IGraphicsSupervisor::DestroyNativeImage(HLERequestContext& ctx) {
     const std::scoped_lock images_lock{m_image_registry->mutex};
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
-    if (packet[0] == 0x1be && packet[1] == 1) {
+    // 430 = DestroyNativeImage; 912 = nn::codec FinalizeDecoderImagePool.
+    if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 1) {
         const auto image = std::ranges::find(m_image_registry->images, packet[2], &NativeImage::id);
         result = Kernel::ResultNotFound;
         if (m_nv_module && image != m_image_registry->images.end()) {

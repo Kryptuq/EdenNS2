@@ -114,3 +114,7 @@
 ## Build 28
 - Yoshi demo abort at ~73 s found via the watchdog: the intro movie's video decoder (nn::codec::CalculateDecoderImagePoolBuffer -> graphics supervisor cmd 991) asked for an image with system-chosen layout (block height/pitch zero); we answered NotImplemented and the game aborted. Image descriptors with an empty layout now get the standard block-linear layout (cmd 991 and CreateNativeImage; format 2 accepted by CreateNativeImage too).
 - Graphics supervisor cmd 902/1002 are the video decoder/encoder managers (nn::codec::video). Their cmd 1 now returns a codec service session; that session logs every command with its data and acknowledges it (no real decoding yet).
+
+## Build 29
+- Second movie abort (45.5 s): the movie player's decoder thread waited on the decoder notification event, but the stubbed decoder command 3 returned no handle (kernel InvalidHandle 0xe401). Command 3 now returns a real event (copy handle), signaled on start/submit/flush. Known decoder replies use the sizes nn::codec expects.
+- Graphics supervisor 911/912 (nn::codec Initialize/FinalizeDecoderImagePool) reuse the native image create/destroy handlers (same descriptor layout as 429/430).
