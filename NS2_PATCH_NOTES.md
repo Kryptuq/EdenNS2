@@ -138,3 +138,9 @@
   - LOP3.LUT: any LUT and an optional predicate output now lower to Maxwell LOP3.LUT (pred op NonZero). Replaces the LUT whitelist. Test covers all 256 LUTs, register and immediate forms.
   - IADD3: general three-source form with per-operand negation (Maxwell IADD3) and .X predicate carry-in (added as 0/1 via SEL). Also fixes -A-B in the two-operand path, which Maxwell IADD interprets as .PO.
   - Predicated forward CALL.REL.NOINC lowers to a predicated forward branch (identical to the equivalent BRA).
+
+## Build 35
+- More rejected title-screen shaders cleared:
+  - ULOP3 with an immediate (0x892) reuses the LOP3 lowering via the uniform register remap.
+  - WARPSYNC with a full mask (0x948) is a no-op for per-thread translation.
+  - PRMT (default mode): any byte selector, including sign replication, built from per-byte BFE/SHL/LOP (Maxwell PRMT is not implemented in the frontend). Numerically tested; the older half-word concatenation selectors go through the same path.

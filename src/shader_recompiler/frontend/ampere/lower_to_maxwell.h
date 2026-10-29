@@ -53,7 +53,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     bool uses_uniform_bank = false;
     for (const auto& instruction : code) {
         const u32 op = instruction.Bits(0, 12);
-        uses_uniform_bank |= op == 0x3c4 || op == 0xd06 || op == 0x2be || op == 0x2bf || op == 0xf60 || op == 0xf63 || op == 0x292 || op == 0x299 || op == 0x981 || op == 0x2bd || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
+        uses_uniform_bank |= op == 0x3c4 || op == 0x892 || op == 0xd06 || op == 0x2be || op == 0x2bf || op == 0xf60 || op == 0xf63 || op == 0x292 || op == 0x299 || op == 0x981 || op == 0x2bd || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || (op == 0x81c && instruction.Bits(67, 1));
     }
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
@@ -106,7 +106,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         };
         // ULOP3 (0x292) and USHF (0x299) register forms reuse the LOP3/SHF lowerings.
         if (opcode == 0x2a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
-            opcode == 0x292 || opcode == 0x299) {
+            opcode == 0x292 || opcode == 0x299 || opcode == 0x892) {
             if (insn.Bits(12, 4) != 7) return fail(index, "native uniform arithmetic predication");
             const u32 dst = uniform_register(insn.Bits(16, 8));
             const u32 a = uniform_register(insn.Bits(24, 8));
@@ -120,7 +120,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 insn.words[1] = (insn.words[1] & ~0xffU) | b;
             }
             opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810 :
-                     opcode == 0x292 ? 0x212 : opcode == 0x299 ? 0x219 : 0x210;
+                     opcode == 0x292 ? 0x212 : opcode == 0x299 ? 0x219 : opcode == 0x892 ? 0x812 : 0x210;
         }
         const bool uniform_predication = opcode == 0xabb || opcode == 0xab9 || opcode == 0xc82 || opcode == 0x882;
         const u32 native_predicate = insn.Bits(12, 4);
@@ -793,6 +793,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(base(0x5c08000000000000ULL) | (u64{source} << 20) | (u64{insn.Bits(63, 1)} << 40));
             break;
         }
+        case 0x948: // WARPSYNC with a full mask: no-op for per-thread translation.
+            if (insn.words[1] != 0xffffffffU || insn.words[2] != 0x03800000U)
+                return fail(index, "native partial warp synchronization");
+            emit(0x50b0000000000f00ULL | predicate);
+            break;
         case 0x918:
             if (insn.words[1] || insn.words[2]) return fail(index, "native NOP mode");
             emit(0x50b0000000000f00ULL | predicate);
@@ -1186,21 +1191,31 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             break;
         }
-        case 0x816: { // Captured PRMT half-word concatenation
-            if ((insn.words[1] != 0x5410 && insn.words[1] != 0x5432 && insn.words[1] != 0x7610 && insn.words[1] != 0x7632) ||
-                (insn.words[2] & ~0xffU)) return fail(index, "native permutation mode");
-            const u32 a = insn.Bits(24, 8), b = insn.Bits(64, 8);
-            if (insn.words[1] != 0x5432 && insn.words[1] != 0x7632) {
-                emit(0x0400000000000000ULL | predicate | 250 | (u64{a} << 8) | (u64{0xffff} << 20));
-            } else {
-                emit(0x3828000000000000ULL | predicate | 250 | (u64{a} << 8) | (u64{16} << 20));
+        case 0x816: { // PRMT (default byte-select mode, immediate selector)
+            // Result byte i = byte (sel nibble i & 7) of {Rc:Ra}; nibble bit 3 replicates that
+            // byte's sign. Built from per-byte BFE extracts, shifted and OR-ed together.
+            if (insn.words[1] > 0xffff || (insn.words[2] & ~0xffU)) return fail(index, "native permutation mode");
+            const u32 a = insn.Bits(24, 8), c = insn.Bits(64, 8), selector = insn.words[1];
+            for (u32 i = 0; i < 4; ++i) {
+                const u32 nibble = (selector >> (4 * i)) & 0xf;
+                const u32 source = (nibble & 4) ? c : a, position = 8 * (nibble & 3);
+                const u32 target = i == 0 ? 250U : 251U;
+                if (nibble & 8) {
+                    // Sign of the byte replicated: BFE.S of its top bit gives 0 or -1.
+                    emit(0x3800000000000000ULL | predicate | target | (u64{source} << 8) |
+                         (u64{(position + 7) | (1U << 8)} << 20) | (u64{1} << 48));
+                    emit(0x0400000000000000ULL | predicate | target | (u64{target} << 8) | (u64{0xff} << 20));
+                } else {
+                    emit(0x3800000000000000ULL | predicate | target | (u64{source} << 8) |
+                         (u64{position | (8U << 8)} << 20));
+                }
+                if (i != 0) {
+                    emit(0x3848000000000000ULL | predicate | 251 | (u64{251} << 8) | (u64{8 * i} << 20));
+                    emit(0x5c40000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{251} << 20) |
+                         (u64{1} << 41) | (u64{7} << 48));
+                }
             }
-            if (insn.words[1] == 0x7610 || insn.words[1] == 0x7632) {
-                emit(0x0400000000000000ULL | predicate | 251 | (u64{b} << 8) | (u64{0xffff0000} << 20));
-                emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{251} << 20));
-            } else {
-                emit(base(0x5c18000000000000ULL) | (u64{b} << 8) | (u64{250} << 20) | (u64{16} << 39));
-            }
+            emit(0x5c98000000000000ULL | predicate | dest | (u64{250} << 20) | (u64{15} << 39));
             break;
         }
         case 0x307: { // FRND.F32, round to an integral floating-point value
