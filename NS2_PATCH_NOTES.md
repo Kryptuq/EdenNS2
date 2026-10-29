@@ -110,3 +110,7 @@
 ## Build 27
 - NS2 hang watchdog (Switch 2 titles only): if no frame is queued for 15 s (again at 45 s and 120 s), the log lists every guest thread (state, wait reason, PC/LR, frame-pointer call chain) and every host thread stuck in a tracked phase (GPU thread command, HLE service request, syncpoint/Vulkan waits, pipeline builds).
 - Release zip contains only eden.exe (Qt is statically linked).
+
+## Build 28
+- Yoshi demo abort at ~73 s found via the watchdog: the intro movie's video decoder (nn::codec::CalculateDecoderImagePoolBuffer -> graphics supervisor cmd 991) asked for an image with system-chosen layout (block height/pitch zero); we answered NotImplemented and the game aborted. Image descriptors with an empty layout now get the standard block-linear layout (cmd 991 and CreateNativeImage; format 2 accepted by CreateNativeImage too).
+- Graphics supervisor cmd 902/1002 are the video decoder/encoder managers (nn::codec::video). Their cmd 1 now returns a codec service session; that session logs every command with its data and acknowledges it (no real decoding yet).

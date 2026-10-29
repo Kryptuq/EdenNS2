@@ -85,18 +85,55 @@ namespace {
 
 // Session returned by context commands 902/1002. The SDK fetches an event from it with
 // command 1 and closes it on teardown; the event is never signaled for now.
-class IContextNotifier final : public ServiceFramework<IContextNotifier> {
+// Session returned by nn::codec's video service manager (CreateVideoDecoderService /
+// CreateVideoEncoderService). The real service drives the hardware video codec; this HLE
+// version records the protocol and acknowledges every request so movie playback can proceed.
+class IVideoCodecService final : public ServiceFramework<IVideoCodecService> {
 public:
-    IContextNotifier(Core::System& system_, u32 context)
-        : ServiceFramework{system_, "IContextNotifier"}, m_context_id{context},
-          m_context{system_, "ContextNotifier"} {
+    IVideoCodecService(Core::System& system_, bool encoder)
+        : ServiceFramework{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
+          m_encoder{encoder} {}
+
+    Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
+        if (!ctx.IsTipc()) {
+            return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
+        }
+        const auto guard = LockService();
+        const auto* packet = ctx.CommandBuffer();
+        const u32 words = (std::min)(packet[1] & 0x3ffU, 24U);
+        if (m_logged < 400) {
+            ++m_logged;
+            std::string data;
+            for (u32 i = 0; i < words; ++i) {
+                data += fmt::format("{:08x} ", packet[2 + i]);
+            }
+            LOG_WARNING(Service_AM, "(STUBBED) video {} service command={} header={:08x}/{:08x} data={}",
+                        m_encoder ? "encoder" : "decoder", ctx.GetCommand(), packet[0], packet[1], data);
+        }
+        IPC::ResponseBuilder rb{ctx, 10};
+        rb.Push(ResultSuccess.raw);
+        for (int i = 0; i < 8; ++i) {
+            rb.Push<u32>(0);
+        }
+        return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
+    }
+
+private:
+    bool m_encoder;
+    u32 m_logged{};
+};
+
+// Video codec service manager opened through graphics supervisor command 902 (decoder) or
+// 1002 (encoder). Command 1 creates a codec service session.
+class IVideoCodecManager final : public ServiceFramework<IVideoCodecManager> {
+public:
+    IVideoCodecManager(Core::System& system_, bool encoder)
+        : ServiceFramework{system_, encoder ? "IVideoEncManager" : "IVideoDecManager"},
+          m_encoder{encoder} {
         static const FunctionInfo functions[] = {
-            {1, &IContextNotifier::GetEvent, "GetEvent"},
+            {1, &IVideoCodecManager::CreateService, "CreateService"},
         };
         RegisterHandlersTipc(functions);
-    }
-    ~IContextNotifier() override {
-        if (m_event) m_context.CloseEvent(m_event);
     }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
@@ -104,30 +141,17 @@ public:
             return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
         }
         const auto guard = LockService();
-        LOG_WARNING(Service_AM, "(STUBBED) context {} notifier command={}", m_context_id, ctx.GetCommand());
-        InvokeRequestTipc(ctx);
+        LOG_WARNING(Service_AM, "(STUBBED) video {} manager command={}", m_encoder ? "encoder" : "decoder",
+                    ctx.GetCommand());
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess.raw);
         return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
     }
 
 private:
-    void GetEvent(HLERequestContext& ctx) {
-        if (!m_event) m_event = m_context.CreateEvent(fmt::format("ContextNotifier{}", m_context_id));
-        Kernel::KReadableEvent* readable{};
-        if (m_event) {
-            readable = &m_event->GetReadableEvent();
-            readable->Open(kernel);
-        }
-        LOG_INFO(Service_AM, "context {} notifier event", m_context_id);
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push((m_event ? ResultSuccess : Kernel::ResultOutOfResource).raw);
-        ctx.AddMoveObject(readable);
-    }
+    void CreateService(HLERequestContext& ctx);
 
-    u32 m_context_id;
-    KernelHelpers::ServiceContext m_context;
-    Kernel::KEvent* m_event{};
+    bool m_encoder;
 };
 
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
@@ -1204,6 +1228,21 @@ void IGraphicsSupervisor::InitializeGpuContext(HLERequestContext& ctx) {
     rb.Push(result.raw);
 }
 
+void IVideoCodecManager::CreateService(HLERequestContext& ctx) {
+    Kernel::KClientSession* client{};
+    const Result result =
+        CreateGraphicsSession(system, ctx, std::make_shared<IVideoCodecService>(system, m_encoder), &client);
+    LOG_INFO(Service_AM, "video {} service created, result={:#x}", m_encoder ? "encoder" : "decoder", result.raw);
+    if (result.IsError()) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+        return;
+    }
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(ResultSuccess.raw);
+    rb.PushMoveObjects(ctx, client);
+}
+
 void IGraphicsSupervisor::OpenContextNotifier(HLERequestContext& ctx) {
     // Reply carries a move handle to a session (header 0x80000001, one move handle).
     const auto* packet = ctx.CommandBuffer();
@@ -1211,9 +1250,9 @@ void IGraphicsSupervisor::OpenContextNotifier(HLERequestContext& ctx) {
     Kernel::KClientSession* client{};
     if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 0) {
         result = CreateGraphicsSession(system, ctx,
-            std::make_shared<IContextNotifier>(system, ctx.GetCommand() / 100), &client);
+            std::make_shared<IVideoCodecManager>(system, ctx.GetCommand() == 1002), &client);
     }
-    LOG_INFO(Service_AM, "context notifier command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    LOG_INFO(Service_AM, "video codec manager command={}, result={:#x}", ctx.GetCommand(), result.raw);
     if (result.IsError()) {
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -1463,8 +1502,8 @@ void IGraphicsSupervisor::CalculateImageRequirements(HLERequestContext& ctx) {
             result = requirements ? ResultSuccess : Kernel::ResultNotImplemented;
         }
     }
-    LOG_INFO(Service_AM, "native image requirements dimensions={:#x}, block={}, pitch={}, size={:#x}, alignment={:#x}, result={:#x}",
-              packet[4], packet[6], packet[7], requirements ? requirements->size : 0,
+    LOG_INFO(Service_AM, "native image requirements cmd={}, format={}, dimensions={:#x}, block={}, pitch={}, count={}, size={:#x}, alignment={:#x}, result={:#x}",
+              ctx.GetCommand(), packet[3], packet[4], packet[6], packet[7], packet[18], requirements ? requirements->size : 0,
               requirements ? requirements->alignment : 0, result.raw);
     IPC::ResponseBuilder rb{ctx, gpu_image ? 4U : 6U};
     rb.Push(result.raw);
@@ -1628,7 +1667,7 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
     u32 id{};
-    if (packet[0] == 0x1bd && packet[1] == 18 && packet[3] == 1) {
+    if (packet[0] == 0x1bd && packet[1] == 18 && (packet[3] == 1 || packet[3] == 2)) {
         result = Kernel::ResultInvalidState;
         if (m_phase == Phase::Ready && m_gpu_context_ready && m_image_formats_initialized && m_nv_module) {
             const auto requirements = CalculateNativeImageRequirements(std::span{packet + 2, 16}, packet[18]);
@@ -1645,7 +1684,8 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
                         if (m_image_registry->images.size() < 65536 && m_next_native_image_id != 0 &&
                             memory->Duplicate(true) == Nvidia::NvResult::Success) {
                             NativeImage image{m_next_native_image_id++, packet[19], {}, requirements->size};
-                            std::copy_n(packet + 2, image.preference.size(), image.preference.begin());
+                            const auto preference = NormalizeNativeImagePreference(std::span{packet + 2, 16});
+                            std::copy_n(preference.begin(), image.preference.size(), image.preference.begin());
                             id = image.id;
                             if (!m_image_registry->module) {
                                 m_image_registry->module = m_nv_module;
