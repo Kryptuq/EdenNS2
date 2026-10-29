@@ -768,6 +768,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const bool right = insn.Bits(76, 1) != 0, high_result = insn.Bits(80, 1) != 0;
             // SHF.L.HI with a zero low word shifts the high word left, like SHF.L.LO.
             const bool left_high = !right && high_result && low == 255;
+            if (right && !high_result && high == 255 && insn.words[1] <= 255 && insn.Bits(73, 2) == 3 &&
+                (insn.words[2] & ~0x000118ffU) == 0x00000600U) {
+                // SHF.R.U32.LO with a zero high word: a plain logical right shift of the low word.
+                emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20) |
+                     (u64{insn.Bits(75, 1)} << 39));
+                break;
+            }
             if (insn.words[1] > 255 || insn.Bits(73, 2) != 3 ||
                 (insn.words[2] & ~0x000118ffU) != 0x00000600U ||
                 (right ? (!high_result || low != 255) : (!left_high && (high_result || high != 255))))
@@ -775,6 +782,22 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(base(right ? 0x5cf8000000000000ULL : 0x5bf8000000000000ULL) |
                 (u64{right ? high : 255U} << 8) | (u64{shift} << 20) |
                 (u64{right ? 255U : left_high ? high : low} << 39) | (u64{insn.Bits(75, 1)} << 50));
+            break;
+        }
+        case 0x419: { // SHF.L.W.U32.HI Rd, RZ, Rb, imm = imm << (Rb & 31) (from Eglantine)
+            if (insn.Bits(24, 8) != 255 || (insn.words[2] & ~0xffU) != 0x00010e00)
+                return fail(index, "native funnel shift immediate mode");
+            mov_imm(250, insn.words[1]);
+            emit(base(0x5c48000000000000ULL) | (u64{250} << 8) | (u64{insn.Bits(64, 8)} << 20) |
+                 (u64{1} << 39));
+            break;
+        }
+        case 0x989: { // SHFL, immediate lane and register clamp/segmentation mask (from Eglantine)
+            if ((insn.words[1] & 0xf01fffffU) || (insn.words[2] & ~0x000e00ffU))
+                return fail(index, "native register-mask shuffle mode");
+            emit(base(0xef10000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
+                 (u64{insn.Bits(53, 5)} << 20) | (u64{1} << 28) | (u64{insn.Bits(58, 2)} << 30) |
+                 (u64{insn.Bits(64, 8)} << 39) | (u64{insn.Bits(81, 3)} << 48));
             break;
         }
         case 0x300: case 0xd00: { // FLO, including a uniform source.
