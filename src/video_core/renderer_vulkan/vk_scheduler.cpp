@@ -11,6 +11,7 @@
 
 #include <fmt/format.h>
 
+#include "common/ns2_watch.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
 #include "common/settings.h"
@@ -70,6 +71,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
 }
 
 void Scheduler::WaitWorker() {
+    Common::NS2Watch::PhaseScope phase{"waiting for Vulkan worker"};
     DispatchWork();
 
     // Ensure the queue is drained.

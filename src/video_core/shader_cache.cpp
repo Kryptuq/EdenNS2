@@ -9,6 +9,7 @@
 #include <vector>
 #include <boost/container/small_vector.hpp>
 
+#include "common/ns2_watch.h"
 #include "common/assert.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/exception.h"
@@ -46,6 +47,7 @@ ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : device_memory{device_memory_} {}
 
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
+    Common::NS2Watch::PhaseScope phase{"refreshing native shader stages"};
     auto& dirty{maxwell3d->dirty.flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
         return last_shaders_valid;

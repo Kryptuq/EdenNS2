@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "common/ns2_watch.h"
 #include "video_core/host1x/syncpoint_manager.h"
 
 namespace Tegra {
@@ -66,10 +67,14 @@ void SyncpointManager::IncrementHost(u32 syncpoint_id) {
 }
 
 void SyncpointManager::WaitGuest(u32 syncpoint_id, u32 expected_value) {
+    Common::NS2Watch::PhaseScope phase{"waiting for guest syncpoint (id<<32|value)", nullptr,
+                                       (u64{syncpoint_id} << 32) | expected_value};
     Wait(syncpoints_guest[syncpoint_id], wait_guest_cv, expected_value);
 }
 
 void SyncpointManager::WaitHost(u32 syncpoint_id, u32 expected_value) {
+    Common::NS2Watch::PhaseScope phase{"waiting for host syncpoint (id<<32|value)", nullptr,
+                                       (u64{syncpoint_id} << 32) | expected_value};
     Wait(syncpoints_host[syncpoint_id], wait_host_cv, expected_value);
 }
 

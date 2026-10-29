@@ -106,3 +106,7 @@
 - ISyncpointSupervisor cmd 22 (GetEvent): returns a per-index event, signaled periodically (1 ms core-timing poll). Fixes the abort around 57 s.
 - IGraphicsSupervisor cmd 991: CalculateImageRequirements variant (17-word request) returning size and alignment.
 - Diagnostics: framebuffer lookup misses in TryFindFramebufferImageView (first 16), composite fence waits (syncpoint/value vs guest/host counters), native syncpoint increments, and semaphore completions are logged without env vars.
+
+## Build 27
+- NS2 hang watchdog (Switch 2 titles only): if no frame is queued for 15 s (again at 45 s and 120 s), the log lists every guest thread (state, wait reason, PC/LR, frame-pointer call chain) and every host thread stuck in a tracked phase (GPU thread command, HLE service request, syncpoint/Vulkan waits, pipeline builds).
+- Release zip contains only eden.exe (Qt is statically linked).

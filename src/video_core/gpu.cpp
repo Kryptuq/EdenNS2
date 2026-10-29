@@ -12,6 +12,7 @@
 #include <memory>
 #include <utility>
 
+#include "common/ns2_watch.h"
 #include "common/assert.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -140,6 +141,7 @@ struct GPU::Impl {
     }
 
     void WaitForSyncOperation(const u64 fence) {
+        Common::NS2Watch::PhaseScope phase{"waiting for GPU thread sync operation", nullptr, fence};
         std::unique_lock lck{sync_request_mutex};
         sync_request_cv.wait(lck, [this, fence] { return CurrentSyncRequestFence() >= fence; });
     }
@@ -292,6 +294,7 @@ struct GPU::Impl {
                         }
                         free_swap_counters.push_back(current_request_counter);
                     }
+                    Common::NS2Watch::g_composite_count.fetch_add(1, std::memory_order_relaxed);
                     renderer->Composite(composite_layers);
                 };
                 for (size_t i = 0; i < num_fences; i++) {

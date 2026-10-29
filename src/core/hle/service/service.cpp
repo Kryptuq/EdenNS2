@@ -6,6 +6,7 @@
 
 #include <limits>
 #include <fmt/ranges.h>
+#include "common/ns2_watch.h"
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -121,7 +122,10 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
 
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
+    const std::string phase_detail = fmt::format("{} cmd={}", GetServiceName(), ctx.GetCommand());
+    Common::NS2Watch::PhaseScope phase{"waiting for service lock", phase_detail.c_str()};
     const auto guard = LockService();
+    Common::NS2Watch::SetPhase("handling HLE service request", phase_detail.c_str());
 
     Result result = ResultSuccess;
 

@@ -6,6 +6,7 @@
 #include <bit>
 #include <array>
 #include <mutex>
+#include "common/ns2_watch.h"
 #include "common/alignment.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/core.h"
@@ -631,6 +632,7 @@ private:
             });
             system.CoreTiming().ScheduleLoopingEvent(std::chrono::milliseconds{1}, std::chrono::milliseconds{1}, m_release_poll);
         }
+        Common::NS2Watch::g_present_count.fetch_add(1, std::memory_order_relaxed);
         LOG_INFO(Service_AM, "Native image queued for display: image={}, slot={}, fence={}/{}, dimensions={}x{}",
                  image->id, slot, fence_id, packet[24], native->width, native->height);
         R_SUCCEED();
