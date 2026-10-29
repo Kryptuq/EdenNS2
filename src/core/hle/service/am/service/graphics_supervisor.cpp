@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstring>
 #include <deque>
 #include <initializer_list>
 #include <unordered_map>
@@ -27,6 +28,8 @@
 #include "core/hle/service/am/service/graphics_supervisor.h"
 #include "core/hle/service/am/service/graphics_session.h"
 #include "video_core/native_strict.h"
+#include "video_core/host1x/ns2_video_decoder.h"
+#include "video_core/textures/decoders.h"
 #include "core/hle/service/am/service/gpu_session.h"
 #include "core/hle/service/am/service/graphics_supervisor_protocol.h"
 #include "core/hle/service/am/service/graphics_syncpoint_cache.h"
@@ -104,9 +107,10 @@ namespace {
 //   u8 end of stream) or 0x1c286f when none is ready (the client then waits on the event).
 class IVideoCodecService final : public ServiceFramework<IVideoCodecService> {
 public:
-    IVideoCodecService(Core::System& system_, bool encoder)
+    IVideoCodecService(Core::System& system_, bool encoder, std::shared_ptr<NativeImageRegistry> images)
         : ServiceFramework{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
-          m_encoder{encoder}, m_context{system_, encoder ? "IVideoEncService" : "IVideoDecService"} {}
+          m_encoder{encoder}, m_context{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
+          m_images{std::move(images)} {}
     ~IVideoCodecService() override {
         {
             std::scoped_lock lk{m_ready->mutex};
@@ -147,6 +151,11 @@ public:
             case 101:
                 m_width = packet[5];
                 m_height = packet[6];
+                {
+                    // Words 2-4: A descriptor of the codec configuration (avcC / SPS+PPS).
+                    const auto config = ReadDescriptor(packet + 2, 4096);
+                    m_decoder.Configure(config);
+                }
                 Reply(ctx, {0, 0});
                 break;
             case 109: SubmitInput(ctx); break;
@@ -172,10 +181,16 @@ public:
     }
 
 private:
+    struct Picture {
+        std::vector<u8> rgba;
+        u32 width{};
+        u32 height{};
+    };
     struct Output {
         u32 image;
         u64 pts;
         bool end;
+        std::shared_ptr<Picture> picture;
     };
     struct ReadyState {
         std::mutex mutex;
@@ -227,11 +242,64 @@ private:
         Signal();
     }
 
+    // Reads an IPC A/B buffer descriptor (size, address low, packed high bits) from guest memory.
+    std::vector<u8> ReadDescriptor(const u32* d, u64 max_size) {
+        const u64 size = u64{d[0]} | (u64{(d[2] >> 24) & 0xf} << 32);
+        const u64 address = u64{d[1]} | (u64{(d[2] >> 28) & 0xf} << 32) | (u64{(d[2] >> 2) & 0x7} << 36);
+        std::vector<u8> data;
+        if (!m_images || !address || !size || size > max_size) {
+            return data;
+        }
+        data.resize(size);
+        m_images->process->GetMemory().ReadBlock(address, data.data(), size);
+        return data;
+    }
+
+    // Writes a decoded picture into a registered output image (block linear, Switch 2 GOBs).
+    void WritePicture(u32 image_id, const std::shared_ptr<Picture>& picture) {
+        if (!picture || picture->rgba.empty() || !m_images) {
+            return;
+        }
+        const std::scoped_lock images_lock{m_images->mutex};
+        const auto image = std::ranges::find(m_images->images, image_id, &NativeImage::id);
+        if (image == m_images->images.end() || !m_images->module) {
+            return;
+        }
+        const auto handle = m_images->module->GetContainer().GetNvMapFile().GetHandle(image->memory_id);
+        if (!handle || handle->address == 0) {
+            return;
+        }
+        const u32 image_width = (image->preference[2] & 0xffffU) + 1;
+        const u32 image_height = (image->preference[2] >> 16) + 1;
+        const u32 block_log2 = image->preference[4];
+        if (block_log2 < 3 || image->preference[5] * 64 < image_width * 4) {
+            return;
+        }
+        // Clip the picture into a linear copy with the image's dimensions.
+        m_linear.assign(static_cast<size_t>(image_width) * image_height * 4, 0);
+        const u32 rows = (std::min)(picture->height, image_height);
+        const u32 row_bytes = (std::min)(picture->width, image_width) * 4;
+        for (u32 y = 0; y < rows; ++y) {
+            std::memcpy(m_linear.data() + static_cast<size_t>(y) * image_width * 4,
+                        picture->rgba.data() + static_cast<size_t>(y) * picture->width * 4, row_bytes);
+        }
+        m_tiled.assign(image->size, 0);
+        Tegra::Texture::SwizzleTexture(m_tiled, m_linear, 4, image_width, image_height, 1,
+                                       block_log2 - 3, 0, 1, true);
+        m_images->process->GetMemory().WriteBlock(handle->address, m_tiled.data(), m_tiled.size());
+        if (m_pictures_written++ < 4) {
+            LOG_INFO(Service_AM, "video decoder: picture {}x{} written to image {} at {:#x}",
+                     picture->width, picture->height, image_id, handle->address);
+        }
+    }
+
     // An output image is free again: a frame waiting for one completes into it.
     void GiveBack(u32 image) {
         if (!m_waiting.empty()) {
-            m_outputs.push_back({image, m_waiting.front().pts, m_waiting.front().end});
+            auto frame = std::move(m_waiting.front());
             m_waiting.pop_front();
+            WritePicture(image, frame.picture);
+            m_outputs.push_back({image, frame.pts, frame.end, nullptr});
             Signal();
             return;
         }
@@ -243,11 +311,29 @@ private:
         // Words 2-4 are the A descriptor of the compressed frame.
         const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
         const bool end = (w[7] & 0xff) != 0;
+        std::shared_ptr<Picture> picture;
+        {
+            const auto data = ReadDescriptor(w + 2, 16ULL << 20);
+            auto decoded = std::make_shared<Picture>();
+            if (!data.empty() && m_decoder.Decode(data, decoded->rgba, decoded->width, decoded->height)) {
+                picture = std::move(decoded);
+                m_last_picture = picture;
+            } else {
+                // No new picture (decoder delay or an error): repeat the last one.
+                picture = m_last_picture;
+            }
+        }
         if (!m_free.empty()) {
-            m_outputs.push_back({m_free.front(), pts, end});
+            const u32 image = m_free.front();
             m_free.pop_front();
+            WritePicture(image, picture);
+            m_outputs.push_back({image, pts, end, nullptr});
         } else {
-            m_waiting.push_back({0, pts, end});
+            // Keep pixel data only for a few waiting frames.
+            if (m_waiting.size() >= 8) {
+                picture = nullptr;
+            }
+            m_waiting.push_back({0, pts, end, std::move(picture)});
         }
         const u64 id = ++m_submitted;
         Reply(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
@@ -277,6 +363,12 @@ private:
     u32 m_width{};
     u32 m_height{};
     u64 m_submitted{};
+    std::shared_ptr<NativeImageRegistry> m_images;
+    Tegra::NS2::H264Decoder m_decoder;
+    std::shared_ptr<Picture> m_last_picture;
+    std::vector<u8> m_linear;
+    std::vector<u8> m_tiled;
+    u32 m_pictures_written{};
     std::deque<u32> m_free;
     std::deque<Output> m_waiting;
     std::deque<Output> m_outputs;
@@ -286,9 +378,9 @@ private:
 // 1002 (encoder). Command 1 creates a codec service session.
 class IVideoCodecManager final : public ServiceFramework<IVideoCodecManager> {
 public:
-    IVideoCodecManager(Core::System& system_, bool encoder)
+    IVideoCodecManager(Core::System& system_, bool encoder, std::shared_ptr<NativeImageRegistry> images)
         : ServiceFramework{system_, encoder ? "IVideoEncManager" : "IVideoDecManager"},
-          m_encoder{encoder} {
+          m_encoder{encoder}, m_images{std::move(images)} {
         static const FunctionInfo functions[] = {
             {1, &IVideoCodecManager::CreateService, "CreateService"},
         };
@@ -311,6 +403,7 @@ private:
     void CreateService(HLERequestContext& ctx);
 
     bool m_encoder;
+    std::shared_ptr<NativeImageRegistry> m_images;
 };
 
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
@@ -1392,7 +1485,7 @@ void IGraphicsSupervisor::InitializeGpuContext(HLERequestContext& ctx) {
 void IVideoCodecManager::CreateService(HLERequestContext& ctx) {
     Kernel::KClientSession* client{};
     const Result result =
-        CreateGraphicsSession(system, ctx, std::make_shared<IVideoCodecService>(system, m_encoder), &client);
+        CreateGraphicsSession(system, ctx, std::make_shared<IVideoCodecService>(system, m_encoder, m_images), &client);
     LOG_INFO(Service_AM, "video {} service created, result={:#x}", m_encoder ? "encoder" : "decoder", result.raw);
     if (result.IsError()) {
         IPC::ResponseBuilder rb{ctx, 2};
@@ -1411,7 +1504,7 @@ void IGraphicsSupervisor::OpenContextNotifier(HLERequestContext& ctx) {
     Kernel::KClientSession* client{};
     if (packet[0] == 16 + ctx.GetCommand() && packet[1] == 0) {
         result = CreateGraphicsSession(system, ctx,
-            std::make_shared<IVideoCodecManager>(system, ctx.GetCommand() == 1002), &client);
+            std::make_shared<IVideoCodecManager>(system, ctx.GetCommand() == 1002, m_image_registry), &client);
     }
     LOG_INFO(Service_AM, "video codec manager command={}, result={:#x}", ctx.GetCommand(), result.raw);
     if (result.IsError()) {

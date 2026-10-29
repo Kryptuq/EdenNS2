@@ -161,3 +161,6 @@
 
 ## Build 42
 - Intro movie now runs to its end (frames complete into output images); the game reaches its title screen and starts a second movie, whose decoder image pool uses output code 5 (codec mode 2). Decoder image requirements (991) and pools (911) now accept every nn::codec output code (1-6, 0xa-0xf) with an empty layout, sized as 4 bytes per pixel (8 for 0xe/0xf).
+
+## Build 43
+- Real movie decoding: the nn::codec decoder service now decodes H.264 with FFmpeg (new `video_core/host1x/ns2_video_decoder`). The codec configuration from command 101 (avcC) opens the decoder, each frame from 109 is decoded to RGBA, swizzled into the Switch 2 block-linear layout of the registered output image and written to guest memory, so the title and menu background movies should become visible. When the decoder has no new picture (start-up delay), the previous one is repeated. Logged as "NS2 video: ..." and "video decoder: picture ... written to image ...".
