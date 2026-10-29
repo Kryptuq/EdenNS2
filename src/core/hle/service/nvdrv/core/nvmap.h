@@ -130,6 +130,14 @@ public:
     DAddr GetHandleAddress(Handle::Id handle);
 
     /**
+     * @brief Finds a pinned handle (one with a device address) whose guest memory covers
+     * [address, address + size) and returns the matching device address, or 0.
+     * Switch 2 titles render through GPU-session memory handles that alias the memory of
+     * the (never pinned) native image handles they present.
+     */
+    DAddr FindPinnedAliasAddress(Handle::Id exclude, VAddr address, u64 size);
+
+    /**
      * @brief Maps a handle into the SMMU address space
      * @note This operation is refcounted, the number of calls to this must eventually match the
      * number of calls to `UnpinHandle`

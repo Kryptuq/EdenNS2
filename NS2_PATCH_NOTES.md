@@ -122,3 +122,7 @@
 ## Build 30
 - Log size: build 29's log hit Eden's 100 MB limit after 45 s, almost entirely full shader listings. Full listings now require EDEN_NATIVE_SHADER_DUMP=1 (one summary line per rejected program remains, up to 256 programs). Memory-op, inline QMD and surface-clear traces are capped; GPU memory map traces are back at Debug level.
 - Display lookup diagnostics (Native display source / framebuffer lookup miss) are also sampled every 300 frames, not only for the first 16.
+
+## Build 31
+- Black screen: the game presents ~33 fps of 1920x1080 frames, but their native image memory handles are never pinned (the GPU renders through GPU-session handles aliasing the same guest memory), so the display got device address 0 and drew black. nvdisp now resolves an unpinned display handle through the pinned handle covering the same guest memory (NvMap::FindPinnedAliasAddress), which is also where the texture cache keeps the rendered image.
+- Diagnostics: display layer address resolution (first 8, then every 300th frame) and "no device address" warnings; shader rejection logs capped (first 200, then every 5000th).

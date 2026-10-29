@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -93,7 +94,11 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     if (!native.native_turing) throw;
     if (VideoCommon::NativeStrict()) native.native_execution_failed = true;
     last_shaders_valid = false;
-    LOG_ERROR(HW_GPU, "Native graphics shader rejected: {}", error.what());
+    // Rejections repeat on every draw/dispatch; log the first ones and then a sample.
+    static std::atomic<u32> rejection_logs{};
+    if (const u32 n = rejection_logs.fetch_add(1, std::memory_order_relaxed); n < 200 || n % 5000 == 0) {
+        LOG_ERROR(HW_GPU, "Native graphics shader rejected: {}", error.what());
+    }
     return false;
 }
 

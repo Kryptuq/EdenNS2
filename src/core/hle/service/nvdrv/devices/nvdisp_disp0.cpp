@@ -77,8 +77,29 @@ void nvdisp_disp0::Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers
         const auto handle = nvmap.GetHandle(layer.buffer_handle);
         const auto* session = handle ? container.GetSession(handle->session_id) : nullptr;
         const bool native_tiling = session && session->process->UsesPAuthReturns();
+        DAddr address = nvmap.GetHandleAddress(layer.buffer_handle);
+        if (address == 0 && handle && handle->address) {
+            // Native (Switch 2) images are never pinned themselves; the GPU renders into
+            // them through a GPU-session memory handle aliasing the same guest memory.
+            const DAddr alias = nvmap.FindPinnedAliasAddress(
+                layer.buffer_handle, handle->address + layer.offset,
+                static_cast<u64>(layer.stride) * layer.height * 4);
+            if (alias != 0) {
+                address = alias - layer.offset;
+            }
+        }
+        if (handle) {
+            static u32 address_traces{};
+            const u32 trace_index = address_traces++;
+            if (trace_index < 8 || trace_index % 300 == 0) {
+                LOG_INFO(Service_NVDRV,
+                         "Display layer handle={}, guest={:#x}, pinned={:#x}, address={:#x}, {}x{} stride={}",
+                         layer.buffer_handle, handle->address, handle->d_address, address, layer.width,
+                         layer.height, layer.stride);
+            }
+        }
         output_layers.emplace_back(Tegra::FramebufferConfig{
-            .address = nvmap.GetHandleAddress(layer.buffer_handle),
+            .address = address,
             .offset = layer.offset,
             .width = layer.width,
             .height = layer.height,
