@@ -1415,7 +1415,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(out);
             break;
         }
-        case 0x212: case 0x812: case 0xc12: { // LOP3.LUT (register, immediate or uniform B)
+        case 0x212: case 0x812: case 0xa12: case 0xc12: { // LOP3.LUT (register, immediate, constant or uniform B)
             // Any LUT maps onto Maxwell LOP3.LUT (register form), whose predicate output
             // ("NonZero") matches Ampere's Pu = (result != 0). Only the trivial predicate
             // input (!PT) is supported.
@@ -1427,6 +1427,10 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (opcode == 0x812) {
                 mov_imm(251, insn.words[1]);
                 b = 251;
+            } else if (opcode == 0xa12) {
+                if (insn.Bits(62, 2)) return fail(index, "native constant logic modifiers");
+                b = operand(1, false); // loads the constant into a scratch register
+                if (!operand_error.empty()) return fail(index, operand_error);
             }
             const u32 a = insn.Bits(24, 8), c = insn.Bits(64, 8);
             const u32 pred_target = insn.Bits(81, 3);

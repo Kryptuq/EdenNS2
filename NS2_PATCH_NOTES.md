@@ -148,3 +148,6 @@
 ## Build 36
 - Profile menu renders; selecting New Game freezes at "Loading...": the AM service thread stops answering at 223 s (last calls SetFocusHandlingMode/SetOutOfFocusSuspendingEnabled), so presents stop and the movie decoder thread waits forever on decoder command 213.
 - Diagnostics: every HLE request is tracked by the hang watchdog (service and command, including domain objects), deferred HLE requests are logged, and decoder service commands are sampled per command (first 16, then every 1000th) instead of a global 400-line cap.
+
+## Build 37
+- LOP3 with a constant buffer operand (0xa12, five menu shaders) loads the constant into a scratch register and uses the general LOP3 lowering.

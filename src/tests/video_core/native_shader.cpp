@@ -1787,6 +1787,24 @@ TEST_CASE("Native PRMT selects and sign-replicates arbitrary bytes", "[native-sh
     }
 }
 
+TEST_CASE("Native LOP3 with a constant buffer operand loads it first", "[native-shader]") {
+    const std::array<Native, 2> source{{
+        {{0x09097a12, 0x01800600, 0x078ec0ff, 0x000fe400}}, // LOP3.LUT R9, R9, c[0x6][0x18], RZ, 0xc0
+        VertexTransform.back(),
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(source);
+    REQUIRE(lowered);
+    REQUIRE(Shader::Maxwell::Decode(lowered.instructions[0]) == Shader::Maxwell::Opcode::MOV_cbuf);
+    REQUIRE((lowered.instructions[0] & 0xff) == 251);
+    REQUIRE(((lowered.instructions[0] >> 34) & 0x1f) == 6);              // bank
+    REQUIRE(((lowered.instructions[0] >> 20) & 0x3fff) == 0x18 / 4);     // offset in words
+    REQUIRE(Shader::Maxwell::Decode(lowered.instructions[1]) == Shader::Maxwell::Opcode::LOP3_reg);
+    REQUIRE((lowered.instructions[1] & 0xff) == 9);
+    REQUIRE(((lowered.instructions[1] >> 8) & 0xff) == 9);
+    REQUIRE(((lowered.instructions[1] >> 20) & 0xff) == 251);
+    REQUIRE(((lowered.instructions[1] >> 28) & 0xff) == 0xc0);
+}
+
 TEST_CASE("Native register-to-predicate writes only masked predicate bits", "[native-shader]") {
     const std::array<Native, 2> source{{{{0x05007804, 7, 0, 0x000fe200}}, VertexTransform.back()}};
     const auto lowered = Shader::Ampere::LowerToMaxwell(source);
