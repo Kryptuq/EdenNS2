@@ -118,6 +118,8 @@ add_library(
     string_util.cpp
     string_util.h
     swap.h
+    ns2_watch.cpp
+    ns2_watch.h
     thread.cpp
     thread.h
     adpf.cpp

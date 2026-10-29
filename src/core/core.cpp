@@ -60,6 +60,7 @@
 #include "core/reporter.h"
 #include "core/tools/freezer.h"
 #include "core/tools/renderdoc.h"
+#include "core/ns2_watchdog.h"
 #include "hid_core/hid_core.h"
 #include "network/network.h"
 #include "video_core/host1x/host1x.h"
@@ -369,6 +370,10 @@ struct System::Impl {
         }
 
         perf_stats.emplace(params.program_id);
+        // Switch 2 titles: report guest/host thread state if the game stops presenting frames.
+        if ((params.program_id >> 56) == 0x04) {
+            ns2_watchdog = std::make_unique<NS2Watchdog>(system);
+        }
         // Reset counters and set time origin to current frame
         GetAndResetPerfStats();
         perf_stats->BeginSystemFrame();
@@ -393,6 +398,7 @@ struct System::Impl {
     }
 
     void ShutdownMainProcess() {
+        ns2_watchdog.reset();
         SetShuttingDown(true);
         Common::ADPF::Shutdown();
 
@@ -482,6 +488,7 @@ struct System::Impl {
     std::optional<Service::KernelHelpers::ServiceContext> general_channel_context;
     std::optional<Service::Event> general_channel_event;
     std::optional<Core::PerfStats> perf_stats;
+    std::unique_ptr<NS2Watchdog> ns2_watchdog;
     std::optional<Tegra::Host1x::Host1x> host1x_core;
     std::optional<Core::DeviceMemory> device_memory;
     std::optional<AudioCore::AudioCore> audio_core;

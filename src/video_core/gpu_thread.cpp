@@ -7,6 +7,7 @@
 #include <chrono>
 #include <thread>
 
+#include "common/ns2_watch.h"
 #include "common/assert.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -40,28 +41,35 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         CommandDataContainer next;
         while (!stop_token.stop_requested()) {
             if (scheduler.HasPendingNativeChannels()) {
+                Common::NS2Watch::SetPhase("GPU thread resuming suspended native channels (polling)");
                 scheduler.ResumePending(system.GPU());
                 if (!state.queue.TryPop(next)) {
                     std::this_thread::sleep_for(std::chrono::milliseconds{1});
                     continue;
                 }
             } else {
+                Common::NS2Watch::ClearPhase();
                 state.queue.PopWait(next, stop_token);
             }
             if (stop_token.stop_requested()) {
                 break;
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                Common::NS2Watch::SetPhase("GPU thread executing command list, channel", nullptr,
+                                           static_cast<u64>(submit_list->channel));
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
+                Common::NS2Watch::SetPhase("GPU thread running sync operations (TickWork)");
                 system.GPU().TickWork();
             } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
+                Common::NS2Watch::SetPhase("GPU thread flushing region", nullptr, flush->addr);
                 renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
             } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
                 renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr, invalidate->size);
             } else {
                 ASSERT(false);
             }
+            Common::NS2Watch::SetPhase("GPU thread between commands");
             state.signaled_fence.store(next.fence);
             if (next.block) {
                 // We have to lock the write_lock to ensure that the condition_variable wait not get a

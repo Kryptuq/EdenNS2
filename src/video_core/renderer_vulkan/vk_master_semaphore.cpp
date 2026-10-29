@@ -7,6 +7,7 @@
 #include <thread>
 
 #include <ranges>
+#include "common/ns2_watch.h"
 #include "common/settings.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -77,6 +78,7 @@ void MasterSemaphore::Refresh() {
 }
 
 void MasterSemaphore::Wait(u64 tick) {
+    Common::NS2Watch::PhaseScope phase{"waiting for host GPU tick", nullptr, tick};
     if (!semaphore) {
         // Fast check: already reached the requested tick?
         if (gpu_tick.load(std::memory_order_acquire) >= tick) {
