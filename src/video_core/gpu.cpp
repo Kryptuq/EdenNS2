@@ -273,6 +273,17 @@ struct GPU::Impl {
                     return;
                 }
                 auto& syncpoint_manager = system.Host1x().GetSyncpointManager();
+                static std::atomic<u32> composite_fence_traces{};
+                const u32 trace_index = composite_fence_traces++;
+                if (trace_index < 48 || trace_index % 120 == 0) {
+                    for (size_t i = 0; i < num_fences; i++) {
+                        const u32 id = composite_fences[i].id;
+                        LOG_INFO(HW_GPU, "Composite #{} waits on fence: syncpoint={}, value={}, guest={}, host={}",
+                                 trace_index, id, composite_fences[i].value,
+                                 syncpoint_manager.GetGuestSyncpointValue(id),
+                                 syncpoint_manager.GetHostSyncpointValue(id));
+                    }
+                }
                 const auto executer = [this, current_request_counter, composite_layers]() {
                     {
                         std::unique_lock<std::mutex> lk(request_swap_mutex);

@@ -799,8 +799,13 @@ template <class P>
 std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImageView(
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
     // TODO: Properly implement this
+    static u32 framebuffer_miss_logs{};
     const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
     if (it == page_table.end()) {
+        if (framebuffer_miss_logs++ < 16) {
+            LOG_WARNING(HW_GPU, "Framebuffer lookup miss: no GPU image on page, address={:#x}, {}x{}",
+                        cpu_addr, config.width, config.height);
+        }
         return {};
     }
     const auto view_format = [&]() {
@@ -859,6 +864,16 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         return GetImageViewForFramebuffer(*most_recent);
     }
 
+    if (framebuffer_miss_logs++ < 16) {
+        LOG_WARNING(HW_GPU, "Framebuffer lookup miss: address={:#x}, {}x{}, view format={}, candidates={}",
+                    cpu_addr, config.width, config.height, view_format, image_map_ids.size());
+        for (const ImageMapId map_id : image_map_ids) {
+            const ImageBase& image = slot_images[slot_map_views[map_id].image_id];
+            LOG_WARNING(HW_GPU, "  candidate image address={:#x}, format={}, size={}x{}, views={}",
+                        image.cpu_addr, image.info.format, image.info.size.width,
+                        image.info.size.height, image.image_view_ids.size());
+        }
+    }
     return {};
 }
 

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <bit>
 #include <array>
+#include <mutex>
 #include "common/alignment.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/core.h"
@@ -131,10 +132,23 @@ private:
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
 public:
     ISyncpointSupervisor(Core::System& system_, std::shared_ptr<Nvidia::Module> module)
-        : ServiceFramework{system_, "ISyncpointSupervisor"}, m_module{std::move(module)} {
+        : ServiceFramework{system_, "ISyncpointSupervisor"}, m_module{std::move(module)},
+          m_context{system_, "SyncpointSupervisor"} {
+        // Waiters re-check counters in the shared syncpoint cache, so a periodic signal
+        // stands in for per-threshold notifications that are not tracked yet.
+        m_timer = Core::Timing::CreateEvent(
+            "SyncpointSupervisor::Poll",
+            [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                std::scoped_lock lock{m_events_mutex};
+                for (auto* event : m_events) {
+                    if (event) event->Signal(kernel);
+                }
+                return std::nullopt;
+            });
         static const FunctionInfo functions[] = {
             {1, &ISyncpointSupervisor::GetMaximumEventCount, "GetMaximumEventCount"},
             {21, &ISyncpointSupervisor::SetEventCount, "SetEventCount"},
+            {22, &ISyncpointSupervisor::GetEvent, "GetEvent"},
             {103, &ISyncpointSupervisor::QueryCounter, "QueryCounter"},
         };
         RegisterHandlersTipc(functions);
@@ -195,8 +209,51 @@ private:
         rb.Push<u32>(0); // Existing NVDRV counters use 32-bit modular comparisons.
     }
 
+    void GetEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (packet[0] == 0x26 && packet[1] == 1 && packet[2] < m_events.size()) {
+            std::scoped_lock lock{m_events_mutex};
+            auto& event = m_events[packet[2]];
+            if (!event) {
+                event = m_context.CreateEvent(fmt::format("SyncpointEvent{}", packet[2]));
+                if (event) event->Signal(kernel);
+            }
+            result = event ? ResultSuccess : Kernel::ResultOutOfResource;
+            if (event) {
+                readable = &event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+            if (event && !m_timer_running) {
+                m_timer_running = true;
+                system.CoreTiming().ScheduleLoopingEvent(std::chrono::milliseconds{1},
+                                                         std::chrono::milliseconds{1}, m_timer);
+            }
+        }
+        LOG_INFO(Service_AM, "syncpoint event index={}, result={:#x}", packet[1] ? packet[2] : 0, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+
+public:
+    ~ISyncpointSupervisor() override {
+        if (m_timer_running) system.CoreTiming().UnscheduleEvent(m_timer);
+        std::scoped_lock lock{m_events_mutex};
+        for (auto* event : m_events) {
+            if (event) m_context.CloseEvent(event);
+        }
+    }
+
+private:
     std::shared_ptr<Nvidia::Module> m_module;
     u32 m_event_count{};
+    KernelHelpers::ServiceContext m_context;
+    std::mutex m_events_mutex;
+    std::array<Kernel::KEvent*, 64> m_events{};
+    std::shared_ptr<Core::Timing::EventType> m_timer;
+    bool m_timer_running{};
 };
 
 class IVi2Session final : public ServiceFramework<IVi2Session> {
@@ -921,6 +978,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {1501, &IGraphicsSupervisor::InitializeImageContext, "InitializeImageContext1501"},
         {435, &IGraphicsSupervisor::CalculateImageRequirements, "CalculateNativeImageSize"},
         {1510, &IGraphicsSupervisor::CalculateImageRequirements, "CalculateImageRequirements"},
+        {991, &IGraphicsSupervisor::CalculateImageRequirements, "CalculateImageRequirements991"},
         {1502, &IGraphicsSupervisor::InitializeImageContext, "InitializeImageContext1502"},
     };
     RegisterHandlersTipc(functions);
@@ -1390,9 +1448,13 @@ void IGraphicsSupervisor::CalculateImageRequirements(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
     std::optional<NativeImageRequirements> requirements;
+    // 435 returns only a size; 1510 and 991 also return the alignment. 991 carries the
+    // same 64-byte descriptor (type 1 or 2) as the other two.
     const bool gpu_image = ctx.GetCommand() == 435;
-    if (packet[0] == (gpu_image ? 0x1c3U : 0x5f6U) && packet[1] == 17 &&
-        packet[3] == (gpu_image ? 1U : 2U)) {
+    const u32 expected_header = 16 + ctx.GetCommand();
+    const bool type_ok = ctx.GetCommand() == 991 ? (packet[3] == 1 || packet[3] == 2)
+                                                 : packet[3] == (gpu_image ? 1U : 2U);
+    if (packet[0] == expected_header && packet[1] == 17 && type_ok) {
         result = Kernel::ResultInvalidState;
         if (m_phase == Phase::Ready && m_image_formats_initialized) {
             requirements = CalculateNativeImageRequirements(std::span{packet + 2, 16}, packet[18]);

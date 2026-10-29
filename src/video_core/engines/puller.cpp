@@ -115,6 +115,14 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
                 break;
             }
         }
+        if (dma_pusher.channel_state.native_abi) {
+            static u32 native_increment_traces{};
+            const u32 trace_index = native_increment_traces++;
+            if (trace_index < 64 || trace_index % 256 == 0) {
+                LOG_INFO(HW_GPU, "Native syncpoint increment #{}: channel={}, syncpoint={}",
+                         trace_index, dma_pusher.channel_state.bind_id, regs.fence_action.syncpoint_id.Value());
+            }
+        }
         dma_pusher.rasterizer->SignalSyncPoint(regs.fence_action.syncpoint_id);
         break;
     default:
@@ -165,7 +173,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                     dma_pusher.rasterizer->ReleaseFences(true);
                     word = ReadNativeSemaphoreWord(dma_pusher, regs.semaphore_address.SemaphoreAddress());
                     static u32 native_wait_traces{};
-                    if (ready() && std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") && native_wait_traces++ < 8) {
+                    if (ready() && native_wait_traces++ < 8) {
                         LOG_WARNING(HW_GPU, "Native semaphore completed after pending GPU fences: address={:#x}, current={}, required={}",
                                     regs.semaphore_address.SemaphoreAddress(), word, regs.semaphore_sequence);
                     }

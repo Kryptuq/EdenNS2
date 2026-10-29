@@ -101,3 +101,8 @@
 - vk_rasterizer.cpp: the first 16 display-source lookups are always logged
   ("Native display source ... accelerated=..."), to tell a black frame from a
   presentation that found no GPU image.
+
+## Build 24
+- ISyncpointSupervisor cmd 22 (GetEvent): returns a per-index event, signaled periodically (1 ms core-timing poll). Fixes the abort around 57 s.
+- IGraphicsSupervisor cmd 991: CalculateImageRequirements variant (17-word request) returning size and alignment.
+- Diagnostics: framebuffer lookup misses in TryFindFramebufferImageView (first 16), composite fence waits (syncpoint/value vs guest/host counters), native syncpoint increments, and semaphore completions are logged without env vars.
