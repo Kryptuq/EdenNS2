@@ -392,6 +392,11 @@ private:
     /// Mark an image as modified from the GPU
     void MarkModification(ImageBase& image) noexcept;
 
+    /// Most recently GPU-modified color image per size (width << 32 | height). Used as a
+    /// presentation fallback for Switch 2 titles whose final copy into the presented image is
+    /// not emulated yet.
+    std::unordered_map<u64, ImageId> last_modified_by_size;
+
     /// Synchronize image aliases, copying data if needed
     void SynchronizeAliases(ImageId image_id);
 

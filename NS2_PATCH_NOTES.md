@@ -129,3 +129,6 @@
 
 ## Build 32
 - Stale display buffers: the game queues 1920x1080 images 3/4, but the compositor kept showing the discarded 1280x720 startup images (memory 4736/4740). BufferQueueProducer::AttachBuffer did not clear the slot's acquire_called flag (Android's attachBuffer does), so the consumer kept its cached GraphicBuffer for the slot. Fixed.
+
+## Build 33
+- The display now gets the real 1920x1080 frames, but nothing GPU-rendered lives at their addresses: the game renders into a separate 1920x1080 image and its final copy/pass into the presented image is not translated yet. Presentation fallback for Switch 2 titles: when the presented image has no GPU content, show the most recently rendered color image of the same size (EDEN_NATIVE_DISPLAY_FALLBACK=0 disables it).
