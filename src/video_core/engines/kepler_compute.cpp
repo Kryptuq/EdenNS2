@@ -306,7 +306,11 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     try {
         rasterizer->DispatchCompute();
     } catch (const Shader::Exception& error) {
-        LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
+        // Rejections repeat on every draw/dispatch; log the first ones and then a sample.
+        static std::atomic<u32> rejection_logs{};
+        if (const u32 n = rejection_logs.fetch_add(1, std::memory_order_relaxed); n < 200 || n % 5000 == 0) {
+            LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
+        }
         // Skip the dispatch so the QMD still completes and the title keeps running.
         return !VideoCommon::NativeStrict();
     }

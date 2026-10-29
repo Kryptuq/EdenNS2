@@ -160,6 +160,22 @@ DAddr NvMap::GetHandleAddress(Handle::Id handle) {
     }
 }
 
+DAddr NvMap::FindPinnedAliasAddress(Handle::Id exclude, VAddr address, u64 size) {
+    if (!address || !size) {
+        return 0;
+    }
+    std::scoped_lock lock(handles_lock);
+    for (const auto& [id, handle] : handles) {
+        if (id == exclude || !handle || !handle->d_address || !handle->address) {
+            continue;
+        }
+        if (address >= handle->address && address + size <= handle->address + handle->size) {
+            return handle->d_address + (address - handle->address);
+        }
+    }
+    return 0;
+}
+
 DAddr NvMap::PinHandle(NvMap::Handle::Id handle, bool low_area_pin) {
     auto handle_description{GetHandle(handle)};
     if (!handle_description) [[unlikely]] {

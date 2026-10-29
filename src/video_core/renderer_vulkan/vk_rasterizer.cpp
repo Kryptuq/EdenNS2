@@ -1028,6 +1028,12 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
 std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
     const Tegra::FramebufferConfig& config, DAddr framebuffer_addr, u32 pixel_stride) {
     if (!framebuffer_addr) {
+        static u32 null_display_traces{};
+        if (null_display_traces < 8 || null_display_traces % 300 == 0) {
+            LOG_WARNING(HW_GPU, "Native display source has no device address ({}x{}); presenting black",
+                        config.width, config.height);
+        }
+        ++null_display_traces;
         return {};
     }
     std::scoped_lock lock{texture_cache.mutex};
