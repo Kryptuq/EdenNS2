@@ -126,3 +126,6 @@
 ## Build 31
 - Black screen: the game presents ~33 fps of 1920x1080 frames, but their native image memory handles are never pinned (the GPU renders through GPU-session handles aliasing the same guest memory), so the display got device address 0 and drew black. nvdisp now resolves an unpinned display handle through the pinned handle covering the same guest memory (NvMap::FindPinnedAliasAddress), which is also where the texture cache keeps the rendered image.
 - Diagnostics: display layer address resolution (first 8, then every 300th frame) and "no device address" warnings; shader rejection logs capped (first 200, then every 5000th).
+
+## Build 32
+- Stale display buffers: the game queues 1920x1080 images 3/4, but the compositor kept showing the discarded 1280x720 startup images (memory 4736/4740). BufferQueueProducer::AttachBuffer did not clear the slot's acquire_called flag (Android's attachBuffer does), so the consumer kept its cached GraphicBuffer for the slot. Fixed.
