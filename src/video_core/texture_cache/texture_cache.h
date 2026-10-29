@@ -800,14 +800,6 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
     // TODO: Properly implement this
     static u32 framebuffer_miss_logs{};
-    const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
-    if (it == page_table.end()) {
-        if ((framebuffer_miss_logs++ < 16 || framebuffer_miss_logs % 300 == 0)) {
-            LOG_WARNING(HW_GPU, "Framebuffer lookup miss: no GPU image on page, address={:#x}, {}x{}",
-                        cpu_addr, config.width, config.height);
-        }
-        return {};
-    }
     const auto view_format = [&]() {
         switch (config.pixel_format) {
         case Service::android::PixelFormat::Rgb565:
@@ -818,6 +810,52 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
             return PixelFormat::A8B8G8R8_UNORM;
         }
     }();
+
+    // Switch 2 presentation fallback: when the presented image has no GPU-rendered content,
+    // show the most recently rendered color image of the same size instead (the game's final
+    // copy into the presented image is often a pass we cannot translate yet).
+    // Disable with EDEN_NATIVE_DISPLAY_FALLBACK=0.
+    const auto try_fallback = [&]() -> std::pair<typename P::ImageView*, bool> {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NATIVE_DISPLAY_FALLBACK");
+            return !value || std::string_view{value} != "0";
+        }();
+        if (!enabled || !config.native_tiling) {
+            return {};
+        }
+        const auto found = last_modified_by_size.find((u64{config.width} << 32) | config.height);
+        if (found == last_modified_by_size.end()) {
+            return {};
+        }
+        const ImageId image_id = found->second;
+        const ImageBase& image = slot_images[image_id];
+        if (image.info.size.width != config.width || image.info.size.height != config.height ||
+            !VideoCore::Surface::IsViewCompatible(image.info.format, view_format, false, true)) {
+            return {};
+        }
+        static u32 fallback_logs{};
+        if (fallback_logs < 4 || fallback_logs % 600 == 0) {
+            LOG_WARNING(HW_GPU, "Presenting fallback image address={:#x} format={} for display address={:#x} ({}x{})",
+                        image.cpu_addr, image.info.format, cpu_addr, config.width, config.height);
+        }
+        ++fallback_logs;
+        ImageViewInfo info{ImageViewType::e2D, view_format};
+        info.x_source = static_cast<u8>(SwizzleSource::R);
+        info.y_source = static_cast<u8>(SwizzleSource::G);
+        info.z_source = static_cast<u8>(SwizzleSource::B);
+        info.w_source = static_cast<u8>(SwizzleSource::OneFloat);
+        return std::make_pair(&slot_image_views[FindOrEmplaceImageView(image_id, info)],
+                              slot_images[image_id].IsRescaled());
+    };
+
+    const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
+    if (it == page_table.end()) {
+        if ((framebuffer_miss_logs++ < 16 || framebuffer_miss_logs % 300 == 0)) {
+            LOG_WARNING(HW_GPU, "Framebuffer lookup miss: no GPU image on page, address={:#x}, {}x{}",
+                        cpu_addr, config.width, config.height);
+        }
+        return try_fallback();
+    }
 
     const auto& image_map_ids = it->second;
     boost::container::small_vector<ImageId, 4> valid_image_ids;
@@ -874,7 +912,7 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
                         image.info.size.height, image.image_view_ids.size());
         }
     }
-    return {};
+    return try_fallback();
 }
 
 template <class P>
@@ -2368,6 +2406,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
+    std::erase_if(last_modified_by_size, [image_id](const auto& entry) { return entry.second == image_id; });
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
@@ -2572,6 +2611,10 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
     }
     if (is_modification) {
         MarkModification(image);
+        if (image.info.type == ImageType::e2D && image.info.resources.levels == 1 &&
+            VideoCore::Surface::GetFormatType(image.info.format) == VideoCore::Surface::SurfaceType::ColorTexture) {
+            last_modified_by_size[(u64{image.info.size.width} << 32) | image.info.size.height] = image_id;
+        }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
 }
