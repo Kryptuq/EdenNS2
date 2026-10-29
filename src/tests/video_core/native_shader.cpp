@@ -3337,7 +3337,20 @@ TEST_CASE("Native reconvergence barriers lower to nothing", "[native-shader]") {
 }
 
 TEST_CASE("Native forms captured from Yoshi menu and gameplay shaders lower", "[native-shader]") {
-    constexpr std::array<Native, 10> forms{{
+    constexpr std::array<Native, 22> forms{{
+        {{0x18177c23, 0x00000004, 0x08010017, 0x000fc600}}, // FFMA with a uniform multiplier
+        {{0x0000781c, 0x00000000, 0x00fa8170, 0x000fe400}}, // PLOP3 !P1 & P4
+        {{0x0000781c, 0x00000000, 0x00f20470, 0x000fe200}}, // PLOP3
+        {{0x19227589, 0x00001e19, 0x00000000, 0x001e2800}}, // SHFL.IDX writing P0
+        {{0x040473a8, 0x00000007, 0x041ee100, 0x00016800}}, // ATOMG.EXCH register address
+        {{0x00017593, 0x20c00001, 0x001ee000, 0x001ea400}}, // SUATOM buffer
+        {{0x020c7593, 0x60c0080c, 0x001ee000, 0x00052200}}, // SUATOM 2D
+        {{0xff087e24, 0x80000005, 0x0f8e02ff, 0x000fe200}}, // IMAD negated uniform addend
+        {{0xff067984, 0x00000c05, 0x08000800, 0x000e2400}}, // LDS uniform address
+        {{0xff007387, 0x00000000, 0x00100c00, 0x0041e800}}, // STL.128
+        {{0xff007387, 0x00000014, 0x00100c00, 0x0041e800}}, // STL.128
+        {{0x07077a11, 0x01000a00, 0x078ffaff, 0x000fc800}}, // LEA.HI.SX32 constant base
+
         {{0x2c2e7f63, 0xb0000820, 0x0c1e0f2c, 0x000f4200}}, // bindless gather, 2D array
         {{0x05007f89, 0x03e01f00, 0x000e0000, 0x004e6400}}, // SHFL.BFLY full warp
         {{0x00057b97, 0xa0c00600, 0x001e0100, 0x000f6200}}, // SULD 3D red
@@ -3376,4 +3389,57 @@ TEST_CASE("Native constant-shift funnel and high LEA compute plain shifts", "[na
     REQUIRE((lowered_lea.instructions[1] >> 48) == 0x5c10);
     REQUIRE(((lowered_lea.instructions[1] >> 20) & 0xff) == 2);
     REQUIRE((lowered_lea.instructions[1] & 0xff) == 1);
+}
+
+TEST_CASE("Native predicate LUTs evaluate any sources, negations and tables", "[native-shader]") {
+    u32 seed = 0x12345678;
+    const auto next = [&] { seed = seed * 1664525U + 1013904223U; return seed >> 8; };
+    for (u32 round = 0; round < 64; ++round) {
+        const u32 lut = round < 2 ? (round ? 0x08U : 0x96U) : next() & 0xff;
+        const std::array<u32, 3> sources{round < 2 ? 1U : next() & 0xf, round < 2 ? 4U : next() & 0xf,
+                                         round < 2 ? 7U : next() & 0xf};
+        const u32 target = round < 2 ? 5U : next() % 7;
+        const u32 w2 = (lut & 7) | (sources[2] << 4) | ((lut >> 3) << 8) | (sources[1] << 13) |
+                       (target << 17) | (7U << 20) | (sources[0] << 23);
+        const std::array<Native, 2> input{{{{0x0000781c, 0, w2, 0x000fe200}}, VertexTransform.back()}};
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateScalarNative(input, block);
+        for (u32 bits = 0; bits < 128; ++bits) {
+            ScalarNativeMachine machine;
+            for (u32 i = 0; i < 7; ++i) machine.predicates[i] = (bits >> i) & 1;
+            auto expected = machine.predicates;
+            u32 entry = 0;
+            for (u32 i = 0; i < 3; ++i) {
+                const u32 p = sources[i] & 7;
+                const bool value = (p == 7 ? true : bool(expected[p])) != bool(sources[i] >> 3);
+                entry |= u32{value} << (2 - i);
+            }
+            expected[target] = (lut >> entry) & 1;
+            machine.Execute(block);
+            INFO("lut " << lut << " sources " << sources[0] << "," << sources[1] << "," << sources[2] << " target " << target);
+            REQUIRE(machine.predicates == expected);
+        }
+    }
+}
+
+TEST_CASE("Native LDS with a uniform base and IMAD with a negated uniform addend compute", "[native-shader]") {
+    // LDS R6, [UR5 + 0xc]: the address register is the uniform bank slot of UR5.
+    const std::array<Native, 2> lds{{{{0xff067984, 0x00000c05, 0x08000800, 0x000e2400}}, VertexTransform.back()}};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(lds);
+    REQUIRE(lowered);
+    const u64 load = lowered.instructions[0];
+    REQUIRE((load >> 51) == (0xef48000000000000ULL >> 51));
+    REQUIRE((load & 0xff) == 6);
+    REQUIRE(((load >> 8) & 0xff) == 216 + 5);
+    REQUIRE(((load >> 20) & 0xffffff) == 0xc);
+    // IMAD R8 = RZ * RZ - UR5 -> R8 = -UR5.
+    const std::array<Native, 2> imad{{{{0xff087e24, 0x80000005, 0x0f8e02ff, 0x000fe200}}, VertexTransform.back()}};
+    Shader::ObjectPool<IR::Inst> pool;
+    IR::Block block{pool};
+    TranslateScalarNative(imad, block);
+    ScalarNativeMachine machine;
+    machine.regs[216 + 5] = 7;
+    machine.Execute(block);
+    REQUIRE(machine.regs[8] == 0U - 7U);
 }

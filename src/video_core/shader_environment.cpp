@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <string>
+#include <string_view>
 #include <set>
 #include <mutex>
 #include <algorithm>
@@ -335,8 +336,12 @@ void LogRejectedNativeShader(const std::vector<Shader::Ampere::Instruction>& nat
         std::scoped_lock lock{mutex};
         if (logged.size() >= 256 || !logged.insert(key).second) return;
     }
-    // The full program listing is large (captures can run into padding), so it is opt-in.
-    static const bool dump_programs = std::getenv("EDEN_NATIVE_SHADER_DUMP") != nullptr;
+    // The full program listing lets every missing lowering in a shader be found from one
+    // log (each program is listed once). EDEN_NATIVE_SHADER_DUMP=0 turns it off.
+    static const bool dump_programs = [] {
+        const char* value = std::getenv("EDEN_NATIVE_SHADER_DUMP");
+        return value == nullptr || std::string_view{value} != "0";
+    }();
     const size_t failing = error_offset / sizeof(Shader::Ampere::Instruction);
     if (failing < native.size()) {
         const auto& w = native[failing].words;

@@ -172,3 +172,9 @@
 - BSSY/BSYNC/BREAK are no-ops (from Eglantine): Eden runs invocations independently, and barrier numbering no longer rejects shaders. EXIT with an extra condition predicate is supported.
 - From Eglantine: UMOV from URZ, SHFL with any mode, ATOMG at a register address (and offsets for the uniform form), SULD with channel masks and 2D-array/3D, SUST 2D arrays.
 - New: SHF.HI with a constant-buffer shift amount and a zero low word, LEA.HI with a register base.
+
+## Build 45
+- Build 44 log: the graphics shader rejected every frame (200 times) now stops at a predicate LUT (PLOP3 `!P1 & P4`).
+- PLOP3 (0x81c) on regular predicates now lowers in general: PT/negations folded into the table, evaluated with P2R + LOP3 and written back with R2P (tested against every table for random sources).
+- New/extended: SHFL.IDX writing its in-bounds predicate, ATOMG operations other than ADD (EXCH etc.), surface atomic add (0x593, inferred encoding), IMAD with a negated uniform addend, LDS through a uniform base, 64/128-bit local spills, LEA.HI with a constant base and .SX32, FFMA with a uniform operand (0xc23, from Eglantine).
+- Rejected shaders are now listed in full in the log (once each; `EDEN_NATIVE_SHADER_DUMP=0` turns it off), so all missing instructions of a shader can be worked out from a single log instead of one per test round.
