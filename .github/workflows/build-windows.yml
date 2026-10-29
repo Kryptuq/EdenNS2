@@ -76,13 +76,10 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          # Qt is linked statically, so eden.exe is self-contained apart from the
+          # Visual C++ runtime (installed on most PCs; same as other Eden builds).
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item -Recurse build/bin/* dist/
-          Get-ChildItem dist -Recurse -Include *.pdb,*.lib,*.exp,*.ilk | Remove-Item -Force
-          # Include the Visual C++ runtime so eden.exe starts without installing it separately
-          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
-          if ($crt) { Copy-Item "$($crt.FullName)\*.dll" dist/ }
-          Copy-Item NS2_PATCH_NOTES.md dist/
+          Copy-Item build/bin/eden.exe dist/
           Get-ChildItem dist | Select-Object Name, Length
 
       - name: Upload
@@ -107,5 +104,6 @@ jobs:
           body: |
             Windows x64 build of Eden with the experimental NS2 (Switch 2) patch, built from ${{ github.sha }}.
 
-            Unzip and run `eden.exe`. The Qt libraries and the Visual C++ runtime are included.
+            Unzip and run `eden.exe` (single file, Qt built in). If Windows reports a missing MSVCP140/VCRUNTIME140 DLL, install the Microsoft Visual C++ Redistributable (x64).
+            Optional portable mode: create an empty `user` folder next to `eden.exe` to keep settings, keys and logs there instead of %APPDATA%\eden.
             Experimental: Switch 2 titles will most likely not run, and regular Switch games may behave differently than in stock Eden.
