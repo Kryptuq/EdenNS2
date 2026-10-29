@@ -493,8 +493,8 @@ TEST_CASE("Native scalar texture sampling preserves coordinates and split output
     std::ranges::sort(reads);
     REQUIRE(reads == std::vector<u32>{4, 5});
     REQUIRE(writes == std::vector<u32>{0, 1, 2, 3});
-    // Reject unsupported LOD modes, a different cbuf bank, and sparse results.
-    for (u32 bit : {89U, 54U, 81U}) {
+    // Reject unsupported LOD modes and sparse results.
+    for (u32 bit : {89U, 81U}) {
         auto unsupported = input;
         unsupported[0].words[bit / 32] ^= 1U << (bit % 32);
         const auto rejected = Shader::Ampere::LowerToMaxwell(unsupported);
@@ -2854,9 +2854,11 @@ TEST_CASE("Native formatted surface loads retain red data coordinates descriptor
     }
     REQUIRE(loads == 1);
     REQUIRE(writes == 1);
-    auto invalid = input;
-    invalid[0].words[2] ^= 0x200; // Reject other channel masks until implemented.
-    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(invalid));
+    auto two_channels = input;
+    two_channels[0].words[2] ^= 0x200; // Red and green go to consecutive registers.
+    const auto lowered_channels = Shader::Ampere::LowerToMaxwell(two_channels);
+    REQUIRE(lowered_channels);
+    REQUIRE(((lowered_channels.instructions[0] >> 20) & 0xf) == 3);
 }
 
 TEST_CASE("Native volume texel fetch preserves XYZ LOD descriptor and split RGBA outputs", "[native-shader]") {
@@ -3278,4 +3280,100 @@ TEST_CASE("Native constant interpolation retains attribute and flat input behavi
         }
     }
     REQUIRE(reads == 1);
+}
+
+TEST_CASE("Native bindless sampling with offsets gathers coordinates handle and offset", "[native-shader]") {
+    // TEX.B.LZ.AOFFI 2D RGB: XY in R8/R9, offsets in R19, handle in U4, outputs R10, R11, R5.
+    const std::array<Native, 2> input{{{{0x080a7f60, 0x30000413, 0x089e1705, 0x100f4200}}, VertexTransform.back()}};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    REQUIRE(lowered);
+    std::unordered_map<u32, u32> moves;
+    u64 sample = 0;
+    std::vector<std::pair<u32, u32>> outputs;
+    for (const u64 raw : lowered.instructions) {
+        if ((raw >> 52) == 0x5c9) {
+            const u32 target = raw & 0xff, source = (raw >> 20) & 0xff;
+            if (sample) outputs.emplace_back(target, source); else moves[target] = source;
+        } else if ((raw >> 54) == (0xde80000000000000ULL >> 54)) {
+            sample = raw;
+        }
+    }
+    REQUIRE(sample != 0);
+    REQUIRE(moves.at(250) == 8);
+    REQUIRE(moves.at(251) == 9);
+    REQUIRE(moves.at(246) == 220);
+    REQUIRE(moves.at(247) == 19);
+    REQUIRE(outputs == std::vector<std::pair<u32, u32>>{{10, 250}, {11, 251}, {5, 252}});
+    Shader::ObjectPool<IR::Inst> pool;
+    IR::Block block{pool};
+    EmptyEnvironment env;
+    Shader::Maxwell::TranslatorVisitor visitor{env, block};
+    visitor.TEX_b(sample);
+    u32 samples = 0;
+    for (const auto& inst : block.Instructions()) {
+        if (inst.GetOpcode() != IR::Opcode::BindlessImageSampleExplicitLod) continue;
+        ++samples;
+        REQUIRE(inst.Flags<IR::TextureInstInfo>().type == Shader::TextureType::Color2D);
+        REQUIRE(inst.Arg(0).Inst()->Arg(0).Reg() == IR::Reg{246});
+        REQUIRE(!inst.Arg(3).IsEmpty());
+    }
+    REQUIRE(samples == 1);
+}
+
+TEST_CASE("Native reconvergence barriers lower to nothing", "[native-shader]") {
+    // BSSY B1, BREAK B2, BSYNC B1, EXIT: only the exit remains.
+    const std::array<Native, 4> input{{
+        {{0x00017945, 0x00000010, 0x03800000, 0x000fe200}},
+        {{0x00028942, 0x00000000, 0x03800000, 0x000fe200}},
+        {{0x00017941, 0x00000000, 0x03800000, 0x000fea00}},
+        VertexTransform.back(),
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    REQUIRE(lowered);
+    for (const u64 raw : lowered.instructions) {
+        REQUIRE((raw >> 52) != 0xe29);
+        REQUIRE((raw >> 52) != 0xf0f);
+    }
+}
+
+TEST_CASE("Native forms captured from Yoshi menu and gameplay shaders lower", "[native-shader]") {
+    constexpr std::array<Native, 10> forms{{
+        {{0x2c2e7f63, 0xb0000820, 0x0c1e0f2c, 0x000f4200}}, // bindless gather, 2D array
+        {{0x05007f89, 0x03e01f00, 0x000e0000, 0x004e6400}}, // SHFL.BFLY full warp
+        {{0x00057b97, 0xa0c00600, 0x001e0100, 0x000f6200}}, // SULD 3D red
+        {{0x0c009b9b, 0x80c00804, 0x00100f00, 0x0001e200}}, // SUST 2D array
+        {{0x00047c82, 0x0000003f, 0x08000000, 0x000fe200}}, // UMOV from URZ
+        {{0x00028942, 0x00000000, 0x03800000, 0x000fe200}}, // BREAK
+        {{0xff077a19, 0x01000300, 0x00010e04, 0x000fc600}}, // SHF.L.W.U32.HI constant shift
+        {{0xff207a19, 0x01005200, 0x00011e20, 0x000fc600}}, // SHF.R.W.U32.HI constant shift
+        {{0x01017211, 0x00000002, 0x078fc8ff, 0x001fe200}}, // LEA.HI with a register base
+        {{0x0000094d, 0x00000000, 0x01800000, 0x000fea00}}, // EXIT under an extra predicate
+    }};
+    for (const auto& form : forms) {
+        const std::array<Native, 2> input{{form, VertexTransform.back()}};
+        INFO("form " << std::hex << form.words[0]);
+        REQUIRE(Shader::Ampere::LowerToMaxwell(input));
+    }
+}
+
+TEST_CASE("Native constant-shift funnel and high LEA compute plain shifts", "[native-shader]") {
+    // SHF.R.W.U32.HI R32, RZ, c[4][0x148], R32 -> SHR (wrapped) of R32 by the constant.
+    const std::array<Native, 2> shf{{{{0xff207a19, 0x01005200, 0x00011e20, 0x000fc600}}, VertexTransform.back()}};
+    const auto lowered_shf = Shader::Ampere::LowerToMaxwell(shf);
+    REQUIRE(lowered_shf);
+    const u64 shr = lowered_shf.instructions[1];
+    REQUIRE((lowered_shf.instructions[0] >> 52) == 0x4c9); // constant loaded to scratch
+    REQUIRE((shr >> 48) == 0x5c28);
+    REQUIRE((shr & 0xff) == 0x20);
+    REQUIRE(((shr >> 8) & 0xff) == 0x20);
+    REQUIRE(((shr >> 39) & 1) == 1);
+    // LEA.HI R1, R1, R2, RZ, 25 -> R1 = R2 + (R1 >> 7).
+    const std::array<Native, 2> lea{{{{0x01017211, 0x00000002, 0x078fc8ff, 0x001fe200}}, VertexTransform.back()}};
+    const auto lowered_lea = Shader::Ampere::LowerToMaxwell(lea);
+    REQUIRE(lowered_lea);
+    REQUIRE((lowered_lea.instructions[0] >> 48) == 0x3828);
+    REQUIRE(((lowered_lea.instructions[0] >> 20) & 0x7ffff) == 7);
+    REQUIRE((lowered_lea.instructions[1] >> 48) == 0x5c10);
+    REQUIRE(((lowered_lea.instructions[1] >> 20) & 0xff) == 2);
+    REQUIRE((lowered_lea.instructions[1] & 0xff) == 1);
 }

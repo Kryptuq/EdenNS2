@@ -164,3 +164,11 @@
 
 ## Build 43
 - Real movie decoding: the nn::codec decoder service now decodes H.264 with FFmpeg (new `video_core/host1x/ns2_video_decoder`). The codec configuration from command 101 (avcC) opens the decoder, each frame from 109 is decoded to RGBA, swizzled into the Switch 2 block-linear layout of the registered output image and written to guest memory, so the title and menu background movies should become visible. When the decoder has no new picture (start-up delay), the previous one is repeated. Logged as "NS2 video: ..." and "video decoder: picture ... written to image ...".
+
+## Build 44
+- Build 43 log: H.264 movie frames decode (1920x1080) and are written to the decoder output images, but the menu shaders that draw them were rejected (bindless TEX with offsets, BSSY with barrier B1/B3).
+- Bindless TEX (0xf60) now lowers in general form: any dimension, LOD/bias, AOFFI offsets and depth compare, using the native operand packing (Ra/Rb halves). Bindless gather (0xf63) accepts 2D arrays.
+- Bound TEX falls back to Eglantine's general form (other descriptor banks, offsets, more dimensions).
+- BSSY/BSYNC/BREAK are no-ops (from Eglantine): Eden runs invocations independently, and barrier numbering no longer rejects shaders. EXIT with an extra condition predicate is supported.
+- From Eglantine: UMOV from URZ, SHFL with any mode, ATOMG at a register address (and offsets for the uniform form), SULD with channel masks and 2D-array/3D, SUST 2D arrays.
+- New: SHF.HI with a constant-buffer shift amount and a zero low word, LEA.HI with a register base.
