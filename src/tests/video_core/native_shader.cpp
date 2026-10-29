@@ -625,6 +625,10 @@ TEST_CASE("Native half packing and arithmetic preserve lane order numerically", 
         case Opcode::SHR_imm: visitor.SHR_imm(word); break;
         case Opcode::LOP32I: visitor.LOP32I(word); break;
         case Opcode::MOV_reg: visitor.MOV_reg(word); break;
+        case Opcode::BFE_imm: visitor.BFE_imm(word); break;
+        case Opcode::SHL_imm: visitor.SHL_imm(word); break;
+        case Opcode::LOP_reg: visitor.LOP_reg(word); break;
+        case Opcode::LOP3_reg: visitor.LOP3_reg(word); break;
         case Opcode::EXIT: break;
         default: FAIL("Unexpected canonical half instruction");
         }
@@ -683,7 +687,26 @@ TEST_CASE("Native half packing and arithmetic preserve lane order numerically", 
         case IR::Opcode::SelectU32: values[&inst] = arg(0) ? arg(1) : arg(2); break;
         case IR::Opcode::IAdd32: values[&inst] = static_cast<u32>(arg(0) + arg(1)); break;
         case IR::Opcode::ShiftLeftLogical32: values[&inst] = static_cast<u32>(arg(0) << arg(1)); break;
-        default: FAIL("Unexpected IR operation in half arithmetic");
+        case IR::Opcode::BitwiseOr32: values[&inst] = arg(0) | arg(1); break;
+        case IR::Opcode::BitFieldUExtract: values[&inst] = (static_cast<u32>(arg(0)) >> arg(1)) & ((1ULL << arg(2)) - 1); break;
+        case IR::Opcode::BitFieldSExtract: {
+            const u32 field = static_cast<u32>((static_cast<u32>(arg(0)) >> arg(1)) & ((1ULL << arg(2)) - 1));
+            const u32 sign = 1U << (arg(2) - 1);
+            values[&inst] = static_cast<u32>((field ^ sign) - sign);
+            break;
+        }
+        case IR::Opcode::BitFieldInsert: {
+            const u32 mask = static_cast<u32>(((1ULL << arg(3)) - 1) << arg(2));
+            values[&inst] = (static_cast<u32>(arg(0)) & ~mask) | ((static_cast<u32>(arg(1)) << arg(2)) & mask);
+            break;
+        }
+        case IR::Opcode::IEqual: values[&inst] = arg(0) == arg(1); break;
+        case IR::Opcode::INotEqual: values[&inst] = arg(0) != arg(1); break;
+        case IR::Opcode::UGreaterThanEqual: values[&inst] = static_cast<u32>(arg(0)) >= static_cast<u32>(arg(1)); break;
+        case IR::Opcode::SelectU1: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+        case IR::Opcode::LogicalOr: values[&inst] = arg(0) || arg(1); break;
+        case IR::Opcode::LogicalAnd: values[&inst] = arg(0) && arg(1); break;
+        default: FAIL("Unexpected IR operation in half arithmetic " << IR::NameOf(inst.GetOpcode()));
         }
     }
     REQUIRE(regs[2] == 0x44003c00);
@@ -1658,6 +1681,110 @@ TEST_CASE("Native predicated NOINC calls lower to forward branches", "[native-sh
     backward[0].words[1] = 0xfffffff0; // backward calls are not branches
     backward[0].words[2] = 0x03c3ffff;
     REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(backward));
+}
+
+TEST_CASE("Native uniform LOP3 immediate and full WARPSYNC lower", "[native-shader]") {
+    const std::array<Native, 3> source{{
+        {{0x04047892, 0x00000007, 0x0f8ec03f, 0x000fc400}}, // ULOP3.LUT U4, U4, 0x7, URZ, 0xc0
+        {{0x00007948, 0xffffffff, 0x03800000, 0x000fe200}}, // WARPSYNC 0xffffffff
+        VertexTransform.back(),
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(source);
+    REQUIRE(lowered);
+    bool saw_lop3 = false;
+    for (const u64 word : lowered.instructions) {
+        if (Shader::Maxwell::Decode(word) != Shader::Maxwell::Opcode::LOP3_reg) continue;
+        saw_lop3 = true;
+        REQUIRE((word & 0xff) == 216 + 4);          // U4 -> R220
+        REQUIRE(((word >> 8) & 0xff) == 216 + 4);
+        REQUIRE(((word >> 28) & 0xff) == 0xc0);
+        REQUIRE(((word >> 39) & 0xff) == 255);
+    }
+    REQUIRE(saw_lop3);
+    auto partial = source;
+    partial[1].words[1] = 0x0000ffff;
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(partial));
+}
+
+TEST_CASE("Native PRMT selects and sign-replicates arbitrary bytes", "[native-shader]") {
+    constexpr u32 in_a = 0x80127f34, in_c = 0x56f8a9cb;
+    std::array<u32, 12> selectors{0x7604, 0x5410, 0x7632, 0x3210, 0x0123, 0x4444, 0xba98, 0x8f1e, 0x7654, 0x0000, 0xffff, 0x9c3a};
+    for (const u32 selector : selectors) {
+        const std::array<Native, 2> input{{
+            {{0x02077816, selector, 0x00000003, 0}}, // PRMT R7, R2, selector, R3
+            VertexTransform.back(),
+        }};
+        const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+        REQUIRE(lowered);
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        EmptyEnvironment env;
+        Shader::Maxwell::TranslatorVisitor visitor{env, block};
+        for (const auto word : lowered.instructions) {
+            using Shader::Maxwell::Opcode;
+            switch (Shader::Maxwell::Decode(word)) {
+            case Opcode::BFE_imm: visitor.BFE_imm(word); break;
+            case Opcode::LOP32I: visitor.LOP32I(word); break;
+            case Opcode::SHL_imm: visitor.SHL_imm(word); break;
+            case Opcode::LOP_reg: visitor.LOP_reg(word); break;
+            case Opcode::MOV_reg: visitor.MOV_reg(word); break;
+            case Opcode::EXIT: break;
+            default: FAIL("Unexpected PRMT lowering");
+            }
+        }
+        std::array<u32, 256> regs{};
+        regs[2] = in_a; regs[3] = in_c;
+        std::unordered_map<const IR::Inst*, u32> values;
+        const auto get = [&](const IR::Value& value) -> u32 {
+            if (!value.IsImmediate()) return values.at(value.Inst());
+            return value.Type() == IR::Type::U1 ? static_cast<u32>(value.U1()) : value.U32();
+        };
+        for (const auto& inst : block.Instructions()) {
+            const auto arg = [&](size_t i) { return get(inst.Arg(i)); };
+            switch (inst.GetOpcode()) {
+            case IR::Opcode::GetRegister: values[&inst] = regs[static_cast<u32>(inst.Arg(0).Reg())]; break;
+            case IR::Opcode::SetRegister: regs[static_cast<u32>(inst.Arg(0).Reg())] = arg(1); break;
+            case IR::Opcode::BitFieldUExtract: values[&inst] = (arg(0) >> arg(1)) & ((1ULL << arg(2)) - 1); break;
+            case IR::Opcode::BitFieldSExtract: {
+                const u32 field = (arg(0) >> arg(1)) & ((1ULL << arg(2)) - 1);
+                const u32 sign = 1U << (arg(2) - 1);
+                values[&inst] = (field ^ sign) - sign;
+                break;
+            }
+            case IR::Opcode::BitFieldInsert: {
+                const u32 mask = static_cast<u32>(((1ULL << arg(3)) - 1) << arg(2));
+                values[&inst] = (arg(0) & ~mask) | ((arg(1) << arg(2)) & mask);
+                break;
+            }
+            case IR::Opcode::ShiftLeftLogical32: values[&inst] = arg(0) << arg(1); break;
+            case IR::Opcode::ShiftRightLogical32: values[&inst] = arg(0) >> arg(1); break;
+            case IR::Opcode::BitwiseAnd32: values[&inst] = arg(0) & arg(1); break;
+            case IR::Opcode::BitwiseOr32: values[&inst] = arg(0) | arg(1); break;
+            case IR::Opcode::BitwiseXor32: values[&inst] = arg(0) ^ arg(1); break;
+            case IR::Opcode::INotEqual: values[&inst] = arg(0) != arg(1); break;
+            case IR::Opcode::IEqual: values[&inst] = arg(0) == arg(1); break;
+            case IR::Opcode::SLessThan: values[&inst] = static_cast<s32>(arg(0)) < static_cast<s32>(arg(1)); break;
+            case IR::Opcode::ULessThan: values[&inst] = arg(0) < arg(1); break;
+            case IR::Opcode::UGreaterThanEqual: values[&inst] = arg(0) >= arg(1); break;
+            case IR::Opcode::IAdd32: values[&inst] = arg(0) + arg(1); break;
+            case IR::Opcode::SelectU32: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+            case IR::Opcode::SelectU1: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+            case IR::Opcode::LogicalOr: values[&inst] = arg(0) || arg(1); break;
+            case IR::Opcode::LogicalAnd: values[&inst] = arg(0) && arg(1); break;
+            default: FAIL("Unexpected PRMT IR " << IR::NameOf(inst.GetOpcode()));
+            }
+        }
+        const u64 bytes = (u64{in_c} << 32) | in_a;
+        u32 expected = 0;
+        for (u32 i = 0; i < 4; ++i) {
+            const u32 nibble = (selector >> (4 * i)) & 0xf;
+            u32 byte = static_cast<u32>((bytes >> (8 * (nibble & 7))) & 0xff);
+            if (nibble & 8) byte = (byte & 0x80) ? 0xff : 0;
+            expected |= byte << (8 * i);
+        }
+        INFO("selector=" << std::hex << selector);
+        REQUIRE(regs[7] == expected);
+    }
 }
 
 TEST_CASE("Native register-to-predicate writes only masked predicate bits", "[native-shader]") {
