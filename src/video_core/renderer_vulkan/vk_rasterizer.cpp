@@ -1034,7 +1034,9 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
     const auto [image_view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, framebuffer_addr);
     static u32 display_trace_count{};
-    if (std::getenv("EDEN_NATIVE_FRAME_CAPTURE") && display_trace_count++ < 64) {
+    // The first frames are always traced so a black screen can be told apart from a
+    // presentation lookup that found no GPU image (accelerated=false).
+    if ((display_trace_count < 16 || std::getenv("EDEN_NATIVE_FRAME_CAPTURE")) && display_trace_count++ < 64) {
         LOG_INFO(HW_GPU, "Native display source: address={:#x}, offset={:#x}, dimensions={}x{}, stride={}, accelerated={}, mask={:#x}",
                  framebuffer_addr, config.offset, config.width, config.height, pixel_stride,
                  image_view != nullptr, config.layer_stack_mask);

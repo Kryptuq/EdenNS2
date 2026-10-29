@@ -98,3 +98,6 @@
 - lower_to_maxwell.h: UBREV/UPOPC (0x2be/0x2bf), I2F from 8/16/32-bit sources with
   byte/half selection and uniform sources (0x306/0xd06), VOTE (0x806). 33 of 69
   logged programs now lower and translate.
+- vk_rasterizer.cpp: the first 16 display-source lookups are always logged
+  ("Native display source ... accelerated=..."), to tell a black frame from a
+  presentation that found no GPU image.
