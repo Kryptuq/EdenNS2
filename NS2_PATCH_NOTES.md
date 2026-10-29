@@ -144,3 +144,7 @@
   - ULOP3 with an immediate (0x892) reuses the LOP3 lowering via the uniform register remap.
   - WARPSYNC with a full mask (0x948) is a no-op for per-thread translation.
   - PRMT (default mode): any byte selector, including sign replication, built from per-byte BFE/SHL/LOP (Maxwell PRMT is not implemented in the frontend). Numerically tested; the older half-word concatenation selectors go through the same path.
+
+## Build 36
+- Profile menu renders; selecting New Game freezes at "Loading...": the AM service thread stops answering at 223 s (last calls SetFocusHandlingMode/SetOutOfFocusSuspendingEnabled), so presents stop and the movie decoder thread waits forever on decoder command 213.
+- Diagnostics: every HLE request is tracked by the hang watchdog (service and command, including domain objects), deferred HLE requests are logged, and decoder service commands are sampled per command (first 16, then every 1000th) instead of a global 400-line cap.

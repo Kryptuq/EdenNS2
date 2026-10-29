@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <unordered_map>
 #include <atomic>
 #include <bit>
 #include <array>
@@ -113,14 +114,15 @@ public:
         const auto* packet = ctx.CommandBuffer();
         const u32 command = ctx.GetCommand();
         const u32 words = (std::min)(packet[1] & 0x3ffU, 24U);
-        if (m_logged < 400) {
-            ++m_logged;
+        // Per-command sampling: polling commands (e.g. 213) would otherwise use up the budget.
+        const u32 seen = m_command_counts[command]++;
+        if (seen < 16 || seen % 1000 == 0) {
             std::string data;
             for (u32 i = 0; i < words; ++i) {
                 data += fmt::format("{:08x} ", packet[2 + i]);
             }
-            LOG_WARNING(Service_AM, "(STUBBED) video {} service command={} header={:08x}/{:08x} data={}",
-                        m_encoder ? "encoder" : "decoder", command, packet[0], packet[1], data);
+            LOG_WARNING(Service_AM, "(STUBBED) video {} service command={} (#{}) header={:08x}/{:08x} data={}",
+                        m_encoder ? "encoder" : "decoder", command, seen, packet[0], packet[1], data);
         }
 
         if (!m_encoder && command == 3) {
@@ -155,7 +157,7 @@ public:
 
 private:
     bool m_encoder;
-    u32 m_logged{};
+    std::unordered_map<u32, u32> m_command_counts;
     KernelHelpers::ServiceContext m_context;
     Kernel::KEvent* m_event{};
 };

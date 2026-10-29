@@ -384,6 +384,14 @@ Result ServerManager::CompleteSyncRequest(Session* session) {
 
     // If we've been deferred, we're done.
     if (session->GetContext()->GetIsDeferred()) {
+        static u32 deferred_logs{};
+        if (deferred_logs < 64 || deferred_logs % 1000 == 0) {
+            const auto& manager = session->GetManager();
+            LOG_INFO(Service, "HLE request deferred: {} cmd={}",
+                     manager->HasSessionHandler() ? manager->SessionHandler().GetDebugName() : "domain",
+                     session->GetContext()->GetCommand());
+        }
+        ++deferred_logs;
         // Insert into deferred session list.
         std::scoped_lock ll{m_deferred_list_mutex};
         m_deferred_sessions.push_back(session);
