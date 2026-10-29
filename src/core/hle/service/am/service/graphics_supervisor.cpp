@@ -183,7 +183,8 @@ private:
     };
 
     void Reply(HLERequestContext& ctx, std::initializer_list<u32> data) {
-        IPC::ResponseBuilder rb{ctx, static_cast<u32>(1 + data.size())};
+        // Size counts the result word plus one (as the other TIPC replies here: {ctx, 2} = result).
+        IPC::ResponseBuilder rb{ctx, static_cast<u32>(2 + data.size())};
         rb.Push(ResultSuccess.raw);
         for (const u32 word : data) {
             rb.Push<u32>(word);
