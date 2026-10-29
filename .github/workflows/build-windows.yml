@@ -78,20 +78,20 @@ jobs:
         run: |
           # Qt is linked statically, so eden.exe is self-contained apart from the
           # Visual C++ runtime (installed on most PCs; same as other Eden builds).
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build/bin/eden.exe dist/
-          Get-ChildItem dist | Select-Object Name, Length
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item build/bin/eden.exe release/
+          Get-ChildItem release | Select-Object Name, Length
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: eden-ns2-windows-x64
-          path: dist/
+          path: release/
           retention-days: 30
 
       - name: Zip for release
         shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath eden-ns2-windows-x64.zip
+        run: Compress-Archive -Path release/* -DestinationPath eden-ns2-windows-x64.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
