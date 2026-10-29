@@ -10,6 +10,7 @@
 
 #include <boost/range/algorithm_ext/erase.hpp>
 
+#include "common/ns2_watch.h"
 #include "common/assert.h"
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -30,7 +31,7 @@
 namespace Service {
 
 SessionRequestHandler::SessionRequestHandler(Kernel::KernelCore& kernel_, const char* service_name_)
-    : kernel{kernel_} {}
+    : kernel{kernel_}, debug_name{service_name_} {}
 
 SessionRequestHandler::~SessionRequestHandler() = default;
 
@@ -66,6 +67,9 @@ Result SessionRequestManager::CompleteSyncRequest(Kernel::KServerSession* server
             // If there is no domain header, the regular session handler is used
         } else if (this->HasSessionHandler()) {
             // If this manager has an associated HLE handler, forward the request to it.
+            const std::string phase_detail =
+                fmt::format("{} cmd={}", this->SessionHandler().GetDebugName(), context.GetCommand());
+            Common::NS2Watch::PhaseScope phase{"handling HLE request", phase_detail.c_str()};
             result = this->SessionHandler().HandleSyncRequest(*server_session, context);
         }
     } else {
@@ -106,6 +110,9 @@ Result SessionRequestManager::HandleDomainSyncRequest(Kernel::KServerSession* se
             return ResultSuccess; // Ignore error if asserts are off
         }
         if (auto strong_ptr = this->DomainHandler(object_id - 1).lock()) {
+            const std::string phase_detail =
+                fmt::format("{} cmd={} (domain)", strong_ptr->GetDebugName(), context.GetCommand());
+            Common::NS2Watch::PhaseScope phase{"handling HLE request", phase_detail.c_str()};
             return strong_ptr->HandleSyncRequest(*server_session, context);
         } else {
             ASSERT(false);
