@@ -148,7 +148,7 @@ private:
             m_devices->events[packet[17]]) {
             result = MapMemory(packet, selected_kind);
             m_devices->events[packet[17]]->Signal(kernel);
-            LOG_INFO(Service_AM, "GPU map4K as={}, memory={}, VA={:#x}..{:#x}, permission={}, cache={}, kinds={:#x}/{:#x}, mode={}, sync={}, notification={}, selected={:#x}, result={:#x}",
+            LOG_DEBUG(Service_AM, "GPU map4K as={}, memory={}, VA={:#x}..{:#x}, permission={}, cache={}, kinds={:#x}/{:#x}, mode={}, sync={}, notification={}, selected={:#x}, result={:#x}",
                       packet[2], packet[7], ReadPair(packet, 3), ReadPair(packet, 5), packet[10],
                       packet[11], packet[12], packet[13], packet[14], packet[16], packet[17], selected_kind, result.raw);
         }
@@ -183,7 +183,7 @@ private:
             }
             m_devices->events[packet[10]]->Signal(kernel);
         }
-        LOG_INFO(Service_AM, "GPU modify4K as={}, VA={:#x}..{:#x}, kinds={:#x}/{:#x}, sync={}, notification={}, selected={}, result={:#x}",
+        LOG_DEBUG(Service_AM, "GPU modify4K as={}, VA={:#x}..{:#x}, kinds={:#x}/{:#x}, sync={}, notification={}, selected={}, result={:#x}",
                   packet[2], begin, end, requested, fallback, packet[9], packet[10], selected, result.raw);
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(result.raw);
@@ -212,7 +212,7 @@ private:
                 }
             }
             m_devices->events[packet[8]]->Signal(kernel);
-            LOG_INFO(Service_AM, "GPU unmap4K as={}, VA={:#x}..{:#x}, bytes={:#x}, result={:#x}",
+            LOG_DEBUG(Service_AM, "GPU unmap4K as={}, VA={:#x}..{:#x}, bytes={:#x}, result={:#x}",
                       packet[2], begin, end, unmapped, result.raw);
         }
         IPC::ResponseBuilder rb{ctx, 4};
@@ -296,7 +296,7 @@ private:
         const auto* packet = ctx.CommandBuffer();
         const auto result = packet[0] == 0x76 && packet[1] == 2
             ? ReleaseMemory(packet[2], packet[3]) : Kernel::ResultInvalidCombination;
-        LOG_INFO(Service_AM, "GPU memory release id={}, notification={}, result={:#x}",
+        LOG_DEBUG(Service_AM, "GPU memory release id={}, notification={}, result={:#x}",
                   packet[2], packet[3], result.raw);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(result.raw);
@@ -307,7 +307,7 @@ private:
         Result result = Kernel::ResultInvalidCombination;
         if (const auto request = DecodeGpuMemoryRegistration(std::span<const u32>{packet, 8})) {
             result = RegisterMemory(request->begin, request->end, request->flags, request->device, id);
-            LOG_INFO(Service_AM, "GPU memory {:#x}..{:#x}, device={}, raw_device={:#x}, flags={}, id={}, result={:#x}",
+            LOG_DEBUG(Service_AM, "GPU memory {:#x}..{:#x}, device={}, raw_device={:#x}, flags={}, id={}, result={:#x}",
                       request->begin, request->end, request->device, packet[7], request->flags, id, result.raw);
         }
         IPC::ResponseBuilder rb{ctx, 3};

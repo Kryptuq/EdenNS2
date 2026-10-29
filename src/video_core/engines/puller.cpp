@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 #include <cstdlib>
 
 #include "common/assert.h"
@@ -276,7 +277,7 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         break;
     }
     case BufferMethods::MemOpA: {
-        LOG_ERROR(HW_GPU, "Memory Operation A");
+        if (static std::atomic<u32> log_count_Memory_Operation_A{}; log_count_Memory_Operation_A.fetch_add(1, std::memory_order_relaxed) < 32) LOG_ERROR(HW_GPU, "Memory Operation A");
         break;
     }
     case BufferMethods::MemOpB: {
@@ -286,7 +287,7 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
     }
     case BufferMethods::MemOpC:
     case BufferMethods::MemOpD: {
-        LOG_ERROR(HW_GPU, "Memory Operation C,D");
+        if (static std::atomic<u32> log_count_Memory_Operation_C_D{}; log_count_Memory_Operation_C_D.fetch_add(1, std::memory_order_relaxed) < 32) LOG_ERROR(HW_GPU, "Memory Operation C,D");
         break;
     }
     case BufferMethods::SemaphoreAcquire: {
