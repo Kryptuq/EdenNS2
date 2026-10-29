@@ -132,3 +132,9 @@
 
 ## Build 33
 - The display now gets the real 1920x1080 frames, but nothing GPU-rendered lives at their addresses: the game renders into a separate 1920x1080 image and its final copy/pass into the presented image is not translated yet. Presentation fallback for Switch 2 titles: when the presented image has no GPU content, show the most recently rendered color image of the same size (EDEN_NATIVE_DISPLAY_FALLBACK=0 disables it).
+
+## Build 34
+- Title screen visible (logo, eShop button, Start Game) via the build 33 fallback; background still missing because 31 shader programs are rejected. This build clears 13 of them:
+  - LOP3.LUT: any LUT and an optional predicate output now lower to Maxwell LOP3.LUT (pred op NonZero). Replaces the LUT whitelist. Test covers all 256 LUTs, register and immediate forms.
+  - IADD3: general three-source form with per-operand negation (Maxwell IADD3) and .X predicate carry-in (added as 0/1 via SEL). Also fixes -A-B in the two-operand path, which Maxwell IADD interprets as .PO.
+  - Predicated forward CALL.REL.NOINC lowers to a predicated forward branch (identical to the equivalent BRA).

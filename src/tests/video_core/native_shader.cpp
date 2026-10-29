@@ -951,6 +951,7 @@ TEST_CASE("Native unsigned conversion saturates, clears NaNs, and extracts the l
         case Opcode::FSET_reg: visitor.FSET_reg(word); break;
         case Opcode::FMNMX_reg: visitor.FMNMX_reg(word); break;
         case Opcode::LOP_reg: visitor.LOP_reg(word); break;
+        case Opcode::LOP3_reg: visitor.LOP3_reg(word); break;
         case Opcode::F2I_reg: visitor.F2I_reg(word); break;
         case Opcode::I2F_reg: visitor.I2F_reg(word); break;
         case Opcode::EXIT: break;
@@ -1076,6 +1077,7 @@ TEST_CASE("Native bitwise LUT forms preserve source bits without changing predic
         case Opcode::MOV_cbuf: visitor.MOV_cbuf(word); break;
         case Opcode::MOV32I: visitor.MOV32I(word); break;
         case Opcode::LOP_reg: visitor.LOP_reg(word); break;
+        case Opcode::LOP3_reg: visitor.LOP3_reg(word); break;
         case Opcode::EXIT: break;
         default: FAIL("Unexpected native bitwise LUT lowering");
         }
@@ -1326,6 +1328,7 @@ TEST_CASE("Native predicate-output LUTs preserve boolean bit tests", "[native-sh
         switch (Shader::Maxwell::Decode(word)) {
         case Opcode::MOV32I: visitor.MOV32I(word); break;
         case Opcode::LOP_reg: visitor.LOP_reg(word); break;
+        case Opcode::LOP3_reg: visitor.LOP3_reg(word); break;
         case Opcode::EXIT: break;
         default: FAIL("Unexpected predicate LUT lowering");
         }
@@ -1347,6 +1350,7 @@ TEST_CASE("Native predicate-output LUTs preserve boolean bit tests", "[native-sh
             case IR::Opcode::BitwiseAnd32: values[&inst] = arg(0) & arg(1); break;
             case IR::Opcode::BitwiseOr32: values[&inst] = arg(0) | arg(1); break;
             case IR::Opcode::BitwiseXor32: values[&inst] = arg(0) ^ arg(1); break;
+            case IR::Opcode::BitwiseNot32: values[&inst] = ~arg(0); break;
             case IR::Opcode::INotEqual: values[&inst] = arg(0) != arg(1); break;
             case IR::Opcode::SetPred: predicates[static_cast<u32>(inst.Arg(0).Pred())] = arg(1) != 0; break;
             default: FAIL("Unexpected predicate LUT IR " << IR::NameOf(inst.GetOpcode()));
@@ -1356,6 +1360,133 @@ TEST_CASE("Native predicate-output LUTs preserve boolean bit tests", "[native-sh
         REQUIRE(predicates[1] == (((b ^ c) & 1) != 0));
         REQUIRE(std::array<bool, 5>{predicates[2], predicates[3], predicates[4], predicates[5], predicates[6]} ==
                 std::array<bool, 5>{true, false, true, false, true});
+    }
+}
+
+TEST_CASE("Native LOP3 lowers every LUT with an optional predicate output", "[native-shader]") {
+    // Inputs chosen so every (a, b, c) bit combination occurs in some bit position.
+    constexpr u32 in_a = 0xf0f0f0f0, in_b = 0xcccccccc, in_c = 0xaaaaaaaa;
+    for (u32 lut = 0; lut < 256; ++lut) {
+        for (const bool immediate : {false, true}) {
+            // LOP3.LUT P5, R3, R0, {R1 | imm}, R2, lut, !PT
+            const u32 word2 = 0x07800000U | (5U << 17) | (lut << 8) | 2U;
+            const std::array<Native, 2> input{{
+                {{immediate ? 0x00037812U : 0x00037212U, immediate ? in_b : 1U, word2, 0}},
+                VertexTransform.back(),
+            }};
+            const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+            REQUIRE(lowered);
+            Shader::ObjectPool<IR::Inst> pool;
+            IR::Block block{pool};
+            EmptyEnvironment env;
+            Shader::Maxwell::TranslatorVisitor visitor{env, block};
+            for (const auto word : lowered.instructions) {
+                using Shader::Maxwell::Opcode;
+                switch (Shader::Maxwell::Decode(word)) {
+                case Opcode::MOV32I: visitor.MOV32I(word); break;
+                case Opcode::LOP3_reg: visitor.LOP3_reg(word); break;
+                case Opcode::EXIT: break;
+                default: FAIL("Unexpected LOP3 lowering");
+                }
+            }
+            std::array<u32, 256> regs{};
+            regs[0] = in_a; regs[1] = in_b; regs[2] = in_c;
+            std::array<bool, 8> predicates{};
+            std::unordered_map<const IR::Inst*, u32> values;
+            const auto get = [&](const IR::Value& value) -> u32 {
+                if (!value.IsImmediate()) return values.at(value.Inst());
+                return value.Type() == IR::Type::U1 ? static_cast<u32>(value.U1()) : value.U32();
+            };
+            for (const auto& inst : block.Instructions()) {
+                const auto arg = [&](size_t i) { return get(inst.Arg(i)); };
+                switch (inst.GetOpcode()) {
+                case IR::Opcode::GetRegister: values[&inst] = regs[static_cast<u32>(inst.Arg(0).Reg())]; break;
+                case IR::Opcode::SetRegister: regs[static_cast<u32>(inst.Arg(0).Reg())] = arg(1); break;
+                case IR::Opcode::BitwiseAnd32: values[&inst] = arg(0) & arg(1); break;
+                case IR::Opcode::BitwiseOr32: values[&inst] = arg(0) | arg(1); break;
+                case IR::Opcode::BitwiseXor32: values[&inst] = arg(0) ^ arg(1); break;
+                case IR::Opcode::BitwiseNot32: values[&inst] = ~arg(0); break;
+                case IR::Opcode::INotEqual: values[&inst] = arg(0) != arg(1); break;
+                case IR::Opcode::IEqual: values[&inst] = arg(0) == arg(1); break;
+                case IR::Opcode::SetPred: predicates[static_cast<u32>(inst.Arg(0).Pred())] = arg(1) != 0; break;
+                default: FAIL("Unexpected LOP3 IR " << IR::NameOf(inst.GetOpcode()));
+                }
+            }
+            u32 expected = 0;
+            for (u32 bit = 0; bit < 32; ++bit) {
+                const u32 index = (((in_a >> bit) & 1) << 2) | (((in_b >> bit) & 1) << 1) | ((in_c >> bit) & 1);
+                expected |= ((lut >> index) & 1) << bit;
+            }
+            INFO("lut=" << lut << " immediate=" << immediate);
+            REQUIRE(regs[3] == expected);
+            REQUIRE(predicates[5] == (expected != 0));
+        }
+    }
+}
+
+TEST_CASE("Native IADD3 lowers negated third sources and predicate carry-in", "[native-shader]") {
+    constexpr u32 in_a = 0x12345678, in_b = 0x0badf00d, in_c = 0x7fff0001;
+    for (u32 mask = 0; mask < 8; ++mask) {
+        for (u32 carry_mode = 0; carry_mode < 4; ++carry_mode) {
+            const u32 neg_a = mask & 1, neg_b = (mask >> 1) & 1, neg_c = (mask >> 2) & 1;
+            const bool extended = carry_mode != 0;
+            // carry_mode: 0 = no .X, 1 = +P0, 2 = +!P1, 3 = +P0 +P2
+            const u32 carry1 = carry_mode == 0 ? 0xfU : carry_mode == 2 ? (1U | 8U) : 0U;
+            const u32 carry2 = carry_mode == 3 ? 2U : 0xfU;
+            const bool no_third = carry_mode == 0 && neg_c && neg_a && neg_b; // also cover C = RZ
+            const u32 word2 = (no_third ? 255U : 2U) | (neg_a << 8) | (u32{extended} << 10) | ((no_third ? 0U : neg_c) << 11) |
+                              (carry1 << 13) | (7U << 17) | (7U << 20) | (carry2 << 23);
+            const std::array<Native, 2> input{{
+                {{0x00037210U, 1U | (neg_b << 31), word2, 0}}, // IADD3 R3, ±R0, ±R1, ±R2
+                VertexTransform.back(),
+            }};
+            const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+            REQUIRE(lowered);
+            Shader::ObjectPool<IR::Inst> pool;
+            IR::Block block{pool};
+            EmptyEnvironment env;
+            Shader::Maxwell::TranslatorVisitor visitor{env, block};
+            for (const auto word : lowered.instructions) {
+                using Shader::Maxwell::Opcode;
+                switch (Shader::Maxwell::Decode(word)) {
+                case Opcode::MOV32I: visitor.MOV32I(word); break;
+                case Opcode::MOV_reg: visitor.MOV_reg(word); break;
+                case Opcode::SEL_reg: visitor.SEL_reg(word); break;
+                case Opcode::IADD_reg: visitor.IADD_reg(word); break;
+                case Opcode::IADD3_reg: visitor.IADD3_reg(word); break;
+                case Opcode::EXIT: break;
+                default: FAIL("Unexpected IADD3 lowering");
+                }
+            }
+            std::array<u32, 256> regs{};
+            regs[0] = in_a; regs[1] = in_b; regs[2] = in_c;
+            const std::array<bool, 8> predicates{true, false, true, false, false, false, false, true};
+            std::unordered_map<const IR::Inst*, u32> values;
+            const auto get = [&](const IR::Value& value) -> u32 {
+                if (!value.IsImmediate()) return values.at(value.Inst());
+                return value.Type() == IR::Type::U1 ? static_cast<u32>(value.U1()) : value.U32();
+            };
+            for (const auto& inst : block.Instructions()) {
+                const auto arg = [&](size_t i) { return get(inst.Arg(i)); };
+                switch (inst.GetOpcode()) {
+                case IR::Opcode::GetRegister: values[&inst] = regs[static_cast<u32>(inst.Arg(0).Reg())]; break;
+                case IR::Opcode::SetRegister: regs[static_cast<u32>(inst.Arg(0).Reg())] = arg(1); break;
+                case IR::Opcode::GetPred: values[&inst] = predicates[static_cast<u32>(inst.Arg(0).Pred())]; break;
+                case IR::Opcode::LogicalNot: values[&inst] = !arg(0); break;
+                case IR::Opcode::SelectU32: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+                case IR::Opcode::IAdd32: values[&inst] = arg(0) + arg(1); break;
+                case IR::Opcode::INeg32: values[&inst] = 0U - arg(0); break;
+                default: FAIL("Unexpected IADD3 IR " << IR::NameOf(inst.GetOpcode()));
+                }
+            }
+            const auto signed_value = [](u32 value, u32 negate) { return negate ? 0U - value : value; };
+            u32 expected = signed_value(in_a, neg_a) + signed_value(in_b, neg_b) + (no_third ? 0U : signed_value(in_c, neg_c));
+            if (carry_mode == 1) expected += 1;       // P0 = true
+            if (carry_mode == 2) expected += 1;       // !P1 = true
+            if (carry_mode == 3) expected += 1 + 1;   // P0 + P2
+            INFO("mask=" << mask << " carry_mode=" << carry_mode);
+            REQUIRE(regs[3] == expected);
+        }
     }
 }
 
@@ -1503,6 +1634,30 @@ TEST_CASE("Native forward branches retain paths beyond an early unconditional ex
     const auto truncated = Shader::Ampere::LowerToMaxwell(std::span{source}.first(2));
     REQUIRE_FALSE(truncated);
     REQUIRE(truncated.instructions.empty());
+}
+
+TEST_CASE("Native predicated NOINC calls lower to forward branches", "[native-shader]") {
+    const Native exit{{0x0000794d, 0, 0x03800000, 0x000fea00}};
+    const std::array<Native, 4> source{{
+        {{0x00001944, 0x10, 0x03c00000, 0x000fe200}}, // @P1 CALL.REL.NOINC to instruction 2
+        {{0x00017802, 42, 0x00000f00, 0x000fe400}},   // MOV R1, 42 (skipped when P1)
+        {{0x00027802, 7, 0x00000f00, 0x000fe400}},    // MOV R2, 7
+        exit,
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(source);
+    REQUIRE(lowered);
+    REQUIRE(Shader::Maxwell::Decode(lowered.instructions[0]) == Shader::Maxwell::Opcode::BRA);
+    REQUIRE(((lowered.instructions[0] >> 16) & 0xf) == 1); // still guarded by P1
+    // Must be identical to an ordinary @P1 BRA to the same target.
+    auto branch = source;
+    branch[0] = Native{{0x00001947, 0x10, 0x03800000, 0x000fea00}};
+    const auto reference = Shader::Ampere::LowerToMaxwell(branch);
+    REQUIRE(reference);
+    REQUIRE(lowered.instructions == reference.instructions);
+    auto backward = source;
+    backward[0].words[1] = 0xfffffff0; // backward calls are not branches
+    backward[0].words[2] = 0x03c3ffff;
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(backward));
 }
 
 TEST_CASE("Native register-to-predicate writes only masked predicate bits", "[native-shader]") {
@@ -1667,6 +1822,7 @@ TEST_CASE("Native warp uniform transfers use the first selected active lane and 
         case Opcode::VOTE: visitor.VOTE(word); break;
         case Opcode::IADD_reg: visitor.IADD_reg(word); break;
         case Opcode::LOP_reg: visitor.LOP_reg(word); break;
+        case Opcode::LOP3_reg: visitor.LOP3_reg(word); break;
         case Opcode::FLO_reg: visitor.FLO_reg(word); break;
         case Opcode::SHFL: visitor.SHFL(word); break;
         case Opcode::SEL_reg: visitor.SEL_reg(word); break;
