@@ -1805,6 +1805,84 @@ TEST_CASE("Native LOP3 with a constant buffer operand loads it first", "[native-
     REQUIRE(((lowered.instructions[1] >> 28) & 0xff) == 0xc0);
 }
 
+TEST_CASE("Native SHF.R.U32 with a zero high word lowers to a logical right shift", "[native-shader]") {
+    for (const u32 wrap : {0U, 1U}) {
+        for (const u32 amount : {0U, 1U, 5U, 31U, 32U, 40U}) {
+            const std::array<Native, 2> source{{
+                {{0x07067219, 0x00000006, 0x000016ff | (wrap << 11), 0x000fe200}}, // SHF.R.U32 R6, R7, R6, RZ
+                VertexTransform.back(),
+            }};
+            const auto lowered = Shader::Ampere::LowerToMaxwell(source);
+            REQUIRE(lowered);
+            REQUIRE(Shader::Maxwell::Decode(lowered.instructions[0]) == Shader::Maxwell::Opcode::SHR_reg);
+            Shader::ObjectPool<IR::Inst> pool;
+            IR::Block block{pool};
+            EmptyEnvironment env;
+            Shader::Maxwell::TranslatorVisitor visitor{env, block};
+            visitor.SHR_reg(lowered.instructions[0]);
+            std::array<u32, 256> regs{};
+            regs[7] = 0x80f0000f;
+            regs[6] = amount;
+            std::unordered_map<const IR::Inst*, u32> values;
+            const auto get = [&](const IR::Value& value) -> u32 {
+                if (!value.IsImmediate()) return values.at(value.Inst());
+                return value.Type() == IR::Type::U1 ? static_cast<u32>(value.U1()) : value.U32();
+            };
+            for (const auto& inst : block.Instructions()) {
+                const auto arg = [&](size_t i) { return get(inst.Arg(i)); };
+                switch (inst.GetOpcode()) {
+                case IR::Opcode::GetRegister: values[&inst] = regs[static_cast<u32>(inst.Arg(0).Reg())]; break;
+                case IR::Opcode::SetRegister: regs[static_cast<u32>(inst.Arg(0).Reg())] = arg(1); break;
+                case IR::Opcode::ShiftRightLogical32: values[&inst] = arg(1) >= 32 ? 0U : arg(0) >> arg(1); break;
+                case IR::Opcode::BitwiseAnd32: values[&inst] = arg(0) & arg(1); break;
+                case IR::Opcode::UGreaterThanEqual: values[&inst] = arg(0) >= arg(1); break;
+                case IR::Opcode::SelectU32: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+                case IR::Opcode::SelectU1: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+                case IR::Opcode::SLessThan: values[&inst] = static_cast<s32>(arg(0)) < static_cast<s32>(arg(1)); break;
+                case IR::Opcode::ULessThan: values[&inst] = arg(0) < arg(1); break;
+                case IR::Opcode::IEqual: values[&inst] = arg(0) == arg(1); break;
+                case IR::Opcode::INotEqual: values[&inst] = arg(0) != arg(1); break;
+                case IR::Opcode::LogicalOr: values[&inst] = arg(0) || arg(1); break;
+                case IR::Opcode::LogicalAnd: values[&inst] = arg(0) && arg(1); break;
+                case IR::Opcode::LogicalNot: values[&inst] = !arg(0); break;
+                case IR::Opcode::IAdd32: values[&inst] = arg(0) + arg(1); break;
+                case IR::Opcode::ISub32: values[&inst] = arg(0) - arg(1); break;
+                case IR::Opcode::ShiftRightArithmetic32: values[&inst] = arg(1) >= 32 ? static_cast<u32>(static_cast<s32>(arg(0)) >> 31) : static_cast<u32>(static_cast<s32>(arg(0)) >> arg(1)); break;
+                default: FAIL("Unexpected SHR IR " << IR::NameOf(inst.GetOpcode()));
+                }
+            }
+            const u32 effective = wrap ? (amount & 31) : amount;
+            const u32 expected = effective >= 32 ? 0U : 0x80f0000fU >> effective;
+            INFO("wrap=" << wrap << " amount=" << amount);
+            REQUIRE(regs[6] == expected);
+        }
+    }
+}
+
+TEST_CASE("Native immediate funnel shift and register-mask shuffle lower", "[native-shader]") {
+    const std::array<Native, 4> source{{
+        {{0xff0b7419, 0x00000001, 0x00010e00, 0x001fc800}}, // SHF.L.W.U32.HI R11, RZ, R0, 0x1
+        {{0x07067989, 0x04200000, 0x000000ff, 0x010e6200}}, // SHFL R6, R7, imm lane, RZ
+        {{0x01007989, 0x04200000, 0x000200ff, 0x020e6200}}, // SHFL with a predicate output
+        VertexTransform.back(),
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(source);
+    REQUIRE(lowered);
+    u32 shifts = 0, shuffles = 0;
+    for (const u64 word : lowered.instructions) {
+        const auto op = Shader::Maxwell::Decode(word);
+        if (op == Shader::Maxwell::Opcode::SHL_reg) {
+            ++shifts;
+            REQUIRE((word & 0xff) == 11);
+            REQUIRE(((word >> 20) & 0xff) == 0);    // shift amount R0
+            REQUIRE(((word >> 39) & 1) == 1);       // wrapped (& 31)
+        }
+        if (op == Shader::Maxwell::Opcode::SHFL) ++shuffles;
+    }
+    REQUIRE(shifts == 1);
+    REQUIRE(shuffles == 2);
+}
+
 TEST_CASE("Native register-to-predicate writes only masked predicate bits", "[native-shader]") {
     const std::array<Native, 2> source{{{{0x05007804, 7, 0, 0x000fe200}}, VertexTransform.back()}};
     const auto lowered = Shader::Ampere::LowerToMaxwell(source);

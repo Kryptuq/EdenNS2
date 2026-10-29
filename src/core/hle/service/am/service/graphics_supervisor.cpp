@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <deque>
+#include <initializer_list>
 #include <unordered_map>
 #include <atomic>
 #include <bit>
@@ -90,17 +92,29 @@ namespace {
 // CreateVideoEncoderService). The real service drives the hardware video codec; this HLE
 // version records the protocol and acknowledges every request so movie playback can proceed.
 // Session returned by nn::codec's video service manager (CreateVideoDecoderService /
-// CreateVideoEncoderService). The real service drives the hardware video codec; this HLE
-// version records the protocol and acknowledges requests so movie playback can proceed.
-// Reply sizes follow what nn::codec expects (result word first). Command 3 returns the
-// decoder's notification event, which is signaled whenever the guest starts, feeds or
-// flushes the decoder so its worker thread keeps running.
+// CreateVideoEncoderService). Frames are not decoded: every submitted input frame completes at
+// once into the next free registered output image, so movies run to their end (without a
+// picture) instead of stalling. Protocol (from the SDK; matches Eglantine's nx2:vdecsvc):
+// - 200/201: initialize (VP9 / H.264), 101: configure (X descriptor, then width, height, ...),
+//   3: notification event (copy handle), 6/207/8: start/stop/flush, 115: finalize.
+// - 311(image): register an output image, 314(image, ...): give one back, 212(image): unregister;
+//   311/314 reply a 16-byte NativeSyncHandle (all zero = already signalled).
+// - 109(A: compressed frame, u64 pts, u8 end of stream): submit, reply u64 submission id.
+// - 213(): next finished frame (image, width, height, width, height, colour space, u64 pts,
+//   u8 end of stream) or 0x1c286f when none is ready (the client then waits on the event).
 class IVideoCodecService final : public ServiceFramework<IVideoCodecService> {
 public:
     IVideoCodecService(Core::System& system_, bool encoder)
         : ServiceFramework{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
           m_encoder{encoder}, m_context{system_, encoder ? "IVideoEncService" : "IVideoDecService"} {}
     ~IVideoCodecService() override {
+        {
+            std::scoped_lock lk{m_ready->mutex};
+            m_ready->event = nullptr;
+        }
+        if (m_ready_timer) {
+            system.CoreTiming().UnscheduleEvent(m_ready_timer);
+        }
         if (m_event) {
             m_context.CloseEvent(m_event);
         }
@@ -114,52 +128,157 @@ public:
         const auto* packet = ctx.CommandBuffer();
         const u32 command = ctx.GetCommand();
         const u32 words = (std::min)(packet[1] & 0x3ffU, 24U);
-        // Per-command sampling: polling commands (e.g. 213) would otherwise use up the budget.
+        // Per-command sampling: polling commands (e.g. 213) would otherwise flood the log.
         const u32 seen = m_command_counts[command]++;
         if (seen < 16 || seen % 1000 == 0) {
             std::string data;
             for (u32 i = 0; i < words; ++i) {
                 data += fmt::format("{:08x} ", packet[2 + i]);
             }
-            LOG_WARNING(Service_AM, "(STUBBED) video {} service command={} (#{}) header={:08x}/{:08x} data={}",
-                        m_encoder ? "encoder" : "decoder", command, seen, packet[0], packet[1], data);
+            LOG_INFO(Service_AM, "video {} service command={} (#{}) header={:08x}/{:08x} data={}",
+                     m_encoder ? "encoder" : "decoder", command, seen, packet[0], packet[1], data);
         }
 
-        if (!m_encoder && command == 3) {
-            if (!m_event) {
-                m_event = m_context.CreateEvent("VideoDecoderNotification");
-            }
-            IPC::ResponseBuilder rb{ctx, 2, 1, 0};
-            rb.Push((m_event ? ResultSuccess : Kernel::ResultOutOfResource).raw);
-            if (m_event) {
-                ctx.AddCopyObject(&m_event->GetReadableEvent());
-            }
+        if (m_encoder) {
+            Reply(ctx, {0, 0, 0, 0, 0, 0, 0, 0});
         } else {
-            // Known reply sizes (in words, including the result); unknown commands get 9.
-            u32 reply_words = 9;
             switch (command) {
-            case 6: case 8: case 201: case 207: case 212: reply_words = 1; break;
-            case 101: reply_words = 3; break;
-            case 311: case 314: reply_words = 9; break;
-            default: break;
-            }
-            IPC::ResponseBuilder rb{ctx, 1 + reply_words};
-            rb.Push(ResultSuccess.raw);
-            for (u32 i = 1; i < reply_words; ++i) {
-                rb.Push<u32>(0);
-            }
-            if (m_event && (command == 6 || command == 8 || command == 109)) {
-                m_event->Signal(kernel);
+            case 3: GetEvent(ctx); break;
+            case 101:
+                m_width = packet[5];
+                m_height = packet[6];
+                Reply(ctx, {0, 0});
+                break;
+            case 109: SubmitInput(ctx); break;
+            case 212:
+                std::erase(m_free, packet[2]);
+                Reply(ctx, {});
+                break;
+            case 213: GetOutput(ctx); break;
+            case 311: case 314:
+                GiveBack(packet[2]);
+                Reply(ctx, {0, 0, 0, 0});
+                break;
+            case 6: case 8: case 115: case 200: case 201: case 207:
+                Reply(ctx, {});
+                Signal();
+                break;
+            default:
+                Reply(ctx, {0, 0, 0, 0, 0, 0, 0, 0});
+                break;
             }
         }
         return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
     }
 
 private:
+    struct Output {
+        u32 image;
+        u64 pts;
+        bool end;
+    };
+    struct ReadyState {
+        std::mutex mutex;
+        Kernel::KEvent* event{};
+    };
+
+    void Reply(HLERequestContext& ctx, std::initializer_list<u32> data) {
+        IPC::ResponseBuilder rb{ctx, static_cast<u32>(1 + data.size())};
+        rb.Push(ResultSuccess.raw);
+        for (const u32 word : data) {
+            rb.Push<u32>(word);
+        }
+    }
+
+    void Signal() {
+        if (m_event) {
+            m_event->Signal(kernel);
+        }
+    }
+
+    void GetEvent(HLERequestContext& ctx) {
+        if (!m_event) {
+            m_event = m_context.CreateEvent("VideoDecoderNotification");
+            // The client attaches the event auto-clearing; re-signal it regularly so a consumed
+            // signal never leaves the decoder thread waiting (a spurious wake only re-checks).
+            {
+                std::scoped_lock lk{m_ready->mutex};
+                m_ready->event = m_event;
+            }
+            m_ready_timer = Core::Timing::CreateEvent(
+                "VideoDecoderReady",
+                [ready = m_ready, &kernel_ref = system.Kernel()](
+                    s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                    std::scoped_lock lk{ready->mutex};
+                    if (ready->event) {
+                        ready->event->Signal(kernel_ref);
+                    }
+                    return std::nullopt;
+                });
+            constexpr std::chrono::nanoseconds interval{std::chrono::milliseconds{4}};
+            system.CoreTiming().ScheduleLoopingEvent(interval, interval, m_ready_timer);
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 1, 0};
+        rb.Push((m_event ? ResultSuccess : Kernel::ResultOutOfResource).raw);
+        if (m_event) {
+            ctx.AddCopyObject(&m_event->GetReadableEvent());
+        }
+        Signal();
+    }
+
+    // An output image is free again: a frame waiting for one completes into it.
+    void GiveBack(u32 image) {
+        if (!m_waiting.empty()) {
+            m_outputs.push_back({image, m_waiting.front().pts, m_waiting.front().end});
+            m_waiting.pop_front();
+            Signal();
+            return;
+        }
+        m_free.push_back(image);
+    }
+
+    void SubmitInput(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        // Words 2-4 are the A descriptor of the compressed frame.
+        const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
+        const bool end = (w[7] & 0xff) != 0;
+        if (!m_free.empty()) {
+            m_outputs.push_back({m_free.front(), pts, end});
+            m_free.pop_front();
+        } else {
+            m_waiting.push_back({0, pts, end});
+        }
+        const u64 id = ++m_submitted;
+        Reply(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
+        Signal();
+    }
+
+    void GetOutput(HLERequestContext& ctx) {
+        if (m_outputs.empty()) {
+            // The code the client's own acquire uses for an empty ring.
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push<u32>(0x1c286f);
+            return;
+        }
+        const Output output = m_outputs.front();
+        m_outputs.pop_front();
+        Reply(ctx, {output.image, m_width, m_height, m_width, m_height, 0,
+                    static_cast<u32>(output.pts), static_cast<u32>(output.pts >> 32),
+                    output.end ? 1U : 0U, 0, 0, 0, 0, 0, 0, 0});
+    }
+
     bool m_encoder;
     std::unordered_map<u32, u32> m_command_counts;
     KernelHelpers::ServiceContext m_context;
     Kernel::KEvent* m_event{};
+    std::shared_ptr<ReadyState> m_ready = std::make_shared<ReadyState>();
+    std::shared_ptr<Core::Timing::EventType> m_ready_timer;
+    u32 m_width{};
+    u32 m_height{};
+    u64 m_submitted{};
+    std::deque<u32> m_free;
+    std::deque<Output> m_waiting;
+    std::deque<Output> m_outputs;
 };
 
 // Video codec service manager opened through graphics supervisor command 902 (decoder) or

@@ -151,3 +151,7 @@
 
 ## Build 37
 - LOP3 with a constant buffer operand (0xa12, five menu shaders) loads the constant into a scratch register and uses the general LOP3 lowering.
+
+## Build 38
+- New Game freeze: the movie decoder thread polled decoder command 213 ~180,000 times a second (the stub never reported a frame), starving the AM service thread and the presents. The decoder service now follows Eglantine's nx2:vdecsvc model: each submitted input frame completes at once into the next free registered output image, 213 returns it (or 0x1c286f when none is ready, so the client waits on the event), 311/314/212 manage the output ring, and the notification event is re-signalled every 4 ms.
+- Shaders: SHF.R.U32 with a zero high word lowers to SHR (20 title/menu programs); SHF.L.W.U32.HI with an immediate and register-mask SHFL ported from Eglantine. All tested.
