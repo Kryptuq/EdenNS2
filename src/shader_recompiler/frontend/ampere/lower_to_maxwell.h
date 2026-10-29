@@ -9,6 +9,7 @@
 #include <span>
 #include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include "common/common_types.h"
 
@@ -1399,10 +1400,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(out);
             break;
         }
-        case 0x212: case 0x812: case 0xc12: { // Bounded LOP3 bitwise forms, no predicate output
+        case 0x212: case 0x812: case 0xc12: { // LOP3.LUT (register, immediate or uniform B)
+            // Any LUT maps onto Maxwell LOP3.LUT (register form), whose predicate output
+            // ("NonZero") matches Ampere's Pu = (result != 0). Only the trivial predicate
+            // input (!PT) is supported.
             const u32 lut = insn.Bits(72, 8);
-            if ((lut != 0xc0 && lut != 0xfc && lut != 0xf8 && lut != 0x48 && lut != 0xe2 && lut != 0x3c) || insn.Bits(80, 1) ||
-                insn.Bits(87, 4) != 15 ||
+            if (insn.Bits(80, 1) || insn.Bits(87, 4) != 15 ||
                 (opcode == 0x212 && insn.Bits(40, 24))) return fail(index, "native LUT/predicate mode");
             u32 b = opcode == 0xc12 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
             if (b == ~0U) return fail(index, "native uniform logic source");
@@ -1411,28 +1414,10 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 b = 251;
             }
             const u32 a = insn.Bits(24, 8), c = insn.Bits(64, 8);
-            const auto logical = [&](u32 target, u32 lhs, u32 rhs, u32 operation, u32 pred_target = 7) {
-                emit(0x5c40000000000000ULL | predicate | target | (u64{lhs} << 8) |
-                     (u64{rhs} << 20) | (u64{operation} << 41) |
-                     (u64{pred_target == 7 ? 0U : 3U} << 44) | (u64{pred_target} << 48));
-            };
             const u32 pred_target = insn.Bits(81, 3);
-            if (lut == 0xe2) {
-                logical(250, a, b, 0);
-                logical(252, c, b, 0);
-                result.instructions.back() |= u64{1} << 40;
-                logical(static_cast<u32>(dest), 250, 252, 1, pred_target);
-            } else if (lut == 0xf8) {
-                logical(250, b, c, false);
-                logical(static_cast<u32>(dest), a, 250, 1, pred_target);
-            } else if (lut == 0x48) {
-                logical(250, a, c, 2);
-                logical(static_cast<u32>(dest), 250, b, 0, pred_target);
-            } else if (lut == 0x3c) { // a ^ b, C ignored
-                logical(static_cast<u32>(dest), a, b, 2, pred_target);
-            } else {
-                logical(static_cast<u32>(dest), a, b, lut == 0xfc ? 1U : 0U, pred_target);
-            }
+            emit(0x5BE0000000000000ULL | predicate | dest | (u64{a} << 8) | (u64{b} << 20) |
+                 (u64{lut} << 28) | (u64{pred_target == 7 ? 0U : 3U} << 36) | (u64{c} << 39) |
+                 (u64{pred_target} << 48));
             break;
         }
         case 0x217: case 0x817: case 0xa17: case 0xc17: { // IMNMX register, immediate, constant, or uniform.
@@ -1525,6 +1510,42 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 emit(base(0x5c10000000000000ULL) | (u64{b} << 8) | (u64{250} << 20));
                 break;
             }
+            // (Also used when both A and B are negated: Maxwell IADD reads that as ".PO", not -A-B.)
+            if ((insn.Bits(64, 8) != 255 || insn.Bits(74, 2) || (insn.Bits(72, 1) && insn.Bits(63, 1))) &&
+                !insn.Bits(73, 1) && !insn.Bits(76, 1) &&
+                insn.Bits(81, 3) == 7 && insn.Bits(84, 3) == 7) {
+                // General three-source add without carry outputs: Rd = ±A ± B ± C [+ Pp1 + Pp2].
+                // Maxwell IADD3 carries the per-operand negations; .X carry-in predicates are
+                // added as 0/1 values (uniform predicates share numbers with ordinary ones,
+                // matching the UIADD3 carry-out lowering above).
+                const bool extended = insn.Bits(74, 1) != 0;
+                const u32 carry1 = insn.Bits(77, 3), carry1_neg = insn.Bits(80, 1);
+                const u32 carry2 = insn.Bits(87, 3), carry2_neg = insn.Bits(90, 1);
+                const auto constant_false = [](u32 pred, u32 neg) { return pred == 7 && neg; };
+                if (!extended && (!constant_false(carry1, carry1_neg) || !constant_false(carry2, carry2_neg)))
+                    return fail(index, "native integer carry-in without extension");
+                const u32 form = insn.Bits(9, 3);
+                const bool immediate_b = form == 2 || form == 4;
+                const u32 b = operand(1, false);
+                if (!operand_error.empty()) return fail(index, operand_error);
+                const u32 a = insn.Bits(24, 8), c = insn.Bits(64, 8);
+                const u32 target = extended ? 250U : static_cast<u32>(dest);
+                emit(0x5CC0000000000000ULL | predicate | target | (u64{a} << 8) | (u64{b} << 20) |
+                     (u64{c} << 39) | (u64{insn.Bits(75, 1)} << 49) |
+                     (u64{!immediate_b && insn.Bits(63, 1)} << 50) | (u64{insn.Bits(72, 1)} << 51));
+                if (extended) {
+                    for (const auto& [pred, neg] : {std::pair{carry1, carry1_neg}, std::pair{carry2, carry2_neg}}) {
+                        if (constant_false(pred, neg)) continue;
+                        mov_imm(252, 1);
+                        // SEL R252 = (Pp ^ neg) ? 1 : 0
+                        emit(0x5ca0000000000000ULL | predicate | 252 | (u64{252} << 8) | (u64{255} << 20) |
+                             (u64{pred} << 39) | (u64{neg} << 42));
+                        emit(0x5c10000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{252} << 20));
+                    }
+                    emit(0x5c98000000000000ULL | predicate | dest | (u64{250} << 20) | (u64{15} << 39));
+                }
+                break;
+            }
             if (insn.Bits(64, 8) != 255 && !insn.Bits(73, 4) && insn.Bits(77, 7) == 0x7f && insn.Bits(84, 7) == 0x7f) {
                 const u32 b = operand(1, false);
                 emit(0x5c10000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
@@ -1585,6 +1606,21 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 relocations.push_back({static_cast<u32>(result.instructions.size()), index + 2});
                 emit(0xe24000000000000fULL | predicate);
                 break;
+            }
+            // Any other predicated forward NOINC call: the compiler uses it as a conditional
+            // jump (no return link is set up and no RET returns to it), so lower it as a
+            // predicated forward branch.
+            if (native_predicate != 7 && (insn.words[0] & 0xffff0fffU) == 0x944 &&
+                (insn.words[2] & ~0x3ffffU) == 0x03c00000) {
+                const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
+                const s64 relative = static_cast<s64>(raw << 14) >> 14;
+                const s64 target = s64{index} * 16 + 16 + relative;
+                if (relative > 0 && target % 16 == 0 && target / 16 < static_cast<s64>(code.size())) {
+                    relocations.push_back({static_cast<u32>(result.instructions.size()),
+                                           target / 16});
+                    emit(0xe24000000000000fULL | predicate);
+                    break;
+                }
             }
             if (main_exited || index == 0 || insn.words[0] != 0x7944 ||
                 (insn.words[2] & ~0x3ffffU) != 0x03c00000 ||
