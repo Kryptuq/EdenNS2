@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <bitset>
 #include <fstream>
 #include "common/assert.h"
@@ -94,6 +95,8 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
         const GPUVAddr program = (GPUVAddr{native_registers[0xc8 + 49] & 0x1ffff} << 32) |
             native_registers[0xc8 + 48];
         const u32 control = native_registers[0xa7];
+        static std::atomic<u32> qmd_logs{};
+        if (qmd_logs.fetch_add(1, std::memory_order_relaxed) < 64)
         LOG_WARNING(HW_GPU, "Native inline QMD: address={:#x}, program={:#x}, control={:#x}, grid={}/{}/{}",
             address, program, control, native_registers[0xc8 + 12],
             native_registers[0xc8 + 13] & 0xffff, native_registers[0xc8 + 14] & 0xffff);

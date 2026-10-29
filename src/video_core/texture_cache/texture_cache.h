@@ -802,7 +802,7 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
     static u32 framebuffer_miss_logs{};
     const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
     if (it == page_table.end()) {
-        if (framebuffer_miss_logs++ < 16) {
+        if ((framebuffer_miss_logs++ < 16 || framebuffer_miss_logs % 300 == 0)) {
             LOG_WARNING(HW_GPU, "Framebuffer lookup miss: no GPU image on page, address={:#x}, {}x{}",
                         cpu_addr, config.width, config.height);
         }
@@ -864,7 +864,7 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         return GetImageViewForFramebuffer(*most_recent);
     }
 
-    if (framebuffer_miss_logs++ < 16) {
+    if ((framebuffer_miss_logs++ < 16 || framebuffer_miss_logs % 300 == 0)) {
         LOG_WARNING(HW_GPU, "Framebuffer lookup miss: address={:#x}, {}x{}, view format={}, candidates={}",
                     cpu_addr, config.width, config.height, view_format, image_map_ids.size());
         for (const ImageMapId map_id : image_map_ids) {

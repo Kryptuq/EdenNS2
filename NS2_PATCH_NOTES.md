@@ -118,3 +118,7 @@
 ## Build 29
 - Second movie abort (45.5 s): the movie player's decoder thread waited on the decoder notification event, but the stubbed decoder command 3 returned no handle (kernel InvalidHandle 0xe401). Command 3 now returns a real event (copy handle), signaled on start/submit/flush. Known decoder replies use the sizes nn::codec expects.
 - Graphics supervisor 911/912 (nn::codec Initialize/FinalizeDecoderImagePool) reuse the native image create/destroy handlers (same descriptor layout as 429/430).
+
+## Build 30
+- Log size: build 29's log hit Eden's 100 MB limit after 45 s, almost entirely full shader listings. Full listings now require EDEN_NATIVE_SHADER_DUMP=1 (one summary line per rejected program remains, up to 256 programs). Memory-op, inline QMD and surface-clear traces are capped; GPU memory map traces are back at Debug level.
+- Display lookup diagnostics (Native display source / framebuffer lookup miss) are also sampled every 300 frames, not only for the first 16.

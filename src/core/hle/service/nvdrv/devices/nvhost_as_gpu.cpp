@@ -174,7 +174,7 @@ NvResult nvhost_as_gpu::UnmapNative4K(u64 address, u64 size) {
 
 
 NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
-    LOG_INFO(Service_NVDRV, "called, flags={:#x}, as_fd={}, big_page_size={:#x}, reserved={:#x}, VA={:#x}/{:#x}/{:#x}",
+    LOG_DEBUG(Service_NVDRV, "called, flags={:#x}, as_fd={}, big_page_size={:#x}, reserved={:#x}, VA={:#x}/{:#x}/{:#x}",
               params.flags, params.as_fd, params.big_page_size, params.reserved,
               params.va_range_start, params.va_range_split, params.va_range_end);
 
@@ -277,7 +277,7 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
 }
 
 NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
-    LOG_INFO(Service_NVDRV, "called, pages={:X}, page_size={:X}, flags={:X}", params.pages,
+    LOG_DEBUG(Service_NVDRV, "called, pages={:X}, page_size={:X}, flags={:X}", params.pages,
               params.page_size, params.flags);
 
     std::scoped_lock lock(mutex);
@@ -355,7 +355,7 @@ bool nvhost_as_gpu::FreeMappingLocked(u64 offset) noexcept {
 }
 
 NvResult nvhost_as_gpu::FreeSpace(IoctlFreeSpace& params) {
-    LOG_INFO(Service_NVDRV, "called, offset={:X}, pages={:X}, page_size={:X}", params.offset, params.pages, params.page_size);
+    LOG_DEBUG(Service_NVDRV, "called, offset={:X}, pages={:X}, page_size={:X}", params.offset, params.pages, params.page_size);
     std::scoped_lock lock(mutex);
     if (!vm.initialised) {
         return NvResult::BadValue;
@@ -429,7 +429,7 @@ NvResult nvhost_as_gpu::ModifyKind(IoctlModifyKind& params) {
     const u64 base = params.mapping_base;
     const u64 offset = params.buffer_offset;
     const u64 size = params.size;
-    LOG_INFO(Service_NVDRV, "native modify kind base={:#x}, offset={:#x}, size={:#x}, kinds={:#x}/{:#x}",
+    LOG_DEBUG(Service_NVDRV, "native modify kind base={:#x}, offset={:#x}, size={:#x}, kinds={:#x}/{:#x}",
               base, offset, size, requested, fallback);
     if (!m_extended_abi || params.reserved != 0 || fallback > 255 ||
         (requested > 255 && requested != 0xffff) || !size ||
@@ -501,7 +501,7 @@ NvResult nvhost_as_gpu::Remap(std::span<IoctlRemapEntry> entries) {
 }
 
 NvResult nvhost_as_gpu::MapBufferEx(IoctlMapBufferEx& params) {
-    LOG_INFO(Service_NVDRV,
+    LOG_DEBUG(Service_NVDRV,
               "called, flags={:X}, nvmap_handle={:X}, buffer_offset={}, mapping_size={}"
               ", offset={:#x}",
               params.flags, params.handle, params.buffer_offset, params.mapping_size,
@@ -586,7 +586,7 @@ NvResult nvhost_as_gpu::MapBufferEx(IoctlMapBufferEx& params) {
 NvResult nvhost_as_gpu::UnmapBuffer(IoctlUnmapBuffer& params) {
     std::scoped_lock lock(mutex);
     if (auto const offset_it = map_buffer_offsets.find(params.offset); offset_it != map_buffer_offsets.end()) {
-        LOG_INFO(Service_NVDRV, "called, offset={:#x}", params.offset);
+        LOG_DEBUG(Service_NVDRV, "called, offset={:#x}", params.offset);
         if (!vm.initialised) {
             return NvResult::BadValue;
         }

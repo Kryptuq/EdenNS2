@@ -333,8 +333,10 @@ void LogRejectedNativeShader(const std::vector<Shader::Ampere::Instruction>& nat
     const u64 key = Shader::Ampere::NativeProgramKey(native);
     {
         std::scoped_lock lock{mutex};
-        if (logged.size() >= 64 || !logged.insert(key).second) return;
+        if (logged.size() >= 256 || !logged.insert(key).second) return;
     }
+    // The full program listing is large (captures can run into padding), so it is opt-in.
+    static const bool dump_programs = std::getenv("EDEN_NATIVE_SHADER_DUMP") != nullptr;
     const size_t failing = error_offset / sizeof(Shader::Ampere::Instruction);
     if (failing < native.size()) {
         const auto& w = native[failing].words;
@@ -342,6 +344,9 @@ void LogRejectedNativeShader(const std::vector<Shader::Ampere::Instruction>& nat
                   key, error_offset, error, w[0], w[1], w[2], w[3]);
     }
     LOG_ERROR(Shader, "Native shader {:016x} base={:#x} instructions={}", key, base, native.size());
+    if (!dump_programs) {
+        return;
+    }
     for (size_t i = 0; i < native.size(); i += 4) {
         std::string line;
         for (size_t k = i; k < std::min(native.size(), i + 4); ++k) {
