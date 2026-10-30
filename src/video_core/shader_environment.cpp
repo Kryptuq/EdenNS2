@@ -373,13 +373,19 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     for (u32 index = 0; index < maximum_instructions; ++index) {
         const GPUVAddr address = program_base + native_header_size + index * sizeof(Instruction);
         if (!gpu_memory->IsFullyMappedRange(address, sizeof(Instruction))) {
+            // The program end was not recognized; list what was captured to find out why.
+            LogRejectedNativeShader(native, program_base, index * sizeof(Instruction),
+                                    "capture ran into unmapped memory");
             throw Shader::RuntimeError("Unmapped native shader instruction at {:#x}", address);
         }
         auto& instruction = native.emplace_back();
         gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
         const auto status = capture.Observe(instruction, index);
-        if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget)
+        if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            LogRejectedNativeShader(native, program_base, index * sizeof(Instruction),
+                                    "branch outside capture bounds");
             throw Shader::RuntimeError("Native shader branch outside capture bounds");
+        }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     auto lowered = Shader::Ampere::LowerToMaxwell(native);
