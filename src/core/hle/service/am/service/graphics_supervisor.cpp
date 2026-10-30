@@ -1778,6 +1778,16 @@ void IGraphicsSupervisor::RefreshSyncpointCache() {
             const auto value = syncpoints.ReadAllocatedSyncpoint(id);
             const u64 updated = m_counter_values[id].Observe(value);
             memory.Write64(address, updated);
+            {
+                // Which counters the game polls through the cache (logged once per counter, and
+                // again every 2000 refreshes), to find waits that never complete.
+                static std::array<u32, CounterCount> refreshes{};
+                const u32 count = refreshes[id]++;
+                if (count == 0 || count % 2000 == 0) {
+                    LOG_INFO(Service_AM, "NS2 trace: syncpoint cache refresh id={} value={} (allocated={}, cached={:#x}, refreshes={})",
+                             id, value.value_or(0), value.has_value(), updated, count + 1);
+                }
+            }
         }
         std::atomic_thread_fence(std::memory_order_release);
         memory.Write64(ro + SlotAckOffset + group * sizeof(u64), requested_slots);
