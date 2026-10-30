@@ -16,6 +16,7 @@
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/ns2_draw_stats.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
@@ -391,6 +392,13 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
     const u32 entry =
         ((method - MacroRegistersStart) >> 1) % static_cast<u32>(GetNativeMacroPositions().size());
 
+    if (VideoCommon::NS2Draw::TakeMethodTrace()) {
+        std::string head;
+        for (size_t i = 0; i < std::min<size_t>(parameters.size(), 10); ++i)
+            head += fmt::format(" {:x}", parameters[i]);
+        LOG_INFO(HW_GPU, "NS2 trace: 3D macro {:#x} entry={} position={:#x} params={}:{}", method, entry,
+                 GetNativeMacroPositions()[entry], parameters.size(), head);
+    }
     // Execute the current macro.
     GetNativeMacroEngine().Execute(system, *this, GetNativeMacroPositions()[entry], parameters);
     draw_manager.DrawDeferred(*this);
@@ -411,12 +419,22 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
     }
 
     ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register, increase the size of the Regs structure");
+    if (VideoCommon::NS2Draw::TakeMethodTrace()) {
+        LOG_INFO(HW_GPU, "NS2 trace: 3D method {:#x} = {:#x}{}", method, method_argument,
+                 executing_macro ? " (from macro)" : "");
+    }
     const u32 argument = ProcessShadowRam(method, method_argument);
     ProcessDirtyRegisters(method, argument);
     ProcessMethodCall(method, argument, method_argument, is_last_call);
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    if (VideoCommon::NS2Draw::TakeMethodTrace()) {
+        std::string head;
+        for (u32 i = 0; i < std::min<u32>(amount, 8); ++i)
+            head += fmt::format(" {:x}", base_start[i]);
+        LOG_INFO(HW_GPU, "NS2 trace: 3D multi-method {:#x} x{}:{}", method, amount, head);
+    }
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
     if (method >= MacroRegistersStart) {
