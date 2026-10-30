@@ -8,6 +8,8 @@
 #include <fstream>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/stb.h"
@@ -55,6 +57,43 @@ u8 Tonemap(float value) {
 
 bool WriteImage(std::span<const u8> data, u32 width, u32 height, u32 row_pixels, PixelFormat format,
                 const std::string& name) {
+    if (format == PixelFormat::D24_UNORM_S8_UINT || format == PixelFormat::D32_FLOAT ||
+        format == PixelFormat::S8_UINT_D24_UNORM || format == PixelFormat::D32_FLOAT_S8_UINT) {
+        // Depth: normalized between the smallest and largest value so geometry stands out.
+        if (row_pixels < width || data.size() < static_cast<size_t>(row_pixels) * height * 4) return false;
+        std::vector<float> depth(static_cast<size_t>(width) * height);
+        float low = 1e30f, high = -1e30f;
+        for (u32 y = 0; y < height; ++y) {
+            for (u32 x = 0; x < width; ++x) {
+                u32 word;
+                std::memcpy(&word, data.data() + (static_cast<size_t>(y) * row_pixels + x) * 4, 4);
+                float value;
+                if (format == PixelFormat::D24_UNORM_S8_UINT) value = static_cast<float>(word & 0xffffff) / 16777215.0f;
+                else if (format == PixelFormat::S8_UINT_D24_UNORM) value = static_cast<float>(word >> 8) / 16777215.0f;
+                else std::memcpy(&value, &word, 4);
+                depth[static_cast<size_t>(y) * width + x] = value;
+                low = std::min(low, value);
+                high = std::max(high, value);
+            }
+        }
+        std::vector<u8> gray(depth.size() * 3);
+        for (size_t i = 0; i < depth.size(); ++i) {
+            const u8 v = high > low ? Unorm((depth[i] - low) / (high - low)) : 0;
+            gray[i * 3] = gray[i * 3 + 1] = gray[i * 3 + 2] = v;
+        }
+        AppendIndex(fmt::format("  depth {} range {} .. {}", name, low, high));
+        std::vector<u8> jpeg;
+        stbi_write_jpg_to_func(
+            [](void* context, void* chunk, int size) {
+                auto* buffer = static_cast<std::vector<u8>*>(context);
+                const auto* bytes_in = static_cast<const u8*>(chunk);
+                buffer->insert(buffer->end(), bytes_in, bytes_in + size);
+            },
+            &jpeg, static_cast<int>(width), static_cast<int>(height), 3, gray.data(), 90);
+        std::ofstream file(Directory() / (name + ".jpg"), std::ios::binary);
+        file.write(reinterpret_cast<const char*>(jpeg.data()), static_cast<std::streamsize>(jpeg.size()));
+        return static_cast<bool>(file);
+    }
     u32 bytes = 0;
     switch (format) {
     case PixelFormat::A8B8G8R8_UNORM: case PixelFormat::A8B8G8R8_SRGB:

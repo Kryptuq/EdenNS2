@@ -37,6 +37,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/ns2_draw_stats.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
@@ -258,15 +259,25 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     FlushWork();
     gpu_memory->FlushCaching();
 
+    const auto note_draw = [&](VideoCommon::NS2Draw::Result result) {
+        if (!gpu_memory->UsesNativeTiling()) return;
+        const auto& regs = maxwell3d->regs;
+        VideoCommon::NS2Draw::Note(result, regs.rt[0].Address(), regs.zeta_enable ? regs.zeta.Address() : 0,
+                                   is_indexed ? regs.index_buffer.count : regs.vertex_buffer.count, is_indexed);
+    };
     GraphicsPipeline* const pipeline{pipeline_cache.CurrentGraphicsPipeline()};
     if (!pipeline) {
+        note_draw(VideoCommon::NS2Draw::Result::NoPipeline);
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
-    if (!pipeline->Configure(is_indexed))
+    if (!pipeline->Configure(is_indexed)) {
+        note_draw(VideoCommon::NS2Draw::Result::ConfigureFailed);
         return;
+    }
+    note_draw(VideoCommon::NS2Draw::Result::Drawn);
 
     UpdateDynamicStates();
 

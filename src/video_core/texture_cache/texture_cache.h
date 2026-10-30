@@ -25,6 +25,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/ns2_frame_capture.h"
+#include "video_core/ns2_draw_stats.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/texture_cache/util.h"
@@ -557,6 +558,7 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
             capture.images.emplace_back(rt_image_id[0], 0);
             capture.window_gpu = rt.gpu_addr;
             capture.phase = 2;
+            NS2Draw::Reset();
         } else if (capture.phase == 2) {
             if (window && (rt.gpu_addr != capture.window_gpu || capture.images.size() > 96)) {
                 capture.images.emplace_back(rt_image_id[0], 0);
@@ -889,6 +891,7 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
             NS2Capture::AppendIndex(fmt::format("  {} gpu={:#x} cpu={:#x} written={}", name, image.gpu_addr,
                                                 image.cpu_addr, ok));
         }
+        NS2Capture::AppendIndex(NS2Draw::Summary());
         LOG_INFO(HW_GPU, "NS2 capture {}: {} images written to ns2_capture", capture.index, written.size());
         capture.images.clear();
         capture.phase = 1;
