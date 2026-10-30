@@ -7,6 +7,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 namespace Core {
 class System;
@@ -19,6 +20,10 @@ class KProcess;
 } // namespace Kernel
 
 namespace Service::KernelHelpers {
+
+/// Debug names of service-created events (for diagnostics only).
+void NameEventForDebugging(const Kernel::KEvent* event, std::string_view name);
+std::string EventNameForDebugging(const Kernel::KEvent* event);
 
 class ServiceContext {
 public:
