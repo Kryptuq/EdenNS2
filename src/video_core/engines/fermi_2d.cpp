@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -60,6 +61,15 @@ void Fermi2D::ConsumeSinkImpl(Core::System& system) {
 
 void Fermi2D::Blit() {
     LOG_DEBUG(HW_GPU, "called. source address={:#x}, destination address={:#x}", regs.src.Address(), regs.dst.Address());
+    {
+        static std::atomic<u32> logged{};
+        const u32 count = logged.fetch_add(1, std::memory_order_relaxed);
+        if (count < 200 || count % 2000 == 0) {
+            LOG_INFO(HW_GPU, "NS2 trace: 2D blit #{} {:#x} {}x{} fmt={} -> {:#x} {}x{} fmt={}", count,
+                     regs.src.Address(), regs.src.width, regs.src.height, static_cast<u32>(regs.src.format),
+                     regs.dst.Address(), regs.dst.width, regs.dst.height, static_cast<u32>(regs.dst.format));
+        }
+    }
 
     UNIMPLEMENTED_IF_MSG(regs.operation != Operation::SrcCopy, "Operation is not copy");
     UNIMPLEMENTED_IF_MSG(regs.src.layer != 0, "Source layer is not zero");

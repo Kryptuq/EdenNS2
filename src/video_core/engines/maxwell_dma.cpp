@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -66,6 +67,21 @@ void MaxwellDMA::Launch() {
             regs.line_count, static_cast<GPUVAddr>(regs.offset_in), regs.line_length_in);
     }
     LOG_TRACE(Render_OpenGL, "DMA copy {:#x} -> {:#x}", static_cast<GPUVAddr>(regs.offset_in), GPUVAddr(regs.offset_out));
+    if (memory_manager.UsesNativeTiling()) {
+        static std::atomic<u32> logged{};
+        const u32 count = logged.fetch_add(1, std::memory_order_relaxed);
+        if (count < 200 || count % 2000 == 0) {
+            const GPUVAddr in = regs.offset_in, out = regs.offset_out;
+            LOG_INFO(HW_GPU, "NS2 trace: DMA #{} {:#x} (cpu {:#x}) -> {:#x} (cpu {:#x}) line={} lines={} "
+                     "src_pitch={} dst_pitch={} multi_line={} src_layout={} dst_layout={} remap={}",
+                     count, in, memory_manager.GpuToCpuAddress(in).value_or(0), out,
+                     memory_manager.GpuToCpuAddress(out).value_or(0), regs.line_length_in, regs.line_count,
+                     regs.pitch_in, regs.pitch_out, static_cast<u32>(regs.launch_dma.multi_line_enable.Value()),
+                     static_cast<u32>(regs.launch_dma.src_memory_layout.Value()),
+                     static_cast<u32>(regs.launch_dma.dst_memory_layout.Value()),
+                     static_cast<u32>(regs.launch_dma.remap_enable.Value()));
+        }
+    }
 
     // TODO(Subv): Perform more research and implement all features of this engine.
     const LaunchDMA& launch = regs.launch_dma;
