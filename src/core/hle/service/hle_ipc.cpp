@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string>
+#include <tuple>
+#include <mutex>
+#include <map>
 #include <algorithm>
 #include <array>
 #include <sstream>
@@ -56,6 +60,29 @@ bool SessionRequestManager::HasSessionRequestHandler(const HLERequestContext& co
     }
 }
 
+namespace {
+// Logs HLE responses that carry an error result (bounded, deduplicated per service/command/result)
+// so failing service calls show up in normal logs.
+void LogFailedResponse(HLERequestContext& context, std::string_view name) {
+    const u32* words = context.CommandBuffer();
+    for (u32 i = 0; i < 32; ++i) {
+        if (words[i] != 0x4F434653) continue; // "SFCO"
+        const u32 raw = words[i + 2];
+        if (raw == 0) return;
+        static std::mutex mutex;
+        static std::map<std::tuple<std::string, u32, u32>, u32> seen;
+        std::scoped_lock lock{mutex};
+        if (seen.size() >= 400) return;
+        const u32 count = ++seen[{std::string{name}, context.GetCommand(), raw}];
+        if (count == 1 || count % 1000 == 0) {
+            LOG_WARNING(IPC, "NS2 trace: {} cmd={} returned {:#x} (module {}, description {}), count={}", name,
+                        context.GetCommand(), raw, raw & 0x1ff, (raw >> 9) & 0x1fff, count);
+        }
+        return;
+    }
+}
+} // namespace
+
 Result SessionRequestManager::CompleteSyncRequest(Kernel::KServerSession* server_session,
                                                   HLERequestContext& context) {
     Result result = ResultSuccess;
@@ -71,6 +98,7 @@ Result SessionRequestManager::CompleteSyncRequest(Kernel::KServerSession* server
                 fmt::format("{} cmd={}", this->SessionHandler().GetDebugName(), context.GetCommand());
             Common::NS2Watch::PhaseScope phase{"handling HLE request", phase_detail.c_str()};
             result = this->SessionHandler().HandleSyncRequest(*server_session, context);
+            LogFailedResponse(context, this->SessionHandler().GetDebugName());
         }
     } else {
         ASSERT_MSG(false, "Session handler is invalid, stubbing response!");
@@ -113,7 +141,9 @@ Result SessionRequestManager::HandleDomainSyncRequest(Kernel::KServerSession* se
             const std::string phase_detail =
                 fmt::format("{} cmd={} (domain)", strong_ptr->GetDebugName(), context.GetCommand());
             Common::NS2Watch::PhaseScope phase{"handling HLE request", phase_detail.c_str()};
-            return strong_ptr->HandleSyncRequest(*server_session, context);
+            const Result domain_result = strong_ptr->HandleSyncRequest(*server_session, context);
+            LogFailedResponse(context, strong_ptr->GetDebugName());
+            return domain_result;
         } else {
             ASSERT(false);
             return ResultSuccess;
