@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -45,6 +46,20 @@ Result IStorage::Read(
 
     // Read the data from the Storage backend
     backend->Read(out_bytes.data(), length, offset);
+    {
+        // Periodic totals, to see whether the game keeps streaming data (bounded log volume).
+        static std::atomic<u64> reads{}, bytes{};
+        static std::atomic<s64> last_log_ms{};
+        reads.fetch_add(1, std::memory_order_relaxed);
+        bytes.fetch_add(static_cast<u64>(length), std::memory_order_relaxed);
+        const s64 now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch()).count();
+        s64 last = last_log_ms.load(std::memory_order_relaxed);
+        if (now_ms - last >= 5000 && last_log_ms.compare_exchange_strong(last, now_ms)) {
+            LOG_INFO(Service_FS, "NS2 trace: storage reads so far: {} calls, {} MiB (last offset {:#x}, length {})",
+                     reads.load(), bytes.load() >> 20, offset, length);
+        }
+    }
 
     R_SUCCEED();
 }
