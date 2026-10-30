@@ -184,3 +184,8 @@
 - New/extended: UP0-guarded uniform ALU ops (ULOP3 etc.), TEX.B with the handle in a register (0x361), MATCH.ALL.U32, UFLO.SH, REDUX AND/OR/XOR/unsigned MIN/MAX (tested per lane), IMNMX with a full 32-bit immediate, local memory load/store with a register address, SHF.L.U32.HI immediate without wrap, ATOMS operations, RED through a uniform 64-bit address.
 - Atomic operation field corrected to bits 87-89 (bit 90 is a modifier: it appears on an integer warp-sum reduction), so ATOMG with bit 90 is an ADD, not an EXCH.
 - Shaders that fail during capture (branch outside capture bounds, running into unmapped memory) are now listed in the log too.
+
+## Build 47
+- Build 46 log: the title/menu graphics shader no longer fails, but the screen is unchanged. The presented picture is a fallback: the game's real display buffers (0x4c111000/0x4c981000) never receive a GPU image, so the last 1920x1080 render target (0x4b8a1000, UI only) is shown instead. Two compute shaders have been rejected on every frame since the title screen started; one of them samples textures and writes images (SUST), i.e. likely the pass that composes the final frame. Both now lower (I2FP with an immediate source, USHF.R.U32 with a zero high word).
+- 47 of 48 shaders dumped in the build 46 log (mostly in-game) now lower and translate: attribute stores of RZ (many vertex shaders), register-bindless TEX with LOD/offsets/depth reference in Rb+1.. (operand layout confirmed from the surrounding code), bindless gather with offsets, LEA.HI with an immediate base, R2P byte selector, RED operations and offsets, SHF with a uniform shift amount (0xc19, from Eglantine).
+- Still open: ULDC into UR16+ (the uniform bank only covers UR0-UR15), geometry shaders (stage 4).
