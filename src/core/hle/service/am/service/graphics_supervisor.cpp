@@ -33,6 +33,8 @@
 #include "core/hle/service/am/service/gpu_session.h"
 #include "core/hle/service/am/service/graphics_supervisor_protocol.h"
 #include "core/hle/service/am/service/graphics_syncpoint_cache.h"
+#include "video_core/host1x/host1x.h"
+#include "video_core/host1x/syncpoint_manager.h"
 #include "core/hle/service/am/service/native_image_layout.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
@@ -100,8 +102,11 @@ namespace {
 // picture) instead of stalling. Protocol (from the SDK; matches Eglantine's nx2:vdecsvc):
 // - 200/201: initialize (VP9 / H.264), 101: configure (X descriptor, then width, height, ...),
 //   3: notification event (copy handle), 6/207/8: start/stop/flush, 115: finalize.
-// - 311(image): register an output image, 314(image, ...): give one back, 212(image): unregister;
-//   311/314 reply a 16-byte NativeSyncHandle (all zero = already signalled).
+// - 311(image): register an output image, 314(image, u64 consumer fence): give one back,
+//   212(image): unregister. The client keeps its own ring of queued images (nn::codec acquires
+//   from it without IPC); 311/314 reply the NativeSyncHandle {~counter, mode, u64 value} that
+//   is reached when a decoded frame is in that image. An all-zero handle counts as reached at
+//   once, so it must not be used for images that have no frame yet.
 // - 109(A: compressed frame, u64 pts, u8 end of stream): submit, reply u64 submission id.
 // - 213(): next finished frame (image, width, height, width, height, colour space, u64 pts,
 //   u8 end of stream) or 0x1c286f when none is ready (the client then waits on the event).
@@ -121,6 +126,12 @@ public:
         }
         if (m_event) {
             m_context.CloseEvent(m_event);
+        }
+        if (m_syncpoint) {
+            GraphicsSyncpointCache::Unpublish(*m_syncpoint);
+            if (m_images && m_images->module) {
+                m_images->module->GetContainer().GetSyncpointManager().FreeSyncpoint(*m_syncpoint);
+            }
         }
     }
 
@@ -165,20 +176,32 @@ public:
                 DumpWorkMemory();
                 break;
             case 212:
-                std::erase(m_free, packet[2]);
+                std::erase_if(m_free, [&](const FreeImage& free) { return free.image == packet[2]; });
                 Reply(ctx, {});
                 break;
             case 213: GetOutput(ctx); break;
             case 311:
-                // Register an output image. The client then hands images to the decoder with 314
-                // (seen: register 5..12, then 314 for 5, 6, 7 before starting).
-                Reply(ctx, {0, 0, 0, 0});
+            case 314: {
+                // 311 registers an output image, 314 gives a consumed one back. Either way the
+                // client queues the image as its next output and waits on the reply's fence
+                // (NativeSyncHandle {~counter, mode, u64 value}) before reading it with 213, so
+                // the fence must only be reached once a frame has been written into the image.
+                EnsureSyncpoint();
+                const auto existing = std::ranges::find(m_free, packet[2], &FreeImage::image);
+                const u32 target = existing != m_free.end() ? existing->target : GiveBack(packet[2]);
+                if (m_fences_logged++ < 32) {
+                    LOG_INFO(Service_AM, "video decoder: image {} queued (command {}), fence counter {} value {}",
+                             packet[2], command, m_syncpoint.value_or(~0U), target);
+                }
+                if (m_syncpoint) {
+                    Reply(ctx, {~*m_syncpoint, 0, target, 0});
+                } else {
+                    Reply(ctx, {0, 0, 0, 0});
+                }
                 break;
-            case 314:
-                if (std::ranges::find(m_free, packet[2]) == m_free.end()) GiveBack(packet[2]);
-                Reply(ctx, {0, 0, 0, 0});
-                break;
+            }
             case 200: case 201:
+                EnsureSyncpoint();
                 if (const Handle handle = ctx.GetCopyHandle(0); handle != 0) {
                     if (auto memory = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(handle); memory.IsNotNull()) {
                         m_work_address = GetInteger(memory->GetSourceAddress());
@@ -318,17 +341,50 @@ private:
         }
     }
 
-    // An output image is free again: a frame waiting for one completes into it.
-    void GiveBack(u32 image) {
+    // The decoder's own counter: each queued output image gets the next value, and the counter
+    // advances when a frame lands in that image (images fill in the order they were queued).
+    void EnsureSyncpoint() {
+        if (m_syncpoint || !m_images || !m_images->module) {
+            return;
+        }
+        auto& syncpoints = m_images->module->GetContainer().GetSyncpointManager();
+        const u32 id = syncpoints.AllocateSyncpoint(false);
+        if (id == 0 || id >= GraphicsSyncpointCache::CounterCount) {
+            LOG_WARNING(Service_AM, "video decoder: unusable syncpoint {}", id);
+            if (id != 0) syncpoints.FreeSyncpoint(id);
+            return;
+        }
+        m_syncpoint = id;
+        m_fence_assigned = syncpoints.ReadAllocatedSyncpoint(id).value_or(0);
+        GraphicsSyncpointCache::Publish(id);
+        LOG_INFO(Service_AM, "video decoder: output fences use syncpoint {} (value {})", id, m_fence_assigned);
+    }
+
+    void Complete(u32 target) {
+        if (!m_syncpoint) {
+            return;
+        }
+        auto& host = system.Host1x().GetSyncpointManager();
+        for (u32 i = 0; i < 64 && static_cast<s32>(host.GetHostSyncpointValue(*m_syncpoint) - target) < 0; ++i) {
+            host.IncrementHost(*m_syncpoint);
+        }
+    }
+
+    // An output image is free again: a frame waiting for one completes into it. Returns the
+    // fence value that is reached once the image holds a frame.
+    u32 GiveBack(u32 image) {
+        const u32 target = ++m_fence_assigned;
         if (!m_waiting.empty()) {
             auto frame = std::move(m_waiting.front());
             m_waiting.pop_front();
             WritePicture(image, frame.picture);
             m_outputs.push_back({image, frame.pts, frame.end, nullptr});
+            Complete(target);
             Signal();
-            return;
+            return target;
         }
-        m_free.push_back(image);
+        m_free.push_back({image, target});
+        return target;
     }
 
     void SubmitInput(HLERequestContext& ctx) {
@@ -349,10 +405,11 @@ private:
             }
         }
         if (!m_free.empty()) {
-            const u32 image = m_free.front();
+            const FreeImage free = m_free.front();
             m_free.pop_front();
-            WritePicture(image, picture);
-            m_outputs.push_back({image, pts, end, nullptr});
+            WritePicture(free.image, picture);
+            m_outputs.push_back({free.image, pts, end, nullptr});
+            Complete(free.target);
         } else {
             // Keep pixel data only for a few waiting frames.
             if (m_waiting.size() >= 8) {
@@ -418,7 +475,14 @@ private:
     std::vector<u8> m_linear;
     std::vector<u8> m_tiled;
     u32 m_pictures_written{};
-    std::deque<u32> m_free;
+    struct FreeImage {
+        u32 image;
+        u32 target;
+    };
+    std::deque<FreeImage> m_free;
+    std::optional<u32> m_syncpoint;
+    u32 m_fence_assigned{};
+    u32 m_fences_logged{};
     std::deque<Output> m_waiting;
     std::deque<Output> m_outputs;
 };
@@ -460,14 +524,18 @@ public:
     ISyncpointSupervisor(Core::System& system_, std::shared_ptr<Nvidia::Module> module)
         : ServiceFramework{system_, "ISyncpointSupervisor"}, m_module{std::move(module)},
           m_context{system_, "SyncpointSupervisor"} {
-        // Waiters re-check counters in the shared syncpoint cache, so a periodic signal
-        // stands in for per-threshold notifications that are not tracked yet.
+        // Events are signalled when the threshold requested with command 201 is reached. The
+        // client trusts the signal without re-checking the counter (the video decoder aborts on
+        // a spurious one), so events without a pending request are left alone.
         m_timer = Core::Timing::CreateEvent(
             "SyncpointSupervisor::Poll",
             [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                 std::scoped_lock lock{m_events_mutex};
-                for (auto* event : m_events) {
-                    if (event) event->Signal(kernel);
+                for (size_t i = 0; i < m_events.size(); ++i) {
+                    if (m_requests[i] && m_events[i] && Reached(*m_requests[i])) {
+                        m_requests[i].reset();
+                        m_events[i]->Signal(kernel);
+                    }
                 }
                 return std::nullopt;
             });
@@ -476,6 +544,8 @@ public:
             {21, &ISyncpointSupervisor::SetEventCount, "SetEventCount"},
             {22, &ISyncpointSupervisor::GetEvent, "GetEvent"},
             {103, &ISyncpointSupervisor::QueryCounter, "QueryCounter"},
+            {201, &ISyncpointSupervisor::RequestEvent, "RequestEvent"},
+            {202, &ISyncpointSupervisor::CancelEvent, "CancelEvent"},
         };
         RegisterHandlersTipc(functions);
     }
@@ -535,6 +605,62 @@ private:
         rb.Push<u32>(0); // Existing NVDRV counters use 32-bit modular comparisons.
     }
 
+    struct Request {
+        u32 id;
+        u64 value;
+        bool wide;
+    };
+
+    bool Reached(const Request& request) {
+        const auto current = m_module->GetContainer().GetSyncpointManager().ReadAllocatedSyncpoint(request.id);
+        if (!current) {
+            return true; // The client treats unallocated counters as reached as well.
+        }
+        return request.wide ? u64{*current} >= request.value
+                            : static_cast<s32>(*current - static_cast<u32>(request.value)) >= 0;
+    }
+
+    // 201(event index, ~counter id, u64 threshold, u8 mode): signal the event once the counter
+    // reaches the threshold (mode 0: 32-bit wrapping comparison, mode 1: 64-bit).
+    void RequestEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        const u32 index = packet[2];
+        if (packet[1] == 5 && index < m_events.size()) {
+            std::scoped_lock lock{m_events_mutex};
+            if (auto* event = m_events[index]) {
+                const Request request{~packet[3], u64{packet[4]} | (u64{packet[5]} << 32),
+                                      (packet[6] & 0xff) == 1};
+                event->Clear(kernel);
+                if (Reached(request)) {
+                    m_requests[index].reset();
+                    event->Signal(kernel);
+                } else {
+                    m_requests[index] = request;
+                }
+                result = ResultSuccess;
+                if (m_requests_logged++ < 64) {
+                    LOG_INFO(Service_AM, "syncpoint event {} requested for counter {} value {} (mode {}, pending {})",
+                             index, request.id, request.value, packet[6] & 0xff, m_requests[index].has_value());
+                }
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+
+    void CancelEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[1] == 1 && packet[2] < m_events.size()) {
+            std::scoped_lock lock{m_events_mutex};
+            m_requests[packet[2]].reset();
+            result = ResultSuccess;
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+
     void GetEvent(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         Result result = Kernel::ResultInvalidCombination;
@@ -578,6 +704,8 @@ private:
     KernelHelpers::ServiceContext m_context;
     std::mutex m_events_mutex;
     std::array<Kernel::KEvent*, 64> m_events{};
+    std::array<std::optional<Request>, 64> m_requests{};
+    u32 m_requests_logged{};
     std::shared_ptr<Core::Timing::EventType> m_timer;
     bool m_timer_running{};
 };
@@ -1758,13 +1886,19 @@ void IGraphicsSupervisor::RefreshSyncpointCache() {
     auto& memory = m_process->GetMemory();
     const auto rw = m_syncpoint_rw->GetSourceAddress();
     const auto ro = m_syncpoint_ro->GetSourceAddress();
+    auto& syncpoints = m_nv_module->GetContainer().GetSyncpointManager();
+    for (const u32 id : GetPublished()) {
+        if (id < CounterCount) {
+            memory.Write64(ro + ValuesOffset + id * sizeof(u64),
+                           m_counter_values[id].Observe(syncpoints.ReadAllocatedSyncpoint(id)));
+        }
+    }
     const u64 requests = memory.Read64(rw + GroupRequestOffset);
     const u64 acknowledgements = memory.Read64(ro + GroupAckOffset);
     u64 groups = (requests ^ acknowledgements) & ((1ULL << GroupCount) - 1);
     if (groups == 0) {
         return;
     }
-    auto& syncpoints = m_nv_module->GetContainer().GetSyncpointManager();
     while (groups) {
         const u32 group = static_cast<u32>(std::countr_zero(groups));
         groups &= groups - 1;
