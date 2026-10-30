@@ -19,7 +19,11 @@ public:
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16 || target >= MaximumInstructions * 16)
                 return Result::InvalidTarget;
-            if (opcode == 0x944) {
+            // A predicated NOINC call is the compiler's conditional forward jump: no return
+            // link and no RET follow it, and lowering turns it into a branch.
+            const bool jump_call = opcode == 0x944 && instruction.Bits(12, 4) != 7 &&
+                                   (instruction.words[2] & ~0x3ffffU) == 0x03c00000 && relative > 0;
+            if (opcode == 0x944 && !jump_call) {
                 last_call_target = std::max(last_call_target, static_cast<u32>(target / 16));
             } else {
                 last_forward_target = std::max(last_forward_target, static_cast<u32>(target / 16));
