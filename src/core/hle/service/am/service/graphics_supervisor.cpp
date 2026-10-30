@@ -169,8 +169,13 @@ public:
                 Reply(ctx, {});
                 break;
             case 213: GetOutput(ctx); break;
-            case 311: case 314:
-                GiveBack(packet[2]);
+            case 311:
+                // Register an output image. The client then hands images to the decoder with 314
+                // (seen: register 5..12, then 314 for 5, 6, 7 before starting).
+                Reply(ctx, {0, 0, 0, 0});
+                break;
+            case 314:
+                if (std::ranges::find(m_free, packet[2]) == m_free.end()) GiveBack(packet[2]);
                 Reply(ctx, {0, 0, 0, 0});
                 break;
             case 200: case 201:
@@ -249,6 +254,10 @@ private:
                 });
             constexpr std::chrono::nanoseconds interval{std::chrono::milliseconds{4}};
             system.CoreTiming().ScheduleLoopingEvent(interval, interval, m_ready_timer);
+        }
+        if (m_event) {
+            LOG_INFO(Service_AM, "video decoder: notification event readable at {}",
+                     fmt::ptr(&m_event->GetReadableEvent()));
         }
         IPC::ResponseBuilder rb{ctx, 2, 1, 0};
         rb.Push((m_event ? ResultSuccess : Kernel::ResultOutOfResource).raw);

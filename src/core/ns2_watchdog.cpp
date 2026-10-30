@@ -13,6 +13,7 @@
 #include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/hle/kernel/global_scheduler_context.h"
+#include "core/hle/kernel/k_handle_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
@@ -117,6 +118,26 @@ void NS2Watchdog::Dump(u64 stalled_ms) {
                     thread->GetThreadId(), name, GetThreadState(thread),
                     GetThreadWaitReason(thread), thread->GetPriority(), thread->GetActiveCore(),
                     ctx.pc, ctx.lr, ctx.sp, ctx.r[0], ctx.r[1], ctx.r[2]);
+
+        // Objects behind handle-like register values and a possible handle array at x1 (as for
+        // WaitSynchronization), to tell what a waiting thread waits on.
+        if (thread->GetState() == Kernel::ThreadState::Waiting || name.find("Video") != std::string::npos ||
+            name.find("Movie") != std::string::npos) {
+            std::string objects;
+            const auto describe = [&](Kernel::Handle handle) {
+                if (handle == 0 || handle > 0xffffff) return;
+                auto object = process->GetHandleTable().GetObjectWithoutPseudoHandle<Kernel::KAutoObject>(
+                    m_system.Kernel(), handle);
+                if (object.IsNull()) return;
+                objects += fmt::format(" {:#x}={}@{}", handle, object->GetTypeName(),
+                                       fmt::ptr(object.GetPointerUnsafe()));
+            };
+            for (int r = 0; r < 4; ++r) describe(static_cast<Kernel::Handle>(ctx.r[r]));
+            if (ctx.r[1] && memory.IsValidVirtualAddressRange(ctx.r[1], 16)) {
+                for (int i = 0; i < 4; ++i) describe(memory.Read32(ctx.r[1] + i * 4));
+            }
+            if (!objects.empty()) LOG_WARNING(Core, "NS2 watchdog:   objects{}", objects);
+        }
 
         // Frame-pointer walk (raw addresses; module bases are logged at load time).
         std::string chain;
