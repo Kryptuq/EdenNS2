@@ -410,7 +410,15 @@ TEST_CASE("Logged native programs translate through the shader frontend", "[.nat
         file.seekg(0);
         file.read(reinterpret_cast<char*>(input.data()), input.size() * 16);
         const auto lowered = Shader::Ampere::LowerToMaxwell(input);
-        if (!lowered) continue;
+        if (!lowered) {
+            const size_t at = lowered.error_offset / 16;
+            if (at < input.size()) {
+                const auto& w = input[at].words;
+                WARN(entry.path().filename().string() << " rejected at " << std::hex << lowered.error_offset << " ("
+                     << lowered.error << "): " << w[0] << " " << w[1] << " " << w[2] << " " << w[3]);
+            }
+            continue;
+        }
         ++lowered_count;
         Shader::Stage stage = Shader::Stage::Compute;
         for (const auto& insn : input) {
@@ -1988,6 +1996,10 @@ void ExecuteNativeWarp(IR::Block& block, u32 active,
                 case IR::Opcode::SelectU32: case IR::Opcode::SelectU1: result[lane] = a ? b : c; break;
                 case IR::Opcode::BitwiseAnd32: result[lane] = a & b; break;
                 case IR::Opcode::BitwiseOr32: result[lane] = a | b; break;
+                case IR::Opcode::BitwiseXor32: result[lane] = a ^ b; break;
+                case IR::Opcode::BitwiseNot32: result[lane] = ~a; break;
+                case IR::Opcode::UMin32: result[lane] = std::min(a, b); break;
+                case IR::Opcode::UMax32: result[lane] = std::max(a, b); break;
                 case IR::Opcode::ShiftRightLogical32: result[lane] = b < 32 ? a >> b : 0; break;
                 case IR::Opcode::ShiftLeftLogical32: result[lane] = b < 32 ? a << b : 0; break;
                 case IR::Opcode::INeg32: result[lane] = 0U - a; break;
@@ -3337,12 +3349,14 @@ TEST_CASE("Native reconvergence barriers lower to nothing", "[native-shader]") {
 }
 
 TEST_CASE("Native forms captured from Yoshi menu and gameplay shaders lower", "[native-shader]") {
-    constexpr std::array<Native, 22> forms{{
+    constexpr std::array<Native, 24> forms{{
         {{0x18177c23, 0x00000004, 0x08010017, 0x000fc600}}, // FFMA with a uniform multiplier
         {{0x0000781c, 0x00000000, 0x00fa8170, 0x000fe400}}, // PLOP3 !P1 & P4
         {{0x0000781c, 0x00000000, 0x00f20470, 0x000fe200}}, // PLOP3
         {{0x19227589, 0x00001e19, 0x00000000, 0x001e2800}}, // SHFL.IDX writing P0
-        {{0x040473a8, 0x00000007, 0x041ee100, 0x00016800}}, // ATOMG.EXCH register address
+        {{0x040473a8, 0x00000007, 0x041ee100, 0x00016800}}, // ATOMG register address
+        {{0xff00098e, 0x00000006, 0x0c10e104, 0x0005e400}}, // RED through a uniform address
+        {{0x0dff938c, 0x00001408, 0x00800000, 0x0101e200}}, // ATOMS.MIN
         {{0x00017593, 0x20c00001, 0x001ee000, 0x001ea400}}, // SUATOM buffer
         {{0x020c7593, 0x60c0080c, 0x001ee000, 0x00052200}}, // SUATOM 2D
         {{0xff087e24, 0x80000005, 0x0f8e02ff, 0x000fe200}}, // IMAD negated uniform addend
@@ -3442,4 +3456,37 @@ TEST_CASE("Native LDS with a uniform base and IMAD with a negated uniform addend
     machine.regs[216 + 5] = 7;
     machine.Execute(block);
     REQUIRE(machine.regs[8] == 0U - 7U);
+}
+
+TEST_CASE("Native warp reductions combine only active lanes for every unsigned operation", "[native-shader]") {
+    for (u32 operation = 0; operation < 6; ++operation) {
+        const std::array<Native, 2> input{{{{0x030573c4, 0, operation << 14, 0}}, VertexTransform.back()}};
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateScalarNative(input, block);
+        for (u32 active : {1U, 0x80000000U, 0x55555555U, 0xffffffffU}) {
+            std::array<std::array<u32, 256>, 32> registers{};
+            std::array<std::array<bool, 7>, 32> predicates{};
+            u32 expected = operation == 0 || operation == 4 ? 0xffffffffU : 0U;
+            for (u32 lane = 0; lane < 32; ++lane) {
+                registers[lane][3] = (lane * 0x9e3779b9U) ^ 0x5a5a00ffU;
+                if (!(active & (1U << lane))) continue;
+                const u32 v = registers[lane][3];
+                switch (operation) {
+                case 0: expected &= v; break;
+                case 1: expected |= v; break;
+                case 2: expected ^= v; break;
+                case 3: expected += v; break;
+                case 4: expected = std::min(expected, v); break;
+                default: expected = std::max(expected, v); break;
+                }
+            }
+            ExecuteNativeWarp(block, active, registers, predicates);
+            for (u32 lane = 0; lane < 32; ++lane) {
+                if (!(active & (1U << lane))) continue;
+                INFO("operation " << operation << " active " << std::hex << active);
+                REQUIRE(registers[lane][221] == expected);
+            }
+        }
+    }
 }

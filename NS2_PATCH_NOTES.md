@@ -178,3 +178,9 @@
 - PLOP3 (0x81c) on regular predicates now lowers in general: PT/negations folded into the table, evaluated with P2R + LOP3 and written back with R2P (tested against every table for random sources).
 - New/extended: SHFL.IDX writing its in-bounds predicate, ATOMG operations other than ADD (EXCH etc.), surface atomic add (0x593, inferred encoding), IMAD with a negated uniform addend, LDS through a uniform base, 64/128-bit local spills, LEA.HI with a constant base and .SX32, FFMA with a uniform operand (0xc23, from Eglantine).
 - Rejected shaders are now listed in full in the log (once each; `EDEN_NATIVE_SHADER_DUMP=0` turns it off), so all missing instructions of a shader can be worked out from a single log instead of one per test round.
+
+## Build 46
+- First round with full shader listings: all 7 rejected programs from the build 45 log were run through lowering and the shader frontend locally until each one translated completely (the title/menu background shader among them).
+- New/extended: UP0-guarded uniform ALU ops (ULOP3 etc.), TEX.B with the handle in a register (0x361), MATCH.ALL.U32, UFLO.SH, REDUX AND/OR/XOR/unsigned MIN/MAX (tested per lane), IMNMX with a full 32-bit immediate, local memory load/store with a register address, SHF.L.U32.HI immediate without wrap, ATOMS operations, RED through a uniform 64-bit address.
+- Atomic operation field corrected to bits 87-89 (bit 90 is a modifier: it appears on an integer warp-sum reduction), so ATOMG with bit 90 is an ADD, not an EXCH.
+- Shaders that fail during capture (branch outside capture bounds, running into unmapped memory) are now listed in the log too.
