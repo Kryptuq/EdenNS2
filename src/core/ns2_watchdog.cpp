@@ -45,6 +45,11 @@ void NS2Watchdog::Run(std::stop_token stop_token) {
     u64 last_presented = Common::NS2Watch::g_present_count.load();
     u64 stall_start = Common::NS2Watch::NowMs();
     size_t reports = 0;
+    // Periodic snapshots of the guest threads even while frames are presented, to see what
+    // worker threads (loading, media) are waiting on.
+    const u64 started = stall_start;
+    u64 next_snapshot = started + 50'000;
+    u32 snapshots = 0;
 
     while (!stop_token.stop_requested()) {
         {
@@ -56,6 +61,12 @@ void NS2Watchdog::Run(std::stop_token stop_token) {
         }
         const u64 presented = Common::NS2Watch::g_present_count.load();
         const u64 now = Common::NS2Watch::NowMs();
+        if (snapshots < 5 && now >= next_snapshot) {
+            ++snapshots;
+            next_snapshot = now + 20'000;
+            LOG_WARNING(Core, "NS2 watchdog: periodic thread snapshot {} at {} s", snapshots, (now - started) / 1000);
+            Dump(0);
+        }
         if (presented != last_presented) {
             if (reports != 0) {
                 LOG_WARNING(Core, "NS2 watchdog: frames resumed after {} ms (presented={})",
