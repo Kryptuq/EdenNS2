@@ -409,6 +409,24 @@ TEST_CASE("Logged native programs translate through the shader frontend", "[.nat
         std::vector<Native> input(size / 16);
         file.seekg(0);
         file.read(reinterpret_cast<char*>(input.data()), input.size() * 16);
+        // Capture the program the way the emulator does before lowering it.
+        Shader::Ampere::ProgramCaptureState capture;
+        size_t captured = 0;
+        bool complete = false;
+        for (; captured < input.size(); ++captured) {
+            const auto status = capture.Observe(input[captured], static_cast<u32>(captured));
+            if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) break;
+            if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) {
+                complete = true;
+                ++captured;
+                break;
+            }
+        }
+        if (!complete) {
+            WARN(entry.path().filename().string() << " capture incomplete at " << std::hex << captured * 16);
+            continue;
+        }
+        input.resize(captured);
         const auto lowered = Shader::Ampere::LowerToMaxwell(input);
         if (!lowered) {
             const size_t at = lowered.error_offset / 16;
