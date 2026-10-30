@@ -3,9 +3,12 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <limits>
+#include <mutex>
 #include <optional>
+#include <vector>
 #include "common/common_types.h"
 
 namespace Service::AM::GraphicsSyncpointCache {
@@ -46,4 +49,30 @@ struct CounterValue {
         return previous;
     }
 };
+
+// Counters whose values are published in the cache continuously (not only on request). The
+// client treats a counter it sees as unallocated as already reached, so a counter that HLE
+// services signal (for example the video decoder's output fences) must stay visible.
+inline std::mutex& PublishedMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+inline std::vector<u32>& PublishedCounters() {
+    static std::vector<u32> counters;
+    return counters;
+}
+inline void Publish(u32 id) {
+    std::scoped_lock lock{PublishedMutex()};
+    if (std::ranges::find(PublishedCounters(), id) == PublishedCounters().end()) {
+        PublishedCounters().push_back(id);
+    }
+}
+inline void Unpublish(u32 id) {
+    std::scoped_lock lock{PublishedMutex()};
+    std::erase(PublishedCounters(), id);
+}
+inline std::vector<u32> GetPublished() {
+    std::scoped_lock lock{PublishedMutex()};
+    return PublishedCounters();
+}
 } // namespace Service::AM::GraphicsSyncpointCache
