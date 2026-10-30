@@ -29,6 +29,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
+#include "video_core/ns2_draw_stats.h"
 
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -1351,6 +1352,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         }
         LOG_DEBUG(HW_GPU, "Native MME context={:#x}", context);
         LOG_DEBUG(HW_GPU, "Native MME start={:#x}, parameters={}, data={:08x}", method, parameters.size(), fmt::join(parameters, ","));
+        if (VideoCommon::NS2Draw::TakeTraceMacroExecute()) {
+            std::string refreshed;
+            for (size_t i = 0; i < std::min<size_t>(parameters.size(), 10); ++i)
+                refreshed += fmt::format(" {:x}", parameters[i]);
+            LOG_INFO(HW_GPU, "NS2 trace: 3D macro params after refresh:{}", refreshed);
+        }
         const auto result = native_interpreter.Execute(native_code, method, parameters,
             [&](u32 address) { return address < Maxwell3D::Regs::NUM_REGS ? maxwell3d.GetRegisterValue(address) : 0U; },
             [&](u32 address, u32 value) {
