@@ -22,6 +22,7 @@ struct Entry {
 std::mutex mutex;
 std::map<u64, Entry> entries;
 std::atomic<u32> skipped_logs{};
+std::atomic<s32> method_trace_budget{};
 constexpr const char* Name(Result result) {
     switch (result) {
     case Result::Drawn: return "drawn";
@@ -61,6 +62,15 @@ std::string Summary() {
                             entry.elements, entry.indexed);
     }
     return text;
+}
+
+void ArmMethodTrace(s32 lines) {
+    method_trace_budget.store(lines, std::memory_order_relaxed);
+}
+
+bool TakeMethodTrace() {
+    if (method_trace_budget.load(std::memory_order_relaxed) <= 0) return false;
+    return method_trace_budget.fetch_sub(1, std::memory_order_relaxed) > 0;
 }
 
 } // namespace VideoCommon::NS2Draw

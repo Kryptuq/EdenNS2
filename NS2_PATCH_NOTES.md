@@ -206,3 +206,7 @@
 ## Build 51
 - Build 50 frame capture (title screen): the UI layer and its textures are correct (title logo, fonts), but the whole 3D scene is black at every stage: the G-buffer targets (1408x788 albedo B8G8R8A8, normals A2B10G10R10, light B10G11R11), the HDR targets, the bloom chain and the post-processed image. The title background is this 3D scene, not the video, and nothing of it gets drawn.
 - This build adds per-render-target draw statistics to the capture (drawn / skipped because no pipeline / skipped because configuration failed, element counts) and logs the first skipped draws, and depth buffers are now captured too (normalized), to tell whether scene geometry is drawn at all.
+
+## Build 52
+- Build 51 draw statistics: every pipeline is built and nothing is skipped, but the 3D scene's G-buffer target (1408x788, 5 render targets) receives no draw at all. It is only cleared. All draws that reach the rasterizer are fullscreen passes (3 vertices) and the UI. The depth buffer stays at 0. So the scene's geometry draws never reach Eden's draw path: they are issued in a way Eden does not turn into draws (new draw methods, macros or indirect draws).
+- This build logs the 3D engine's method calls, multi-method writes and macro calls (with their parameters) for one frame at the first title-screen capture and the first New Game capture (lines "NS2 trace: 3D ..."), to see how the game issues those draws.

@@ -559,6 +559,7 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
             capture.window_gpu = rt.gpu_addr;
             capture.phase = 2;
             NS2Draw::Reset();
+            if (capture.index == 0 || capture.index == 4) NS2Draw::ArmMethodTrace(12000);
         } else if (capture.phase == 2) {
             if (window && (rt.gpu_addr != capture.window_gpu || capture.images.size() > 96)) {
                 capture.images.emplace_back(rt_image_id[0], 0);

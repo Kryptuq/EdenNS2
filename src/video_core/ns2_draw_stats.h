@@ -20,4 +20,10 @@ void Reset();
 /// Per-target statistics since the last reset, one line per target.
 std::string Summary();
 
+/// Arms logging of the next `lines` 3D engine method calls (bounded tracing of one frame).
+void ArmMethodTrace(s32 lines);
+
+/// True while method tracing is armed; consumes one line of the budget.
+bool TakeMethodTrace();
+
 } // namespace VideoCommon::NS2Draw
