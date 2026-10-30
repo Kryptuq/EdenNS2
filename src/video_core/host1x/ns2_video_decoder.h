@@ -12,7 +12,8 @@
 namespace Tegra::NS2 {
 
 /// Software H.264 decoder for Switch 2 movie playback (nn::codec video decoder service).
-/// Decodes one access unit at a time and returns the picture as tightly packed RGBA8.
+/// Decodes one access unit at a time and returns the picture as packed NV12 (Y plane with
+/// pitch = width, then the interleaved UV plane), the layout nn::codec clients read back.
 class H264Decoder {
 public:
     H264Decoder();
@@ -24,9 +25,8 @@ public:
     /// (Re)creates the decoder with codec configuration data (avcC record or Annex B SPS/PPS).
     bool Configure(std::span<const u8> config);
 
-    /// Decodes one compressed frame. Returns true and fills `rgba` (width * height * 4 bytes)
-    /// when a picture came out of the decoder.
-    bool Decode(std::span<const u8> data, std::vector<u8>& rgba, u32& width, u32& height);
+    /// Decodes one compressed frame. Returns true and fills `nv12` when a picture came out.
+    bool Decode(std::span<const u8> data, std::vector<u8>& nv12, u32& width, u32& height);
 
 private:
     struct Impl;

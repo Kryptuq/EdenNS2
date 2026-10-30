@@ -24,7 +24,6 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/image_view_base.h"
-#include "video_core/texture_cache/ns2_frame_capture.h"
 #include "video_core/ns2_draw_stats.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
@@ -32,27 +31,6 @@
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
-
-namespace NS2CaptureDetail {
-// Switch 2 frame capture: every 15 s after the first 1920x1080 frame (6 times), the render
-// targets and sampled images of one frame are written as JPEGs to <log dir>/ns2_capture.
-struct State {
-    u32 phase{}; // 0 waiting for the first frame, 1 idle, 2 recording, 3 ready to write
-    u32 index{};
-    u64 first_ms{};
-    GPUVAddr window_gpu{};
-    std::vector<std::pair<ImageId, u32>> images; // role 0 render target, 1 sampled
-};
-inline State& GetState() {
-    static State state;
-    return state;
-}
-inline u64 NowMs() {
-    return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count());
-}
-} // namespace NS2CaptureDetail
 
 using Tegra::Texture::TICEntry;
 using Tegra::Texture::TSCEntry;
@@ -261,11 +239,6 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
             }
         }
     } while (has_deleted_images || (blacklist && has_blacklisted));
-    if (auto& capture = NS2CaptureDetail::GetState(); capture.phase == 2 && capture.images.size() < 256) {
-        for (const ImageViewInOut& view : views)
-            if (view.id && view.id != NULL_IMAGE_VIEW_ID)
-                capture.images.emplace_back(slot_image_views[view.id].image_id, compute ? 2U : 1U);
-    }
 }
 
 template <class P>
@@ -543,31 +516,6 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
             LOG_INFO(HW_GPU, "NS2 trace: render target gpu={:#x} cpu={:#x} {}x{} format={} targets={:#x}",
                      rt.gpu_addr, rt.cpu_addr, rt.info.size.width, rt.info.size.height, rt.info.format,
                      rt_active_mask);
-        }
-        auto& capture = NS2CaptureDetail::GetState();
-        const bool window = rt.info.size.width == 1920 && rt.info.size.height == 1080 &&
-                            (rt.info.format == PixelFormat::A8B8G8R8_UNORM ||
-                             rt.info.format == PixelFormat::A8B8G8R8_SRGB);
-        const u64 now = NS2CaptureDetail::NowMs();
-        if (capture.phase == 0 && window) {
-            capture.first_ms = now;
-            capture.phase = 1;
-        } else if (capture.phase == 1 && window && capture.index < 6 &&
-                   now >= capture.first_ms + 15000 * (capture.index + 1)) {
-            capture.images.clear();
-            capture.images.emplace_back(rt_image_id[0], 0);
-            capture.window_gpu = rt.gpu_addr;
-            capture.phase = 2;
-            NS2Draw::Reset();
-            if (capture.index == 0 || capture.index == 4) NS2Draw::ArmMethodTrace(12000);
-        } else if (capture.phase == 2) {
-            if (window && (rt.gpu_addr != capture.window_gpu || capture.images.size() > 96)) {
-                capture.images.emplace_back(rt_image_id[0], 0);
-                capture.phase = 3;
-            } else {
-                for (size_t i = 0; i < rt_image_id.size(); ++i)
-                    if (rt_image_id[i]) capture.images.emplace_back(rt_image_id[i], 0);
-            }
         }
     }
 
@@ -866,38 +814,6 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
 template <class P>
 std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImageView(
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
-    if (auto& capture = NS2CaptureDetail::GetState(); capture.phase == 3) {
-        std::vector<ImageId> written;
-        u32 sequence = 0;
-        NS2Capture::AppendIndex(fmt::format("capture {} (display {:#x})", capture.index, cpu_addr));
-        for (const auto& [image_id, role] : capture.images) {
-            if (std::ranges::find(written, image_id) != written.end()) continue;
-            written.push_back(image_id);
-            Image& image = slot_images[image_id];
-            const u32 width = image.info.size.width, height = image.info.size.height;
-            if (width < 64 || height < 64 || image.info.num_samples != 1 ||
-                VideoCore::Surface::IsPixelFormatASTC(image.info.format) || written.size() > 80)
-                continue;
-            auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
-            const auto copies = FullDownloadCopies(image.info);
-            image.DownloadMemory(map, copies);
-            runtime.Finish();
-            const auto& copy = copies[0];
-            const std::string name = fmt::format("c{}_{:03}_{}_{}x{}_{}", capture.index, sequence++,
-                                                 role == 0 ? "target" : role == 1 ? "texture" : "compute",
-                                                 width, height, image.info.format);
-            const bool ok = NS2Capture::WriteImage(map.mapped_span.subspan(copy.buffer_offset), width, height,
-                                                   copy.buffer_row_length ? copy.buffer_row_length : width,
-                                                   image.info.format, name);
-            NS2Capture::AppendIndex(fmt::format("  {} gpu={:#x} cpu={:#x} written={}", name, image.gpu_addr,
-                                                image.cpu_addr, ok));
-        }
-        NS2Capture::AppendIndex(NS2Draw::Summary());
-        LOG_INFO(HW_GPU, "NS2 capture {}: {} images written to ns2_capture", capture.index, written.size());
-        capture.images.clear();
-        capture.phase = 1;
-        ++capture.index;
-    }
     // TODO: Properly implement this
     static u32 framebuffer_miss_logs{};
     const auto view_format = [&]() {
@@ -2517,7 +2433,6 @@ template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
     std::erase_if(last_modified_by_size, [image_id](const auto& entry) { return entry.second == image_id; });
-    std::erase_if(NS2CaptureDetail::GetState().images, [image_id](const auto& entry) { return entry.first == image_id; });
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }

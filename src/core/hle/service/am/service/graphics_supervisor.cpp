@@ -86,6 +86,26 @@ struct NativeImageRegistry {
 };
 using NativeImage = NativeImageRegistry::Image;
 
+// Layout of a decoded picture inside a video decoder output image: pitch-linear NV12, the Y
+// plane at offset 0 and the interleaved UV plane after it. The decoder writes this layout and
+// GetCpuUserImageDescriptor (961) describes it to nn::gs::sdk::ReadUserImageNv12.
+struct DecoderImageLayout {
+    u32 width;
+    u32 height;
+    u32 pitch;
+    u32 uv_offset;
+};
+static std::optional<DecoderImageLayout> GetDecoderImageLayout(const NativeImage& image) {
+    const u32 width = (image.preference[2] & 0xffffU) + 1;
+    const u32 height = (image.preference[2] >> 16) + 1;
+    const u32 pitch = (width + 63) & ~63U;
+    const u32 uv_offset = pitch * ((height + 1) & ~1U);
+    if (u64{uv_offset} + u64{pitch} * ((height + 1) / 2) > image.size) {
+        return std::nullopt;
+    }
+    return DecoderImageLayout{width, height, pitch, uv_offset};
+}
+
 
 namespace {
 
@@ -226,7 +246,7 @@ public:
 
 private:
     struct Picture {
-        std::vector<u8> rgba;
+        std::vector<u8> rgba; // Packed NV12 (see Tegra::NS2::H264Decoder).
         u32 width{};
         u32 height{};
     };
@@ -303,7 +323,7 @@ private:
         return data;
     }
 
-    // Writes a decoded picture into a registered output image (block linear, Switch 2 GOBs).
+    // Writes a decoded NV12 picture into a registered output image (see DecoderImageLayout).
     void WritePicture(u32 image_id, const std::shared_ptr<Picture>& picture) {
         if (!picture || picture->rgba.empty() || !m_images) {
             return;
@@ -317,24 +337,26 @@ private:
         if (!handle || handle->address == 0) {
             return;
         }
-        const u32 image_width = (image->preference[2] & 0xffffU) + 1;
-        const u32 image_height = (image->preference[2] >> 16) + 1;
-        const u32 block_log2 = image->preference[4];
-        if (block_log2 < 3 || image->preference[5] * 64 < image_width * 4) {
+        const auto layout = GetDecoderImageLayout(*image);
+        if (!layout) {
             return;
         }
-        // Clip the picture into a linear copy with the image's dimensions.
-        m_linear.assign(static_cast<size_t>(image_width) * image_height * 4, 0);
-        const u32 rows = (std::min)(picture->height, image_height);
-        const u32 row_bytes = (std::min)(picture->width, image_width) * 4;
+        // Y rows, then the UV rows (half height), clipped into the image.
+        m_linear.assign(image->size, 0);
+        const u32 rows = (std::min)(picture->height, layout->height);
+        const u32 row_bytes = (std::min)(picture->width, layout->width);
+        const size_t luma = static_cast<size_t>(picture->width) * picture->height;
         for (u32 y = 0; y < rows; ++y) {
-            std::memcpy(m_linear.data() + static_cast<size_t>(y) * image_width * 4,
-                        picture->rgba.data() + static_cast<size_t>(y) * picture->width * 4, row_bytes);
+            std::memcpy(m_linear.data() + static_cast<size_t>(y) * layout->pitch,
+                        picture->rgba.data() + static_cast<size_t>(y) * picture->width, row_bytes);
         }
-        m_tiled.assign(image->size, 0);
-        Tegra::Texture::SwizzleTexture(m_tiled, m_linear, 4, image_width, image_height, 1,
-                                       block_log2 - 3, 0, 1, true);
-        m_images->process->GetMemory().WriteBlock(handle->address, m_tiled.data(), m_tiled.size());
+        for (u32 y = 0; y < (rows + 1) / 2; ++y) {
+            const size_t source = luma + static_cast<size_t>(y) * picture->width;
+            if (source + row_bytes > picture->rgba.size()) break;
+            std::memcpy(m_linear.data() + layout->uv_offset + static_cast<size_t>(y) * layout->pitch,
+                        picture->rgba.data() + source, row_bytes);
+        }
+        m_images->process->GetMemory().WriteBlock(handle->address, m_linear.data(), m_linear.size());
         if (m_pictures_written++ < 4) {
             LOG_INFO(Service_AM, "video decoder: picture {}x{} written to image {} at {:#x}",
                      picture->width, picture->height, image_id, handle->address);
@@ -473,7 +495,6 @@ private:
     Tegra::NS2::H264Decoder m_decoder;
     std::shared_ptr<Picture> m_last_picture;
     std::vector<u8> m_linear;
-    std::vector<u8> m_tiled;
     u32 m_pictures_written{};
     struct FreeImage {
         u32 image;
@@ -1421,6 +1442,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {430, &IGraphicsSupervisor::DestroyNativeImage, "DestroyNativeImage"},
         {911, &IGraphicsSupervisor::CreateNativeImage, "InitializeDecoderImagePool"},
         {912, &IGraphicsSupervisor::DestroyNativeImage, "FinalizeDecoderImagePool"},
+        {961, &IGraphicsSupervisor::GetCpuUserImageDescriptor, "GetCpuUserImageDescriptor"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
         {901, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext901"},
@@ -2153,6 +2175,41 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(result.raw);
     rb.Push(id);
+}
+
+// 961(native image handle): the 0x80-byte nn::gsv::CpuUserImageDescriptor that nn::codec's
+// ReadDecoderOutputImage* passes to nn::gs::sdk::ReadUserImage*, relative to the image memory.
+// Kind 0xa is pitch-linear NV12: u32 Y offset at 8, u64 Y pitch at 0x10, u32 UV offset at 0x18,
+// u64 UV pitch at 0x20.
+void IGraphicsSupervisor::GetCpuUserImageDescriptor(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    std::array<u32, 32> descriptor{};
+    Result result = Kernel::ResultInvalidCombination;
+    if (packet[0] == 0x3d1 && packet[1] == 1) {
+        const std::scoped_lock images_lock{m_image_registry->mutex};
+        const auto image = std::ranges::find(m_image_registry->images, packet[2], &NativeImage::id);
+        result = Kernel::ResultNotFound;
+        if (image != m_image_registry->images.end()) {
+            if (const auto layout = GetDecoderImageLayout(*image)) {
+                descriptor[0] = 0xa;
+                descriptor[2] = 0;
+                descriptor[4] = layout->pitch;
+                descriptor[6] = layout->uv_offset;
+                descriptor[8] = layout->pitch;
+                result = ResultSuccess;
+            }
+        }
+    }
+    static u32 logged{};
+    if (logged++ < 16) {
+        LOG_INFO(Service_AM, "CPU user image descriptor image={}, pitch={}, uv offset={:#x}, result={:#x}",
+                 packet[2], descriptor[4], descriptor[6], result.raw);
+    }
+    IPC::ResponseBuilder rb{ctx, 2 + static_cast<u32>(descriptor.size())};
+    rb.Push(result.raw);
+    for (const u32 word : descriptor) {
+        rb.Push(word);
+    }
 }
 
 void IGraphicsSupervisor::DestroyNativeImage(HLERequestContext& ctx) {

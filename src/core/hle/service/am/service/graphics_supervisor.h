@@ -44,6 +44,7 @@ private:
     void CalculateImageRequirements(HLERequestContext& ctx);
     void CreateNativeMemory(HLERequestContext& ctx);
     void CreateNativeImage(HLERequestContext& ctx);
+    void GetCpuUserImageDescriptor(HLERequestContext& ctx);
     void DestroyNativeImage(HLERequestContext& ctx);
     void ConfigureNativeWindowImagePool(HLERequestContext& ctx);
     void BindNativeMemory(HLERequestContext& ctx);
