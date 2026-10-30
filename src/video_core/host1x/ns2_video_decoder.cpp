@@ -95,7 +95,7 @@ bool H264Decoder::Configure(std::span<const u8> config) {
     return ok;
 }
 
-bool H264Decoder::Decode(std::span<const u8> data, std::vector<u8>& rgba, u32& width, u32& height) {
+bool H264Decoder::Decode(std::span<const u8> data, std::vector<u8>& nv12, u32& width, u32& height) {
     if (!impl->context && !impl->Open({})) {
         return false;
     }
@@ -123,14 +123,16 @@ bool H264Decoder::Decode(std::span<const u8> data, std::vector<u8>& rgba, u32& w
         }
         impl->scaler = sws_getCachedContext(impl->scaler, w, h,
                                             static_cast<AVPixelFormat>(impl->frame->format), w, h,
-                                            AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                            AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
         if (!impl->scaler) {
             av_frame_unref(impl->frame);
             continue;
         }
-        rgba.resize(static_cast<size_t>(w) * h * 4);
-        u8* dst[4] = {rgba.data(), nullptr, nullptr, nullptr};
-        int dst_stride[4] = {w * 4, 0, 0, 0};
+        // Packed NV12: the Y plane (pitch = width) followed by the interleaved UV plane.
+        const size_t luma = static_cast<size_t>(w) * h;
+        nv12.resize(luma + static_cast<size_t>(w) * ((h + 1) / 2) + 2);
+        u8* dst[4] = {nv12.data(), nv12.data() + luma, nullptr, nullptr};
+        int dst_stride[4] = {w, (w + 1) & ~1, 0, 0};
         sws_scale(impl->scaler, impl->frame->data, impl->frame->linesize, 0, h, dst, dst_stride);
         width = static_cast<u32>(w);
         height = static_cast<u32>(h);
