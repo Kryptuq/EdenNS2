@@ -15,6 +15,8 @@
 #include "core/hle/kernel/global_scheduler_context.h"
 #include "core/hle/kernel/k_handle_table.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/service/kernel_helpers.h"
+#include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/memory.h"
@@ -132,6 +134,11 @@ void NS2Watchdog::Dump(u64 stalled_ms) {
                 if (object.IsNull()) return;
                 objects += fmt::format(" {:#x}={}@{}", handle, object->GetTypeName(),
                                        fmt::ptr(object.GetPointerUnsafe()));
+                if (auto* readable = object->DynamicCast<Kernel::KReadableEvent*>()) {
+                    objects += fmt::format("('{}', signaled={})",
+                                           Service::KernelHelpers::EventNameForDebugging(readable->GetParent()),
+                                           readable->IsSignaled(m_system.Kernel()));
+                }
             };
             for (int r = 0; r < 4; ++r) describe(static_cast<Kernel::Handle>(ctx.r[r]));
             if (ctx.r[1] && memory.IsValidVirtualAddressRange(ctx.r[1], 16)) {

@@ -235,3 +235,7 @@
 ## Build 58
 - Build 57: the game never asks the syncpoint cache for a counter refresh, and never registers a syncpoint wait on the syncpoint session either. So VideoDecoderThread's wait on syncpoint-supervisor event 0 (NVN's event pool event, pulsed every 1 ms) is not a counter wait the service can see; whatever it re-checks after each wake lives in the game's own code.
 - To find out what, the first periodic snapshot now dumps, for the video/movie threads, the guest code around the current PC and around every return address of the call chain, the top of the stack and all registers (lines "NS2 code ..."), so the wait loop can be disassembled from the log.
+
+## Build 59
+- Build 58 code dumps, disassembled: VideoDecoderThread runs a generic event loop (multi-wait over a message queue, an exit event and one registered system event with a callback; the callback's holder unlinks after it fires). It sits on that registered event, so the event has not fired once; it is not the 1 ms-pulsed syncpoint event as assumed. Movie-DecoderThread (nn::movie) multi-waits on about eight events of its own.
+- Service-created kernel events are now named for diagnostics, and the thread snapshots print, for every waited readable event, the name of the service event behind it (or "guest or unnamed" for events the game created itself) and whether it is currently signalled. That tells which event VideoDecoderThread needs and who is supposed to signal it.
