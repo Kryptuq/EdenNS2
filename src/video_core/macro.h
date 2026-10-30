@@ -250,6 +250,7 @@ struct MacroEngine {
     bool native_execution_failed{};
     u32 native_write_offset{};
     std::array<u32, 0x3000> native_code{};
+    const std::array<u32, 0x3000>& NativeCode() const { return native_code; }
     TuringMacroInterpreter native_interpreter;
 
 };

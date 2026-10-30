@@ -26,4 +26,8 @@ void ArmMethodTrace(s32 lines);
 /// True while method tracing is armed; consumes one line of the budget.
 bool TakeMethodTrace();
 
+/// Marks that the next native macro execution should log its refreshed parameters.
+void SetTraceMacroExecute(bool value);
+bool TakeTraceMacroExecute();
+
 } // namespace VideoCommon::NS2Draw

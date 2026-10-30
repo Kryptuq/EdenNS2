@@ -23,6 +23,7 @@ std::mutex mutex;
 std::map<u64, Entry> entries;
 std::atomic<u32> skipped_logs{};
 std::atomic<s32> method_trace_budget{};
+std::atomic<bool> trace_macro_execute{};
 constexpr const char* Name(Result result) {
     switch (result) {
     case Result::Drawn: return "drawn";
@@ -71,6 +72,14 @@ void ArmMethodTrace(s32 lines) {
 bool TakeMethodTrace() {
     if (method_trace_budget.load(std::memory_order_relaxed) <= 0) return false;
     return method_trace_budget.fetch_sub(1, std::memory_order_relaxed) > 0;
+}
+
+void SetTraceMacroExecute(bool value) {
+    trace_macro_execute.store(value, std::memory_order_relaxed);
+}
+
+bool TakeTraceMacroExecute() {
+    return trace_macro_execute.exchange(false, std::memory_order_relaxed);
 }
 
 } // namespace VideoCommon::NS2Draw

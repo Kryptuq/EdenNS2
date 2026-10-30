@@ -396,8 +396,28 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
         std::string head;
         for (size_t i = 0; i < std::min<size_t>(parameters.size(), 10); ++i)
             head += fmt::format(" {:x}", parameters[i]);
-        LOG_INFO(HW_GPU, "NS2 trace: 3D macro {:#x} entry={} position={:#x} params={}:{}", method, entry,
-                 GetNativeMacroPositions()[entry], parameters.size(), head);
+        std::string segments;
+        for (const auto& [address, amount] : macro_segments)
+            segments += fmt::format(" {:#x}x{}", address, amount);
+        LOG_INFO(HW_GPU, "NS2 trace: 3D macro {:#x} entry={} position={:#x} params={}:{} segments:{} dirty={}",
+                 method, entry, GetNativeMacroPositions()[entry], parameters.size(), head, segments,
+                 current_macro_dirty);
+        VideoCommon::NS2Draw::SetTraceMacroExecute(true);
+        static bool dumped = false;
+        if (!dumped) {
+            dumped = true;
+            std::string positions;
+            for (const u32 position : GetNativeMacroPositions())
+                positions += fmt::format(" {:x}", position);
+            LOG_INFO(HW_GPU, "NS2 mme positions:{}", positions);
+            const auto& code = GetNativeMacroEngine().NativeCode();
+            for (size_t i = 0; i < code.size(); i += 12) {
+                std::string line;
+                for (size_t k = i; k < std::min(code.size(), i + 12); ++k)
+                    line += fmt::format(" {:08x}", code[k]);
+                LOG_INFO(HW_GPU, "NS2 mme {:04x}:{}", i, line);
+            }
+        }
     }
     // Execute the current macro.
     GetNativeMacroEngine().Execute(system, *this, GetNativeMacroPositions()[entry], parameters);
