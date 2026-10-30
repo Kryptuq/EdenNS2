@@ -134,7 +134,9 @@ public:
         const u32 words = (std::min)(packet[1] & 0x3ffU, 24U);
         // Per-command sampling: polling commands (e.g. 213) would otherwise flood the log.
         const u32 seen = m_command_counts[command]++;
-        if (seen < 16 || seen % 1000 == 0) {
+        const bool buffer_command = command == 311 || command == 314 || command == 212 || command == 213 ||
+                                    command == 3 || command == 6 || command == 8 || command == 207;
+        if (seen < 16 || seen % 1000 == 0 || (buffer_command && seen < 300)) {
             std::string data;
             for (u32 i = 0; i < words; ++i) {
                 data += fmt::format("{:08x} ", packet[2 + i]);
@@ -158,7 +160,10 @@ public:
                 }
                 Reply(ctx, {0, 0});
                 break;
-            case 109: SubmitInput(ctx); break;
+            case 109:
+                SubmitInput(ctx);
+                DumpWorkMemory();
+                break;
             case 212:
                 std::erase(m_free, packet[2]);
                 Reply(ctx, {});
@@ -168,7 +173,18 @@ public:
                 GiveBack(packet[2]);
                 Reply(ctx, {0, 0, 0, 0});
                 break;
-            case 6: case 8: case 115: case 200: case 201: case 207:
+            case 200: case 201:
+                if (const Handle handle = ctx.GetCopyHandle(0); handle != 0) {
+                    if (auto memory = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(handle); memory.IsNotNull()) {
+                        m_work_address = GetInteger(memory->GetSourceAddress());
+                        m_work_size = memory->GetSize();
+                        LOG_INFO(Service_AM, "video decoder: work memory {:#x} size {:#x}", m_work_address, m_work_size);
+                    }
+                }
+                Reply(ctx, {});
+                Signal();
+                break;
+            case 6: case 8: case 115: case 207:
                 Reply(ctx, {});
                 Signal();
                 break;
@@ -349,6 +365,10 @@ private:
         }
         const Output output = m_outputs.front();
         m_outputs.pop_front();
+        if (m_outputs_given++ < 64) {
+            LOG_INFO(Service_AM, "video decoder: output {} -> image {} pts {} (free {}, waiting {}, ready {})",
+                     m_outputs_given, output.image, output.pts, m_free.size(), m_waiting.size(), m_outputs.size());
+        }
         Reply(ctx, {output.image, m_width, m_height, m_width, m_height, 0,
                     static_cast<u32>(output.pts), static_cast<u32>(output.pts >> 32),
                     output.end ? 1U : 0U, 0, 0, 0, 0, 0, 0, 0});
@@ -363,6 +383,26 @@ private:
     u32 m_width{};
     u32 m_height{};
     u64 m_submitted{};
+    u64 m_work_address{};
+    u64 m_work_size{};
+    u32 m_work_dumps{};
+    u32 m_outputs_given{};
+
+    // Logs the first words of the decoder's work memory at a few points, to see whether the
+    // client keeps state (for example ring indices) there that the service must update.
+    void DumpWorkMemory() {
+        if (!m_work_address || !m_images || m_work_dumps >= 6) return;
+        const u64 submitted = m_submitted;
+        if (submitted != 1 && submitted != 2 && submitted != 30 && submitted != 300 &&
+            submitted != 1000 && submitted != 3000)
+            return;
+        ++m_work_dumps;
+        std::array<u32, 64> words{};
+        m_images->process->GetMemory().ReadBlock(m_work_address, words.data(), sizeof(words));
+        std::string text;
+        for (u32 i = 0; i < words.size(); ++i) text += fmt::format(" {:08x}", words[i]);
+        LOG_INFO(Service_AM, "video decoder: work memory after {} inputs:{}", submitted, text);
+    }
     std::shared_ptr<NativeImageRegistry> m_images;
     Tegra::NS2::H264Decoder m_decoder;
     std::shared_ptr<Picture> m_last_picture;
