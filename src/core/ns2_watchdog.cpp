@@ -106,6 +106,7 @@ void NS2Watchdog::Dump(u64 stalled_ms) {
     std::vector<Kernel::KThread*> threads(live_list.begin(), live_list.end());
 
     auto& memory = process->GetMemory();
+    const bool dump_code = stalled_ms == 0 && !m_code_dumped;
     for (Kernel::KThread* thread : threads) {
         if (!thread || thread->GetOwnerProcess() != process) {
             continue;
@@ -158,7 +159,35 @@ void NS2Watchdog::Dump(u64 stalled_ms) {
             chain.pop_back();
             LOG_WARNING(Core, "NS2 watchdog:   call chain {}", chain);
         }
+        // Once, for the media threads: the code around each return address and the top of the
+        // stack, so the wait loops can be disassembled from the log.
+        if (stalled_ms == 0 && !m_code_dumped &&
+            (name.find("Video") != std::string::npos || name.find("Movie") != std::string::npos)) {
+            const auto dump = [&](const char* what, u64 address, u64 size) {
+                if (!memory.IsValidVirtualAddressRange(address, size)) return;
+                for (u64 offset = 0; offset < size; offset += 64) {
+                    std::string line;
+                    for (u64 k = 0; k < 64; k += 4) line += fmt::format(" {:08x}", memory.Read32(address + offset + k));
+                    LOG_WARNING(Core, "NS2 code {} {} {:#x}:{}", name, what, address + offset, line);
+                }
+            };
+            dump("pc", (ctx.pc & ~0x3fULL) - 0x100, 0x200);
+            u64 frame = ctx.fp;
+            for (int i = 0; i < 8; ++i) {
+                if (!frame || (frame % 8) != 0 || !memory.IsValidVirtualAddressRange(frame, 16)) break;
+                const u64 ret = memory.Read64(frame + 8);
+                dump("ret", (ret & ~0x3fULL) - 0x600, 0x800);
+                const u64 next = memory.Read64(frame);
+                if (next <= frame) break;
+                frame = next;
+            }
+            dump("stack", ctx.sp & ~0x3fULL, 0x400);
+            std::string regs;
+            for (int r = 0; r < 31; ++r) regs += fmt::format(" x{}={:#x}", r, ctx.r[r]);
+            LOG_WARNING(Core, "NS2 code {} regs:{}", name, regs);
+        }
     }
+    if (dump_code) m_code_dumped = true;
 }
 
 } // namespace Core

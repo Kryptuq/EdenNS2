@@ -27,6 +27,7 @@ private:
 
     System& m_system;
     std::jthread m_thread;
+    bool m_code_dumped{};
 };
 
 } // namespace Core

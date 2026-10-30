@@ -231,3 +231,7 @@
 ## Build 57
 - Build 56 snapshots identify the video threads' waits: VideoDecoderAdapterThread waits on the decoder's notification event (cmd 3) and keeps feeding input; VideoDecoderThread, the one that should collect decoded pictures, waits on syncpoint-supervisor event 0, which the game obtained right before starting the movie. That event is pulsed every 1 ms and the game then re-checks counters in the shared syncpoint cache. So the decoder thread waits for a syncpoint counter to reach a value, and that never happens.
 - This build logs every syncpoint counter the game asks the cache to refresh (id, value, whether it is allocated), to identify the counter and value the decoder thread waits for, so the decoder service can advance it when a picture is ready.
+
+## Build 58
+- Build 57: the game never asks the syncpoint cache for a counter refresh, and never registers a syncpoint wait on the syncpoint session either. So VideoDecoderThread's wait on syncpoint-supervisor event 0 (NVN's event pool event, pulsed every 1 ms) is not a counter wait the service can see; whatever it re-checks after each wake lives in the game's own code.
+- To find out what, the first periodic snapshot now dumps, for the video/movie threads, the guest code around the current PC and around every return address of the call chain, the top of the stack and all registers (lines "NS2 code ..."), so the wait loop can be disassembled from the log.
