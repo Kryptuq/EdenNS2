@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <limits>
 #include <optional>
 #include <bit>
@@ -501,6 +503,18 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         rt_depth_image_id = slot_image_views[depth_buffer_id].image_id;
     } else {
         rt_depth_image_id = ImageId{};
+    }
+    if (gpu_memory->UsesNativeTiling() && rt_image_id[0]) {
+        // Log render target 0 whenever it moves to another surface (bounded).
+        static std::atomic<u32> logged{};
+        static std::atomic<u64> last_gpu{};
+        const Image& rt = slot_images[rt_image_id[0]];
+        if (last_gpu.exchange(rt.gpu_addr, std::memory_order_relaxed) != rt.gpu_addr &&
+            logged.fetch_add(1, std::memory_order_relaxed) < 600) {
+            LOG_INFO(HW_GPU, "NS2 trace: render target gpu={:#x} cpu={:#x} {}x{} format={} targets={:#x}",
+                     rt.gpu_addr, rt.cpu_addr, rt.info.size.width, rt.info.size.height, rt.info.format,
+                     rt_active_mask);
+        }
     }
 
     for (size_t index = 0; index < NUM_RT; ++index) {
@@ -1618,6 +1632,16 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
     storage_info.native_tiling = gpu_memory->UsesNativeTiling();
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
     const Image& image = slot_images[image_id];
+    if (storage_info.native_tiling && info.size.width >= 640 && info.size.height >= 360) {
+        // Large Switch 2 images: where render targets/screen-sized surfaces live, to tell which
+        // surfaces the game draws its frame into versus what the display scans out.
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 128) {
+            LOG_INFO(HW_GPU, "NS2 trace: image gpu={:#x} cpu={:#x} {}x{} format={} type={}",
+                     gpu_addr, *cpu_addr, info.size.width, info.size.height, info.format,
+                     static_cast<u32>(info.type));
+        }
+    }
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
     if (is_new) {

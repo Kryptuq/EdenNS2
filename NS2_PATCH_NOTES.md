@@ -194,3 +194,7 @@
 - Build 47 log: no shader is rejected for an unsupported instruction any more, but compute programs that run on every frame from the title screen on (they sample textures and write images with SUST, i.e. post-processing/compositing) could not even be captured: capture never found their end and read on into unmapped memory or garbage ("Unmapped native shader instruction", "branch outside capture bounds").
 - Cause: they use predicated CALL.REL.NOINC as conditional forward jumps. Capture counted these as subroutine calls and waited for a RET that never comes. Lowering already treated them as branches; capture now does the same.
 - The local dump check now captures each program exactly like the emulator before lowering it. All 66 programs from the build 47 log capture, lower and translate.
+
+## Build 49 (diagnostics)
+- Build 48 log: no shader is rejected any more (title and menu), yet the screen is unchanged. The display scans out the two window images (device 0x4c111000/0x4c981000), and the GPU never creates a surface there; the only screen-sized surface is the one directly before them (0x4b8a1000), which is what the fallback presents. The same layout shows up in the 1280x720 boot phase (surface 0x8201000, window images 0x85c1000/0x8981000).
+- To find out how the game gets its frame into the window images, this build logs (bounded): every new screen-sized surface with its GPU and device address, every change of render target 0, every copy-engine (DMA) transfer and every 2D blit with source/destination. Lines start with "NS2 trace:".
