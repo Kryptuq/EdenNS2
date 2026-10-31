@@ -25,10 +25,23 @@ public:
     /// (Re)creates the decoder with codec configuration data (avcC record or Annex B SPS/PPS).
     bool Configure(std::span<const u8> config);
 
-    /// Decodes one compressed frame. Returns true and fills `nv12` when a picture came out.
-    bool Decode(std::span<const u8> data, std::vector<u8>& nv12, u32& width, u32& height);
+    struct Frame {
+        std::vector<u8> nv12;
+        u32 width{};
+        u32 height{};
+        s64 pts{}; ///< Timestamp of the access unit the picture came from.
+    };
+
+    /// Decodes one compressed frame (timestamp in microseconds). Returns the pictures that
+    /// came out, in presentation order (none while the decoder still buffers for reordering).
+    std::vector<Frame> Decode(std::span<const u8> data, s64 pts);
+
+    /// End of stream: returns the pictures still held for reordering and resets the decoder.
+    std::vector<Frame> Drain();
 
 private:
+    void Receive(std::vector<Frame>& frames);
+
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <iterator>
 #include <cstring>
 #include <deque>
 #include <initializer_list>
@@ -420,37 +421,55 @@ private:
 
     void SubmitInput(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
-        // Words 2-4 are the A descriptor of the compressed frame.
+        // Words 2-4 are the A descriptor of the compressed frame, then u64 pts (microseconds)
+        // and the end-of-stream flag.
         const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
         const bool end = (w[7] & 0xff) != 0;
-        std::shared_ptr<Picture> picture;
-        {
-            const auto data = ReadDescriptor(w + 2, 16ULL << 20);
-            auto decoded = std::make_shared<Picture>();
-            if (!data.empty() && m_decoder.Decode(data, decoded->rgba, decoded->width, decoded->height)) {
-                picture = std::move(decoded);
-                m_last_picture = picture;
-            } else {
-                // No new picture (decoder delay or an error): repeat the last one.
-                picture = m_last_picture;
-            }
+        const auto data = ReadDescriptor(w + 2, 16ULL << 20);
+        auto frames = m_decoder.Decode(data, static_cast<s64>(pts));
+        if (end) {
+            auto rest = m_decoder.Drain();
+            std::move(rest.begin(), rest.end(), std::back_inserter(frames));
         }
+        // Each picture becomes one output, in presentation order. An empty input without the
+        // end flag produces nothing (the old code emitted a repeated picture for every input,
+        // and the game then spammed empty inputs).
+        for (size_t i = 0; i < frames.size(); ++i) {
+            auto picture = std::make_shared<Picture>();
+            picture->rgba = std::move(frames[i].nv12);
+            picture->width = frames[i].width;
+            picture->height = frames[i].height;
+            m_last_picture = picture;
+            Emit(std::move(picture), static_cast<u64>(frames[i].pts), end && i + 1 == frames.size());
+        }
+        if (end && frames.empty()) {
+            Emit(m_last_picture, pts, true);
+        }
+        if (data.empty() && !end && m_empty_inputs++ < 4) {
+            LOG_INFO(Service_AM, "video decoder: empty input without end of stream (pts {})", pts);
+        }
+        const u64 id = ++m_submitted;
+        Reply(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
+        Signal();
+    }
+
+    void Emit(std::shared_ptr<Picture> picture, u64 pts, bool end) {
         if (!m_free.empty()) {
             const FreeImage free = m_free.front();
             m_free.pop_front();
             WritePicture(free.image, picture);
             m_outputs.push_back({free.image, pts, end, nullptr});
             Complete(free.target);
-        } else {
-            // Keep pixel data only for a few waiting frames.
-            if (m_waiting.size() >= 8) {
-                picture = nullptr;
-            }
-            m_waiting.push_back({0, pts, end, std::move(picture)});
+            return;
         }
-        const u64 id = ++m_submitted;
-        Reply(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
-        Signal();
+        if (m_waiting.size() >= 256) {
+            m_waiting.pop_front();
+        }
+        // Keep pixel data only for a few waiting frames.
+        if (m_waiting.size() >= 8) {
+            picture = nullptr;
+        }
+        m_waiting.push_back({0, pts, end, std::move(picture)});
     }
 
     void GetOutput(HLERequestContext& ctx) {
@@ -466,8 +485,12 @@ private:
             LOG_INFO(Service_AM, "video decoder: output {} -> image {} pts {} (free {}, waiting {}, ready {})",
                      m_outputs_given, output.image, output.pts, m_free.size(), m_waiting.size(), m_outputs.size());
         }
+        // Inputs carry microseconds (nn::codec converts the TimeSpan before sending), but the
+        // client copies this value straight into the frame's nn::TimeSpan (nanoseconds). In
+        // microseconds every frame looked far behind the playback clock.
+        const u64 pts_ns = output.pts * 1000;
         Reply(ctx, {output.image, m_width, m_height, m_width, m_height, 0,
-                    static_cast<u32>(output.pts), static_cast<u32>(output.pts >> 32),
+                    static_cast<u32>(pts_ns), static_cast<u32>(pts_ns >> 32),
                     output.end ? 1U : 0U, 0, 0, 0, 0, 0, 0, 0});
     }
 
@@ -484,6 +507,7 @@ private:
     u64 m_work_size{};
     u32 m_work_dumps{};
     u32 m_outputs_given{};
+    u32 m_empty_inputs{};
 
     // Logs the first words of the decoder's work memory at a few points, to see whether the
     // client keeps state (for example ring indices) there that the service must update.
