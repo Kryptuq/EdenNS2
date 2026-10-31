@@ -330,3 +330,12 @@
 ## Build 76
 - Build 75: QueryNativeImage (428) now answers ("query native image 13: dims=0x437077f size=0x870000"). Right after it, NVN calls 426 (nn::gpu::sdk::MapNativeImage: handle 13, address space 3, permission 3), which Eden did not know, so the blit still read from address 0 and crashed.
 - 426 is implemented. It maps the decoder image's memory into the given GPU address space at its CPU address (the game's own GPU mappings use GPU address == CPU address), then replies like 428 with the GPU address in words 0-1. The mapping result is logged ("map native image ...").
+
+## Build 77
+- Build 76: the in-game cutscene plays (49-51 FPS), with three problems.
+  - Red and blue are swapped. Bowser Jr.'s red hair shows blue, and the warm door light is blue.
+  - It flickers and jumps: single frames from a different moment appear.
+  - At the end the game freezes on a white screen. The log shows command 427 (nn::gpu::sdk::UnmapNativeImage) unknown, then a userspace panic.
+- Code 5 decoder images are now written as RGBA (BGRA before; the video showed a consistent R/B swap, no alternation).
+- 427 is implemented: it unmaps the image range that 426 mapped and replies success.
+- In native texture mode the GPU still reads a decoder image after the client released it (314). The 314 request carries the consumer's fence, which Eden ignored and overwrote the image at once, a likely cause of the out-of-order frames. Waiting frames now go into released images only once that fence is reached, in order, checked again every 0.5 ms. As a safety net it writes anyway after 100 ms (logged). The title movie sends no fence and is unaffected.

@@ -94,7 +94,7 @@ using NativeImage = NativeImageRegistry::Image;
 // - 1/4: NV12, pitch linear (Y plane at 0, interleaved UV after it). Read back by the CPU through
 //   961 (nn::gs::sdk::ReadUserImageNv12).
 // - 2/3: BGRA/RGBA, pitch linear, read back through 961 (kinds 9/8).
-// - 5/6: BGRA/RGBA block linear (the image's 16-GOB layout): "native texture" mode, where NVN
+// - 5/6: RGBA/BGRA block linear (the image's 16-GOB layout): "native texture" mode, where NVN
 //   samples or blits the decoder image directly (QueryNativeImage, 428).
 struct DecoderImageLayout {
     enum class Kind { Nv12, PitchColor, BlockColor };
@@ -116,7 +116,8 @@ static std::optional<DecoderImageLayout> GetDecoderImageLayout(const NativeImage
         if (block_log2 < 3 || pitch < width * 4) {
             return std::nullopt;
         }
-        return DecoderImageLayout{DecoderImageLayout::Kind::BlockColor, code == 5, width, height,
+        // Code 5 is RGBA for NVN (the cutscene showed red and blue swapped as BGRA).
+        return DecoderImageLayout{DecoderImageLayout::Kind::BlockColor, code == 6, width, height,
                                   pitch, 0, block_log2};
     }
     if (code == 2 || code == 3) {
@@ -188,8 +189,17 @@ public:
     IVideoCodecService(Core::System& system_, bool encoder, std::shared_ptr<NativeImageRegistry> images)
         : ServiceFramework{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
           m_encoder{encoder}, m_context{system_, encoder ? "IVideoEncService" : "IVideoDecService"},
-          m_images{std::move(images)} {}
+          m_images{std::move(images)} {
+        m_pump_event = Core::Timing::CreateEvent(
+            "VideoDecoderPump", [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                const auto guard = LockService();
+                m_pump_scheduled = false;
+                Pump();
+                return std::nullopt;
+            });
+    }
     ~IVideoCodecService() override {
+        system.CoreTiming().UnscheduleEvent(m_pump_event);
         {
             std::scoped_lock lk{m_ready->mutex};
             m_ready->event = nullptr;
@@ -261,7 +271,14 @@ public:
                 // the fence must only be reached once a frame has been written into the image.
                 EnsureSyncpoint();
                 const auto existing = std::ranges::find(m_free, packet[2], &FreeImage::image);
-                const u32 target = existing != m_free.end() ? existing->target : GiveBack(packet[2]);
+                // 314 carries the consumer's fence (u64 {~counter, mode} at word 4, u64 value at
+                // word 6): the image may only be overwritten once it is reached (in native
+                // texture mode the GPU still reads the image after the client released it).
+                ConsumerFence fence{};
+                if (command == 314 && packet[4] != 0) {
+                    fence = {true, ~packet[4], (packet[5] & 0xff) == 1, u64{packet[6]} | (u64{packet[7]} << 32)};
+                }
+                const u32 target = existing != m_free.end() ? existing->target : GiveBack(packet[2], fence);
                 if (m_fences_logged++ < 32) {
                     LOG_INFO(Service_AM, "video decoder: image {} queued (command {}), fence counter {} value {}",
                              packet[2], command, m_syncpoint.value_or(~0U), target);
@@ -310,6 +327,12 @@ public:
     }
 
 private:
+    struct ConsumerFence {
+        bool valid{};
+        u32 id{};
+        bool wide{};
+        u64 value{};
+    };
     struct Picture {
         std::vector<u8> rgba; // Packed NV12 (see Tegra::NS2::H264Decoder).
         u32 width{};
@@ -507,19 +530,64 @@ private:
     // An output image is free again: a frame waiting for one completes into it. Returns the
     // fence value that is reached once the image holds a frame.
     u32 GiveBack(u32 image) {
+        return GiveBack(image, ConsumerFence{});
+    }
+
+    u32 GiveBack(u32 image, ConsumerFence fence) {
         const u32 target = ++m_fence_assigned;
-        if (!m_waiting.empty()) {
+        m_free.push_back({image, target, fence, std::chrono::steady_clock::now()});
+        Pump();
+        return target;
+    }
+
+    bool FenceReached(const ConsumerFence& fence) {
+        if (!fence.valid) {
+            return true;
+        }
+        const u32 current = system.Host1x().GetSyncpointManager().GetHostSyncpointValue(fence.id);
+        return fence.wide ? u64{current} >= fence.value
+                          : static_cast<s32>(current - static_cast<u32>(fence.value)) >= 0;
+    }
+
+    // Writes waiting frames into free images, in order, as long as the next image's consumer
+    // fence has been reached; then decodes queued input into the room that freed up.
+    void Pump() {
+        if (m_in_pump) {
+            return; // Frames emitted while pumping are picked up by the running loop.
+        }
+        m_in_pump = true;
+        bool progressed = false;
+        const auto now = std::chrono::steady_clock::now();
+        while (!m_free.empty() && !m_waiting.empty()) {
+            if (!FenceReached(m_free.front().fence)) {
+                // Safety net: a fence the GPU emulation never signals must not stall the movie.
+                if (now - m_free.front().released < std::chrono::milliseconds{100}) {
+                    break;
+                }
+                if (m_fence_timeouts++ < 8) {
+                    LOG_WARNING(Service_AM, "video decoder: consumer fence of image {} (counter {} value {}) not reached after 100 ms, writing anyway",
+                                m_free.front().image, m_free.front().fence.id, m_free.front().fence.value);
+                }
+            }
+            const FreeImage free = m_free.front();
+            m_free.pop_front();
             auto frame = std::move(m_waiting.front());
             m_waiting.pop_front();
-            WritePicture(image, frame.picture);
-            m_outputs.push_back({image, frame.pts, frame.end, nullptr});
-            Complete(target);
+            WritePicture(free.image, frame.picture);
+            m_outputs.push_back({free.image, frame.pts, frame.end, nullptr});
+            Complete(free.target);
+            progressed = true;
             DecodePending();
-            Signal();
-            return target;
         }
-        m_free.push_back({image, target});
-        return target;
+        m_in_pump = false;
+        if (progressed) {
+            Signal();
+        }
+        // A consumer fence still pending: check again shortly.
+        if (!m_free.empty() && !m_waiting.empty() && !m_pump_scheduled) {
+            m_pump_scheduled = true;
+            system.CoreTiming().ScheduleEvent(std::chrono::microseconds{500}, m_pump_event);
+        }
     }
 
     void SubmitInput(HLERequestContext& ctx) {
@@ -596,15 +664,8 @@ private:
     }
 
     void Emit(std::shared_ptr<Picture> picture, u64 pts, bool end) {
-        if (!m_free.empty()) {
-            const FreeImage free = m_free.front();
-            m_free.pop_front();
-            WritePicture(free.image, picture);
-            m_outputs.push_back({free.image, pts, end, nullptr});
-            Complete(free.target);
-            return;
-        }
         m_waiting.push_back({0, pts, end, std::move(picture)});
+        Pump();
     }
 
     void GetOutput(HLERequestContext& ctx) {
@@ -679,7 +740,13 @@ private:
     struct FreeImage {
         u32 image;
         u32 target;
+        ConsumerFence fence;
+        std::chrono::steady_clock::time_point released;
     };
+    u32 m_fence_timeouts{};
+    bool m_pump_scheduled{};
+    bool m_in_pump{};
+    std::shared_ptr<Core::Timing::EventType> m_pump_event;
     std::deque<FreeImage> m_free;
     std::optional<u32> m_syncpoint;
     u32 m_fence_assigned{};
@@ -1632,6 +1699,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {961, &IGraphicsSupervisor::GetCpuUserImageDescriptor, "GetCpuUserImageDescriptor"},
         {428, &IGraphicsSupervisor::QueryNativeImage, "QueryNativeImage"},
         {426, &IGraphicsSupervisor::QueryNativeImage, "MapNativeImage"},
+        {427, &IGraphicsSupervisor::UnmapNativeImage, "UnmapNativeImage"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
         {901, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext901"},
@@ -2437,6 +2505,24 @@ void IGraphicsSupervisor::QueryNativeImage(HLERequestContext& ctx) {
     for (const u32 word : words) {
         rb.Push(word);
     }
+}
+
+// 427(u32 handle, u32 address space, u64 first, u64 last): nn::gpu::sdk::UnmapNativeImage, the
+// counterpart of 426 (sent when the cutscene ends).
+void IGraphicsSupervisor::UnmapNativeImage(HLERequestContext& ctx) {
+    const auto* packet = ctx.CommandBuffer();
+    const u64 first = u64{packet[4]} | (u64{packet[5]} << 32);
+    const u64 last = u64{packet[6]} | (u64{packet[7]} << 32);
+    auto unmapped = Nvidia::NvResult::BadParameter;
+    if (m_nv_module && last >= first) {
+        if (const auto as = m_nv_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(static_cast<s32>(packet[3]))) {
+            unmapped = as->UnmapNative4K(first, last - first + 1);
+        }
+    }
+    LOG_INFO(Service_AM, "unmap native image {} from address space {} at {:#x}..{:#x}: {}", packet[2],
+             packet[3], first, last, static_cast<u32>(unmapped));
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(ResultSuccess.raw);
 }
 
 void IGraphicsSupervisor::GetCpuUserImageDescriptor(HLERequestContext& ctx) {
