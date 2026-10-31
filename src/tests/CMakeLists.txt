@@ -23,6 +23,7 @@ add_executable(tests
     core/internal_network/network.cpp
     video_core/native_semaphore.cpp
     video_core/native_shader.cpp
+    video_core/ns2_pipeline_cache_spirv.cpp
     video_core/native_swizzle.cpp
     video_core/image_overlap.cpp
     video_core/pending_download.cpp
