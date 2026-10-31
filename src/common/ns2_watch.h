@@ -39,6 +39,11 @@ struct PhaseInfo {
 /// Returns phases active for at least `min_age_ms`.
 std::vector<PhaseInfo> CollectPhases(u64 min_age_ms);
 
+/// Installs a last-chance crash handler that writes the exception (code, address, module offset,
+/// a stack of return addresses) and every thread's current phase to `path` before the process
+/// dies. Eden's own log is written asynchronously and loses its last lines in a crash.
+void InstallCrashReport(const std::string& path);
+
 /// RAII helper that restores the previous phase on scope exit.
 class PhaseScope {
 public:

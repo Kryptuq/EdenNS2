@@ -3,7 +3,19 @@
 
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <string>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include "common/ns2_watch.h"
 #include "common/thread.h"
@@ -125,6 +137,79 @@ PhaseScope::~PhaseScope() {
     slot->value.store(m_prev_value, std::memory_order_relaxed);
     slot->label.store(m_prev_label, std::memory_order_relaxed);
     slot->since.store(m_prev_label ? m_prev_since : 0, std::memory_order_release);
+}
+
+namespace {
+std::string g_crash_path;
+
+#ifdef _WIN32
+void WritePhases(FILE* file) {
+    std::fprintf(file, "crashing thread: %s\n", Common::GetCurrentThreadName().c_str());
+    for (const auto& phase : CollectPhases(0)) {
+        std::fprintf(file, "thread '%s': %s %s value=%#llx (for %llu ms)\n", phase.thread.c_str(),
+                     phase.label.c_str(), phase.detail.c_str(),
+                     static_cast<unsigned long long>(phase.value),
+                     static_cast<unsigned long long>(phase.age_ms));
+    }
+}
+
+void WriteAddress(FILE* file, const void* address) {
+    HMODULE module{};
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &module) &&
+        module != nullptr) {
+        GetModuleFileNameA(module, name, sizeof(name));
+    }
+    const char* base = std::strrchr(name, '\\');
+    base = base ? base + 1 : name;
+    std::fprintf(file, "  %p %s+%#llx\n", address, base,
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                                 reinterpret_cast<uintptr_t>(module)));
+}
+
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
+    static std::atomic<bool> written{false};
+    if (written.exchange(true) || g_crash_path.empty()) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    FILE* file = std::fopen(g_crash_path.c_str(), "w");
+    if (!file) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const EXCEPTION_RECORD* record = info->ExceptionRecord;
+    std::fprintf(file, "exception %#lx at:\n", static_cast<unsigned long>(record->ExceptionCode));
+    WriteAddress(file, record->ExceptionAddress);
+    if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && record->NumberParameters >= 2) {
+        std::fprintf(file, "access violation (%s) at %#llx\n",
+                     record->ExceptionInformation[0] == 0 ? "read"
+                     : record->ExceptionInformation[0] == 1 ? "write" : "execute",
+                     static_cast<unsigned long long>(record->ExceptionInformation[1]));
+    }
+    std::fprintf(file, "stack:\n");
+    void* frames[64]{};
+    const USHORT count = RtlCaptureStackBackTrace(0, 64, frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        WriteAddress(file, frames[i]);
+    }
+    WritePhases(file);
+    std::fclose(file);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+} // namespace
+
+void InstallCrashReport(const std::string& path) {
+    static std::atomic<bool> installed{false};
+    g_crash_path = path;
+    if (installed.exchange(true)) {
+        return;
+    }
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(CrashFilter);
+#endif
+    // Elsewhere SIGSEGV belongs to fastmem, so nothing is installed.
 }
 
 } // namespace Common::NS2Watch
