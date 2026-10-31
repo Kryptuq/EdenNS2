@@ -1259,6 +1259,26 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
 
     Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
         *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
+    {
+        // NS2 trace: uploads of large one/two-channel images (movie Y/UV planes) with their
+        // average byte value, to see what the game copies out of the decoder.
+        const auto format = image.info.format;
+        static u32 plane_uploads{};
+        if ((format == PixelFormat::R8_UNORM || format == PixelFormat::R8G8_UNORM ||
+             format == PixelFormat::R8_UINT || format == PixelFormat::R8G8_UINT) &&
+            image.info.size.width >= 480 && plane_uploads < 400) {
+            ++plane_uploads;
+            u64 sum = 0;
+            const std::span<const u8> bytes{swizzle_data.data(), swizzle_data.size()};
+            for (size_t i = 0; i < bytes.size(); i += 61) sum += bytes[i];
+            const u64 samples = (bytes.size() + 60) / 61;
+            if (plane_uploads <= 24 || plane_uploads % 50 == 0) {
+                LOG_INFO(HW_GPU, "NS2 trace: plane upload #{} gpu={:#x} {}x{} format={} bytes={} mean={}",
+                         plane_uploads, gpu_addr, image.info.size.width, image.info.size.height, format,
+                         bytes.size(), samples ? sum / samples : 0);
+            }
+        }
+    }
     if (True(image.flags & ImageFlagBits::Converted)) {
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
         auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
