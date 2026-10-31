@@ -259,3 +259,9 @@
 ## Build 63
 - Build 62 numbers: the decoder produces real pictures (first frames almost white, mean Y 234; later frames mean Y 179, U 146, V 93). The movie's Y (1920x1080 R8) and UV (960x540 RG8) textures were uploaded to the GPU exactly once each, at 38.8 s, with the brightness of that first white frame, and never again. So the background shows the movie's first frame forever: the game keeps writing new frames into the same texture memory, but Eden never notices the writes.
 - The texture cache now checks the guest memory of large one/two-channel textures once per frame (a sparse checksum) and uploads them again when the contents changed. It logs the first such re-uploads ("untracked write ... re-uploading").
+
+## Build 64
+- Build 63: the change-detection never fired for the movie textures. Their memory really does keep the first frame, so the game copies only the first frames in. But it takes about 75 decoded frames per second, far faster than the movie runs, and after the movie ends it sends empty inputs nonstop (1.5 million by 150 s). That looks like a player that throws every frame away as too late, shows nothing after the start, and spins at end of stream.
+- Likely cause: frame timestamps. nn::codec sends input timestamps in microseconds, but the client copies the output timestamp straight into the frame's nn::TimeSpan, which is nanoseconds. Eden returned microseconds, so every frame looked about 1000 times older than the playback clock. Output timestamps are now in nanoseconds.
+- Pictures now come out in presentation order. FFmpeg reorders B-frames, and each picture carries its own timestamp; before, low-delay mode emitted decode order, tagged with the timestamp of whichever input was being submitted.
+- An empty input without the end flag no longer produces an output. The end flag drains the frames FFmpeg still holds, and the last one is marked as end of stream.

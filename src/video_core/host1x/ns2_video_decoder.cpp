@@ -65,8 +65,9 @@ struct H264Decoder::Impl {
                 context->extradata_size = static_cast<int>(config.size());
             }
         }
-        // Low latency: one picture out per access unit (no frame-threading delay).
-        context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+        // Pictures come out in presentation order (B-frame reordering), tagged with the
+        // timestamp of the access unit they came from.
+        context->pkt_timebase = AVRational{1, 1000000};
         context->thread_type = FF_THREAD_SLICE;
         context->thread_count = 0;
         if (avcodec_open2(context, codec, nullptr) < 0) {
@@ -95,26 +96,45 @@ bool H264Decoder::Configure(std::span<const u8> config) {
     return ok;
 }
 
-bool H264Decoder::Decode(std::span<const u8> data, std::vector<u8>& nv12, u32& width, u32& height) {
+std::vector<H264Decoder::Frame> H264Decoder::Decode(std::span<const u8> data, s64 pts) {
+    std::vector<Frame> frames;
     if (!impl->context && !impl->Open({})) {
-        return false;
+        return frames;
     }
     if (data.empty()) {
-        return false;
+        return frames;
     }
     if (av_new_packet(impl->packet, static_cast<int>(data.size())) < 0) {
-        return false;
+        return frames;
     }
     std::memcpy(impl->packet->data, data.data(), data.size());
+    impl->packet->pts = pts;
+    impl->packet->dts = AV_NOPTS_VALUE;
     const int sent = avcodec_send_packet(impl->context, impl->packet);
     av_packet_unref(impl->packet);
     if (sent < 0 && sent != AVERROR(EAGAIN)) {
         if (impl->errors++ < 8) {
             LOG_WARNING(HW_GPU, "NS2 video: H.264 packet of {} bytes rejected ({})", data.size(), sent);
         }
-        return false;
+        return frames;
     }
-    bool got = false;
+    Receive(frames);
+    return frames;
+}
+
+std::vector<H264Decoder::Frame> H264Decoder::Drain() {
+    std::vector<Frame> frames;
+    if (!impl->context) {
+        return frames;
+    }
+    if (avcodec_send_packet(impl->context, nullptr) >= 0) {
+        Receive(frames);
+    }
+    avcodec_flush_buffers(impl->context);
+    return frames;
+}
+
+void H264Decoder::Receive(std::vector<Frame>& frames) {
     while (avcodec_receive_frame(impl->context, impl->frame) == 0) {
         const int w = impl->frame->width, h = impl->frame->height;
         if (w <= 0 || h <= 0) {
@@ -128,18 +148,19 @@ bool H264Decoder::Decode(std::span<const u8> data, std::vector<u8>& nv12, u32& w
             av_frame_unref(impl->frame);
             continue;
         }
+        Frame& out = frames.emplace_back();
         // Packed NV12: the Y plane (pitch = width) followed by the interleaved UV plane.
         const size_t luma = static_cast<size_t>(w) * h;
-        nv12.resize(luma + static_cast<size_t>(w) * ((h + 1) / 2) + 2);
-        u8* dst[4] = {nv12.data(), nv12.data() + luma, nullptr, nullptr};
+        out.nv12.resize(luma + static_cast<size_t>(w) * ((h + 1) / 2) + 2);
+        u8* dst[4] = {out.nv12.data(), out.nv12.data() + luma, nullptr, nullptr};
         int dst_stride[4] = {w, (w + 1) & ~1, 0, 0};
         sws_scale(impl->scaler, impl->frame->data, impl->frame->linesize, 0, h, dst, dst_stride);
-        width = static_cast<u32>(w);
-        height = static_cast<u32>(h);
-        got = true;
+        out.width = static_cast<u32>(w);
+        out.height = static_cast<u32>(h);
+        const s64 best = impl->frame->best_effort_timestamp;
+        out.pts = best != AV_NOPTS_VALUE ? best : impl->frame->pts;
         av_frame_unref(impl->frame);
     }
-    return got;
 }
 
 } // namespace Tegra::NS2
