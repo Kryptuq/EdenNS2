@@ -9,6 +9,8 @@
 
 #include "game_settings.h"
 #include "common/cpu_features.h"
+#include "common/ns2_watch.h"
+#include "common/fs/path_util.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
 #include "common/logging.h"
@@ -409,6 +411,8 @@ struct System::Impl {
         // Switch 2 titles: report guest/host thread state if the game stops presenting frames.
         if ((params.program_id >> 56) == 0x04) {
             ns2_watchdog = std::make_unique<NS2Watchdog>(system);
+            Common::NS2Watch::InstallCrashReport(
+                (Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_crash.txt").string());
         }
         // Reset counters and set time origin to current frame
         GetAndResetPerfStats();
