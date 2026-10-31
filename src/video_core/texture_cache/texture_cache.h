@@ -849,7 +849,11 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         if (!enabled || !config.native_tiling) {
             return {};
         }
-        const auto found = last_modified_by_size.find((u64{config.width} << 32) | config.height);
+        const u64 size_key = (u64{config.width} << 48) | (u64{config.height} << 32);
+        auto found = last_modified_by_size.find(size_key | static_cast<u64>(view_format));
+        if (found == last_modified_by_size.end() && view_format == PixelFormat::A8B8G8R8_UNORM) {
+            found = last_modified_by_size.find(size_key | static_cast<u64>(PixelFormat::A8B8G8R8_SRGB));
+        }
         if (found == last_modified_by_size.end()) {
             return {};
         }
@@ -858,6 +862,16 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         if (image.info.size.width != config.width || image.info.size.height != config.height ||
             !VideoCore::Surface::IsViewCompatible(image.info.format, view_format, false, true)) {
             return {};
+        }
+        {
+            // Log when the fallback switches between images (alternating choices flicker).
+            static ImageId last_choice{};
+            static u32 switch_logs{};
+            if (image_id != last_choice && switch_logs++ < 60) {
+                LOG_INFO(HW_GPU, "NS2 trace: display fallback switched to image {} address={:#x} format={}",
+                         image_id.index, image.cpu_addr, image.info.format);
+            }
+            last_choice = image_id;
         }
         static u32 fallback_logs{};
         if (fallback_logs < 4 || fallback_logs % 600 == 0) {
@@ -2701,7 +2715,11 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         MarkModification(image);
         if (image.info.type == ImageType::e2D && image.info.resources.levels == 1 &&
             VideoCore::Surface::GetFormatType(image.info.format) == VideoCore::Surface::SurfaceType::ColorTexture) {
-            last_modified_by_size[(u64{image.info.size.width} << 32) | image.info.size.height] = image_id;
+            // Keyed by size and format: the movie's conversion target (same size, BGRA) used
+            // to replace the window image here on every other frame, and the presentation
+            // fallback then showed the bare movie frame with red and blue swapped (flicker).
+            last_modified_by_size[(u64{image.info.size.width} << 48) | (u64{image.info.size.height} << 32) |
+                                  static_cast<u64>(image.info.format)] = image_id;
         }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
