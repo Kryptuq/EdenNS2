@@ -2650,6 +2650,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             TrackImage(image, image_id);
         }
     } else {
+        DetectUntrackedPlaneWrite(image, image_id);
         RefreshContents(image, image_id);
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
@@ -2663,6 +2664,47 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
+}
+
+// Switch 2: the movie player writes each frame's Y and UV planes into the same textures from
+// the CPU, but those writes do not invalidate the cached images (only the first frame was ever
+// uploaded, so the movie background stayed on its white first frame). For large one/two
+// channel images, compare a sparse checksum of guest memory once per frame and re-upload when
+// it changed.
+template <class P>
+void TextureCache<P>::DetectUntrackedPlaneWrite(Image& image, ImageId image_id) {
+    const auto format = image.info.format;
+    if ((format != PixelFormat::R8_UNORM && format != PixelFormat::R8G8_UNORM) ||
+        image.info.size.width < 480 || image.info.type != ImageType::e2D ||
+        image.guest_size_bytes > (16U << 20) || True(image.flags & ImageFlagBits::GpuModified) ||
+        True(image.flags & ImageFlagBits::CpuModified)) {
+        return;
+    }
+    auto& state = plane_checksums[image_id.index];
+    if (state.gpu_addr == image.gpu_addr && state.frame == frame_tick) {
+        return;
+    }
+    std::array<u8, 64> sample{};
+    u64 hash = 0xcbf29ce484222325ULL;
+    for (u64 offset = 0; offset + sample.size() <= image.guest_size_bytes; offset += 4096) {
+        gpu_memory->ReadBlockUnsafe(image.gpu_addr + offset, sample.data(), sample.size());
+        for (const u8 byte : sample) {
+            hash = (hash ^ byte) * 0x100000001b3ULL;
+        }
+    }
+    const bool known = state.gpu_addr == image.gpu_addr;
+    const bool changed = known && state.hash != hash;
+    state.gpu_addr = image.gpu_addr;
+    state.frame = frame_tick;
+    state.hash = hash;
+    if (changed) {
+        image.flags |= ImageFlagBits::CpuModified;
+        static u32 logged{};
+        if (logged++ < 16) {
+            LOG_INFO(HW_GPU, "NS2 trace: untracked write to {}x{} {} at {:#x}, re-uploading",
+                     image.info.size.width, image.info.size.height, format, image.gpu_addr);
+        }
+    }
 }
 
 template <class P>

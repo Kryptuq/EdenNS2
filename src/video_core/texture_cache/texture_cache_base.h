@@ -259,6 +259,9 @@ public:
     /// Prepare an image to be used
     void PrepareImage(ImageId image_id, bool is_modification, bool invalidate);
 
+    /// Re-uploads movie plane textures whose guest memory changed without a tracked CPU write.
+    void DetectUntrackedPlaneWrite(Image& image, ImageId image_id);
+
     std::recursive_mutex mutex;
 
 private:
@@ -509,6 +512,13 @@ private:
 
     u64 modification_tick = 0;
     u64 frame_tick = 0;
+
+    struct PlaneChecksum {
+        GPUVAddr gpu_addr{};
+        u64 frame{~u64{0}};
+        u64 hash{};
+    };
+    std::unordered_map<u32, PlaneChecksum> plane_checksums;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
