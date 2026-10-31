@@ -425,6 +425,19 @@ private:
         // and the end-of-stream flag.
         const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
         const bool end = (w[7] & 0xff) != 0;
+        // Back-pressure: while decoded frames already wait for output images, refuse the input
+        // with the "busy" result. nn::movie keeps the buffer, waits for the notification event
+        // and submits it again. Accepting everything let the game push ~15000 inputs a second;
+        // the waiting queue overflowed, frames lost their pixels and the images kept showing
+        // the movie's first (white) frames.
+        if (m_waiting.size() >= MaxWaitingFrames) {
+            if (m_busy_replies++ < 4) {
+                LOG_INFO(Service_AM, "video decoder: input refused (busy), {} frames waiting", m_waiting.size());
+            }
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push<u32>(DecoderBusy);
+            return;
+        }
         const auto data = ReadDescriptor(w + 2, 16ULL << 20);
         auto frames = m_decoder.Decode(data, static_cast<s64>(pts));
         if (end) {
@@ -461,13 +474,6 @@ private:
             m_outputs.push_back({free.image, pts, end, nullptr});
             Complete(free.target);
             return;
-        }
-        if (m_waiting.size() >= 256) {
-            m_waiting.pop_front();
-        }
-        // Keep pixel data only for a few waiting frames.
-        if (m_waiting.size() >= 8) {
-            picture = nullptr;
         }
         m_waiting.push_back({0, pts, end, std::move(picture)});
     }
@@ -508,6 +514,12 @@ private:
     u32 m_work_dumps{};
     u32 m_outputs_given{};
     u32 m_empty_inputs{};
+    u32 m_busy_replies{};
+    // A decoded frame without a free output image waits here. One input can yield up to a few
+    // pictures (end-of-stream drain), so the limit is checked before decoding.
+    static constexpr size_t MaxWaitingFrames = 4;
+    // nn::codec's "input queue full": nn::movie answers it by retrying later (result 0x79).
+    static constexpr u32 DecoderBusy = 0x1c266f;
 
     // Logs the first words of the decoder's work memory at a few points, to see whether the
     // client keeps state (for example ring indices) there that the service must update.
