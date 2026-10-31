@@ -354,22 +354,29 @@ private:
         if (!layout) {
             return;
         }
-        // Y rows, then the UV rows (half height), clipped into the image.
-        m_linear.assign(image->size, 0);
         const u32 rows = (std::min)(picture->height, layout->height);
         const u32 row_bytes = (std::min)(picture->width, layout->width);
         const size_t luma = static_cast<size_t>(picture->width) * picture->height;
-        for (u32 y = 0; y < rows; ++y) {
-            std::memcpy(m_linear.data() + static_cast<size_t>(y) * layout->pitch,
-                        picture->rgba.data() + static_cast<size_t>(y) * picture->width, row_bytes);
+        auto& memory = m_images->process->GetMemory();
+        if (picture->width == layout->pitch && picture->height == layout->height &&
+            layout->uv_offset == luma && picture->rgba.size() >= luma + luma / 2) {
+            // The decoder's packed NV12 already has the image layout: write it in one go.
+            memory.WriteBlock(handle->address, picture->rgba.data(), luma + luma / 2);
+        } else {
+            // Y rows, then the UV rows (half height), clipped into the image.
+            m_linear.assign(static_cast<size_t>(layout->uv_offset) + static_cast<size_t>(layout->pitch) * ((layout->height + 1) / 2), 0);
+            for (u32 y = 0; y < rows; ++y) {
+                std::memcpy(m_linear.data() + static_cast<size_t>(y) * layout->pitch,
+                            picture->rgba.data() + static_cast<size_t>(y) * picture->width, row_bytes);
+            }
+            for (u32 y = 0; y < (rows + 1) / 2; ++y) {
+                const size_t source = luma + static_cast<size_t>(y) * picture->width;
+                if (source + row_bytes > picture->rgba.size()) break;
+                std::memcpy(m_linear.data() + layout->uv_offset + static_cast<size_t>(y) * layout->pitch,
+                            picture->rgba.data() + source, row_bytes);
+            }
+            memory.WriteBlock(handle->address, m_linear.data(), m_linear.size());
         }
-        for (u32 y = 0; y < (rows + 1) / 2; ++y) {
-            const size_t source = luma + static_cast<size_t>(y) * picture->width;
-            if (source + row_bytes > picture->rgba.size()) break;
-            std::memcpy(m_linear.data() + layout->uv_offset + static_cast<size_t>(y) * layout->pitch,
-                        picture->rgba.data() + source, row_bytes);
-        }
-        m_images->process->GetMemory().WriteBlock(handle->address, m_linear.data(), m_linear.size());
         if (const u32 n = m_pictures_written++; n < 6 || n % 300 == 0) {
             // Average Y and U/V of the written picture, to tell a real frame from a blank one.
             u64 y_sum = 0, u_sum = 0, v_sum = 0, y_count = 0, uv_count = 0;
@@ -530,7 +537,7 @@ private:
     u32 m_busy_replies{};
     // A decoded frame without a free output image waits here. One input can yield up to a few
     // pictures (end-of-stream drain), so the limit is checked before decoding.
-    static constexpr size_t MaxWaitingFrames = 4;
+    static constexpr size_t MaxWaitingFrames = 6;
     // nn::codec's "input queue full": nn::movie answers it by retrying later (result 0x79).
     static constexpr u32 DecoderBusy = 0x1c266f;
 
