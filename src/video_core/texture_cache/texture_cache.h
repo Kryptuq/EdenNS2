@@ -2676,8 +2676,7 @@ void TextureCache<P>::DetectUntrackedPlaneWrite(Image& image, ImageId image_id) 
     const auto format = image.info.format;
     if ((format != PixelFormat::R8_UNORM && format != PixelFormat::R8G8_UNORM) ||
         image.info.size.width < 480 || image.info.type != ImageType::e2D ||
-        image.guest_size_bytes > (16U << 20) || True(image.flags & ImageFlagBits::GpuModified) ||
-        True(image.flags & ImageFlagBits::CpuModified)) {
+        image.guest_size_bytes > (16U << 20) || True(image.flags & ImageFlagBits::CpuModified)) {
         return;
     }
     auto& state = plane_checksums[image_id.index];
@@ -2700,10 +2699,13 @@ void TextureCache<P>::DetectUntrackedPlaneWrite(Image& image, ImageId image_id) 
     if (changed) {
         image.flags |= ImageFlagBits::CpuModified;
         static u32 logged{};
-        if (logged++ < 16) {
-            LOG_INFO(HW_GPU, "NS2 trace: untracked write to {}x{} {} at {:#x}, re-uploading",
-                     image.info.size.width, image.info.size.height, format, image.gpu_addr);
+        if (const u32 n = logged++; n < 40 || n % 200 == 0) {
+            LOG_INFO(HW_GPU, "NS2 trace: untracked write #{} to {}x{} {} at {:#x} (gpu modified {}), re-uploading",
+                     n, image.info.size.width, image.info.size.height, format, image.gpu_addr,
+                     True(image.flags & ImageFlagBits::GpuModified));
         }
+        // The CPU contents replace whatever the GPU wrote.
+        image.flags &= ~ImageFlagBits::GpuModified;
     }
 }
 

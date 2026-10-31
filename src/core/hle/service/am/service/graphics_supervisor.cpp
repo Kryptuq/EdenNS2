@@ -233,7 +233,18 @@ public:
                 Reply(ctx, {});
                 Signal();
                 break;
-            case 6: case 8: case 115: case 207:
+            case 8: case 207:
+                // Flush (seek or loop) and stop: drop decoded frames that have no image yet and
+                // whatever FFmpeg still holds. Kept, they came out after the seek with the old
+                // stream's pictures and timestamps. Images already queued keep their fences.
+                LOG_INFO(Service_AM, "video decoder: {} (dropping {} waiting frames)",
+                         command == 8 ? "flush" : "stop", m_waiting.size());
+                m_waiting.clear();
+                m_decoder.Discard();
+                Reply(ctx, {});
+                Signal();
+                break;
+            case 6: case 115:
                 Reply(ctx, {});
                 Signal();
                 break;
