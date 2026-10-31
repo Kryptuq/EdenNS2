@@ -44,6 +44,7 @@ void ForwardLog(void* avcl, int level, const char* format, va_list args) {
 
 struct H264Decoder::Impl {
     AVCodecContext* context{};
+    AVCodecParserContext* parser{};
     AVPacket* packet{};
     AVFrame* frame{};
     SwsContext* scaler{};
@@ -63,6 +64,10 @@ struct H264Decoder::Impl {
     }
 
     void Reset() {
+        if (parser) {
+            av_parser_close(parser);
+            parser = nullptr;
+        }
         if (context) {
             avcodec_free_context(&context);
         }
@@ -103,6 +108,9 @@ struct H264Decoder::Impl {
             Reset();
             return false;
         }
+        // The game's inputs are not guaranteed to be whole access units (frame threading needs
+        // exactly one picture per packet): reassemble them with FFmpeg's H.264 parser.
+        parser = av_parser_init(AV_CODEC_ID_H264);
         if (!packet) {
             packet = av_packet_alloc();
         }
@@ -132,10 +140,37 @@ std::vector<H264Decoder::Frame> H264Decoder::Decode(std::span<const u8> data, s6
     if (data.empty()) {
         return frames;
     }
-    if (av_new_packet(impl->packet, static_cast<int>(data.size())) < 0) {
+    if (!impl->parser) {
+        SendPacket(data.data(), data.size(), pts, frames);
         return frames;
     }
-    std::memcpy(impl->packet->data, data.data(), data.size());
+    const u8* in = data.data();
+    int remaining = static_cast<int>(data.size());
+    while (remaining > 0) {
+        u8* out = nullptr;
+        int out_size = 0;
+        const int used = av_parser_parse2(impl->parser, impl->context, &out, &out_size, in, remaining,
+                                          pts, AV_NOPTS_VALUE, 0);
+        if (used < 0) {
+            break;
+        }
+        in += used;
+        remaining -= used;
+        if (out_size > 0) {
+            SendPacket(out, static_cast<size_t>(out_size), impl->parser->pts, frames);
+        }
+        if (used == 0 && out_size == 0) {
+            break;
+        }
+    }
+    return frames;
+}
+
+void H264Decoder::SendPacket(const u8* data, size_t size, s64 pts, std::vector<Frame>& frames) {
+    if (av_new_packet(impl->packet, static_cast<int>(size)) < 0) {
+        return;
+    }
+    std::memcpy(impl->packet->data, data, size);
     impl->packet->pts = pts;
     impl->packet->dts = AV_NOPTS_VALUE;
     int sent = avcodec_send_packet(impl->context, impl->packet);
@@ -147,17 +182,20 @@ std::vector<H264Decoder::Frame> H264Decoder::Decode(std::span<const u8> data, s6
     av_packet_unref(impl->packet);
     if (sent < 0) {
         if (impl->errors++ < 8) {
-            LOG_WARNING(HW_GPU, "NS2 video: H.264 packet of {} bytes rejected ({})", data.size(), sent);
+            LOG_WARNING(HW_GPU, "NS2 video: H.264 packet of {} bytes rejected ({})", size, sent);
         }
-        return frames;
+        return;
     }
     Receive(frames);
-    return frames;
 }
 
 void H264Decoder::Discard() {
     if (impl->context) {
         avcodec_flush_buffers(impl->context);
+    }
+    if (impl->parser) {
+        av_parser_close(impl->parser);
+        impl->parser = av_parser_init(AV_CODEC_ID_H264);
     }
 }
 
@@ -165,6 +203,18 @@ std::vector<H264Decoder::Frame> H264Decoder::Drain() {
     std::vector<Frame> frames;
     if (!impl->context) {
         return frames;
+    }
+    if (impl->parser) {
+        // The parser holds the last access unit until it sees the next one.
+        u8* out = nullptr;
+        int out_size = 0;
+        av_parser_parse2(impl->parser, impl->context, &out, &out_size, nullptr, 0, AV_NOPTS_VALUE,
+                         AV_NOPTS_VALUE, 0);
+        if (out_size > 0) {
+            SendPacket(out, static_cast<size_t>(out_size), impl->parser->pts, frames);
+        }
+        av_parser_close(impl->parser);
+        impl->parser = av_parser_init(AV_CODEC_ID_H264);
     }
     if (avcodec_send_packet(impl->context, nullptr) >= 0) {
         Receive(frames);

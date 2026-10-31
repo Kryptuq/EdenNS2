@@ -306,3 +306,7 @@
 - Diagnostic build (no behaviour change):
   - Logs the first 150 decoder inputs (timestamp, size, H.264 NAL unit types), to see which frames are missing.
   - Logs every Y/UV plane texture the game creates (image id, address, size), every upload (including accelerated ones) and the UV change checks, to find out where the stale chroma comes from.
+
+## Build 72
+- Build 70 also shows about 3000 inputs against about 2000 decoded pictures in the same time. A third of the inputs produce no picture, which points to inputs that are not one whole frame each (for example separate slices or parameter sets). With frame threading each packet must be exactly one picture, so partial inputs break the reference chain ("Missing reference picture").
+- Inputs now go through FFmpeg's H.264 parser, which reassembles complete access units whatever the split. A local test with every NAL unit sent separately (603 packets for 150 frames of a 4-slice stream) decodes all 150 frames. The parser is reset on flush and its last access unit drained at end of stream. The traces from build 71 are kept.
