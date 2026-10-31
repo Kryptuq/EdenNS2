@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
+#include <cstdarg>
 #include <cstring>
+#include <string_view>
 
 #include "common/logging.h"
 #include "video_core/host1x/ns2_video_decoder.h"
@@ -20,6 +23,24 @@ extern "C" {
 }
 
 namespace Tegra::NS2 {
+namespace {
+// Forwards FFmpeg's warnings (for example missing reference frames) to Eden's log, so picture
+// corruption can be told apart from lost input.
+void ForwardLog(void* avcl, int level, const char* format, va_list args) {
+    if (level > AV_LOG_WARNING) {
+        return;
+    }
+    static std::atomic<u32> logged{};
+    const u32 n = logged.fetch_add(1, std::memory_order_relaxed);
+    if (n >= 200 && n % 500 != 0) {
+        return;
+    }
+    char line[512];
+    int prefix = 1;
+    av_log_format_line(avcl, level, format, args, line, sizeof(line), &prefix);
+    LOG_WARNING(HW_GPU, "NS2 video: FFmpeg (#{}): {}", n, std::string_view{line});
+}
+} // namespace
 
 struct H264Decoder::Impl {
     AVCodecContext* context{};
@@ -49,6 +70,11 @@ struct H264Decoder::Impl {
 
     bool Open(std::span<const u8> config) {
         Reset();
+        static const bool log_installed = [] {
+            av_log_set_callback(ForwardLog);
+            return true;
+        }();
+        (void)log_installed;
         const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
         if (!codec) {
             LOG_ERROR(HW_GPU, "NS2 video: FFmpeg has no H.264 decoder");
@@ -127,6 +153,12 @@ std::vector<H264Decoder::Frame> H264Decoder::Decode(std::span<const u8> data, s6
     }
     Receive(frames);
     return frames;
+}
+
+void H264Decoder::Discard() {
+    if (impl->context) {
+        avcodec_flush_buffers(impl->context);
+    }
 }
 
 std::vector<H264Decoder::Frame> H264Decoder::Drain() {

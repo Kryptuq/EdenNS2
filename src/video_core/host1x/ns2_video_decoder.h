@@ -36,6 +36,9 @@ public:
     /// came out, in presentation order (none while the decoder still buffers for reordering).
     std::vector<Frame> Decode(std::span<const u8> data, s64 pts);
 
+    /// Seek/flush: drops everything the decoder still holds.
+    void Discard();
+
     /// End of stream: returns the pictures still held for reordering and resets the decoder.
     std::vector<Frame> Drain();
 

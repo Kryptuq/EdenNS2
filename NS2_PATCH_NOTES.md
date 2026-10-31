@@ -290,3 +290,12 @@
 
 ## Build 69
 - Build 68 still ran the counter at 19.2 MHz ("Guest counter frequency: 19200000 Hz"). The Switch 2 check looked at the program id before the loader had read it (still 0), so the 31.25 MHz setting never applied. The program id (04007C6028AA8000) is now read with a temporary loader before the kernel starts, with a fallback after the real loader reads it.
+
+## Build 70
+- Build 69: the counter runs at 31.25 MHz now and the game reaches 59-60 FPS. A video from the user shows two problems.
+  - Flicker: at 60 FPS, every second displayed frame is a fixed, old (orange, sunset) movie frame.
+  - Block artefacts remain around moving objects.
+- The player takes about 20 of the movie's 30 frames per second at real speed.
+- Flicker: the textures the game copies movie frames into are reused, and one of them kept a stale old frame. The untracked-write detection skipped textures the GPU had written before, and logged nothing for the movie planes. It now checks those too (the GPU's version is dropped when the CPU contents changed) and logs more detections.
+- Flush (8) and stop (207) now drop decoded frames that have no image yet and everything FFmpeg still holds. Before, frames from before a seek or loop came out afterwards with the old pictures and timestamps, a likely cause of the long white phases when the movie loops.
+- FFmpeg's own warnings (missing reference frames and similar) are now forwarded to the log, to tell picture corruption from decoding apart from lost input.
