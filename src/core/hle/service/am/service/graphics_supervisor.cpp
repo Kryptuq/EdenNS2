@@ -259,6 +259,7 @@ private:
     };
     struct ReadyState {
         std::mutex mutex;
+        std::atomic<bool> can_submit{true};
         Kernel::KEvent* event{};
     };
 
@@ -271,9 +272,20 @@ private:
         }
     }
 
+    // The notification event is nn::codec's "submission ready" event: nn::movie waits on it
+    // before it submits input. Keep it signalled only while the decoder has room, so the game
+    // paces its input instead of having inputs refused (refused inputs got lost or came back
+    // out of order, which corrupted the picture into blocks and made the movie skip).
     void Signal() {
-        if (m_event) {
+        const bool room = m_waiting.size() < MaxWaitingFrames;
+        m_ready->can_submit = room;
+        if (!m_event) {
+            return;
+        }
+        if (room) {
             m_event->Signal(kernel);
+        } else {
+            m_event->Clear(kernel);
         }
     }
 
@@ -291,7 +303,7 @@ private:
                 [ready = m_ready, &kernel_ref = system.Kernel()](
                     s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                     std::scoped_lock lk{ready->mutex};
-                    if (ready->event) {
+                    if (ready->event && ready->can_submit) {
                         ready->event->Signal(kernel_ref);
                     }
                     return std::nullopt;
@@ -431,9 +443,10 @@ private:
         // the waiting queue overflowed, frames lost their pixels and the images kept showing
         // the movie's first (white) frames.
         if (m_waiting.size() >= MaxWaitingFrames) {
-            if (m_busy_replies++ < 4) {
-                LOG_INFO(Service_AM, "video decoder: input refused (busy), {} frames waiting", m_waiting.size());
+            if (const u32 n = m_busy_replies++; n < 8 || n % 500 == 0) {
+                LOG_INFO(Service_AM, "video decoder: input refused (busy, #{}), {} frames waiting", n, m_waiting.size());
             }
+            Signal();
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push<u32>(DecoderBusy);
             return;
@@ -487,7 +500,7 @@ private:
         }
         const Output output = m_outputs.front();
         m_outputs.pop_front();
-        if (m_outputs_given++ < 64) {
+        if (const u32 n = m_outputs_given++; n < 64 || n % 100 == 0) {
             LOG_INFO(Service_AM, "video decoder: output {} -> image {} pts {} (free {}, waiting {}, ready {})",
                      m_outputs_given, output.image, output.pts, m_free.size(), m_waiting.size(), m_outputs.size());
         }
