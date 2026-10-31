@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <cstdlib>
 #include <atomic>
 #include <memory>
 #include <utility>
 
 #include "game_settings.h"
+#include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
 #include "common/logging.h"
@@ -296,6 +298,23 @@ struct System::Impl {
     SystemResultStatus Load(System& system, Frontend::EmuWindow& emu_window, const std::string& filepath, Service::AM::FrontendAppletParameters& params) {
         if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {
             fs_controller.InitTempStorage();
+        }
+
+        // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
+        // (the Yoshi demo's nn::os::GetSystemTickFrequency returns 31,250,000). At 19.2 MHz every
+        // tick-based time in the game was off by 1.63x: the game ran at ~37 instead of 60 FPS and
+        // its movies at 0.6x speed. EDEN_NX2_CNTFRQ=<Hz> overrides it. Ported from Eglantine.
+        {
+            static const u64 forced_cntfrq = [] {
+                const char* value = std::getenv("EDEN_NX2_CNTFRQ");
+                return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+            }();
+            const bool switch2_program = (params.program_id >> 56) == 0x04;
+            const u64 cntfrq = forced_cntfrq != 0 ? forced_cntfrq
+                               : switch2_program  ? Common::WallClock::Switch2CNTFRQ
+                                                  : Common::WallClock::CNTFRQ;
+            Common::g_wall_clock.SetGuestCNTFRQ(cntfrq);
+            LOG_INFO(Core, "Guest counter frequency: {} Hz", cntfrq);
         }
 
         InitializeKernel(system);

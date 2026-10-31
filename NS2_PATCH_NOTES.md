@@ -282,3 +282,8 @@
   - YUV420P to NV12 is a direct copy and interleave instead of swscale.
   - Pictures are written to the output image in one 3 MiB block instead of zero-filling and writing the whole 8.4 MiB image every frame.
   - Up to 6 decoded frames may wait for an output image (was 4).
+
+## Build 68
+- The key find came from Eglantine (Djihads80/Eglantine, commit 0218eacf). The Switch 2 system counter runs at 31.25 MHz, and the SDK hard-codes that frequency; the Yoshi demo's nn::os::GetSystemTickFrequency returns 31,250,000. Eden counted at the Switch 1 rate of 19.2 MHz, so all of the game's timing was 1.63x slow. 60 FPS x 19.2 / 31.25 = 36.9 FPS, exactly the constant 36-37 FPS the game showed, and its movie clock ran at 0.6x real time while the decoder and audio ran in real time. The player kept falling behind and skipping frames, which explains the remaining stutter and block artefacts.
+- Ported from Eglantine: the guest counter frequency is now 31.25 MHz for Switch 2 programs (program id 04xx...), used for CNTFRQ_EL0, CNTPCT reads, svcGetSystemTick, thread tick counts and the time services' tick conversions. EDEN_NX2_CNTFRQ=<Hz> overrides it.
+- Syncpoint cancel (202) now always signals the slot's event, as Eglantine found: the client waits on that event after a cancel, so without the signal a cancelled pending wait stalled until it timed out.

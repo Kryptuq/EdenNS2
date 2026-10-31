@@ -741,6 +741,13 @@ private:
         if (packet[1] == 1 && packet[2] < m_events.size()) {
             std::scoped_lock lock{m_events_mutex};
             m_requests[packet[2]].reset();
+            // nn::syncpt::sdk waits on the slot's event after a cancel, so a cancel signals it like
+            // a completion (the client re-checks the counter itself). Otherwise each cancel of a
+            // pending request stalled the caller until its wait timed out (behaviour confirmed
+            // by Eglantine, whose movie player hung on this).
+            if (auto* event = m_events[packet[2]]) {
+                event->Signal(kernel);
+            }
             result = ResultSuccess;
         }
         IPC::ResponseBuilder rb{ctx, 2};
