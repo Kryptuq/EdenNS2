@@ -44,6 +44,7 @@ public:
 
 private:
     void Receive(std::vector<Frame>& frames);
+    void SendPacket(const u8* data, size_t size, s64 pts, std::vector<Frame>& frames);
 
     struct Impl;
     std::unique_ptr<Impl> impl;
