@@ -1252,6 +1252,14 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
         gpu_memory->ReadBlock(gpu_addr, mapped_span.data(), mapped_span.size_bytes(),
                               VideoCommon::CacheType::NoTextureCache);
+        if ((image.info.format == PixelFormat::R8_UNORM || image.info.format == PixelFormat::R8G8_UNORM) &&
+            image.info.size.width >= 480) {
+            static u32 accelerated_plane_uploads{};
+            if (accelerated_plane_uploads++ < 300) {
+                LOG_INFO(HW_GPU, "NS2 trace: accelerated plane upload gpu={:#x} {}x{} format={}",
+                         gpu_addr, image.info.size.width, image.info.size.height, image.info.format);
+            }
+        }
         const auto uploads = FullUploadSwizzles(image.info);
         runtime.AccelerateImageUpload(image, staging, uploads, 0, 0);
         return;
@@ -1266,13 +1274,13 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         static u32 plane_uploads{};
         if ((format == PixelFormat::R8_UNORM || format == PixelFormat::R8G8_UNORM ||
              format == PixelFormat::R8_UINT || format == PixelFormat::R8G8_UINT) &&
-            image.info.size.width >= 480 && plane_uploads < 400) {
+            image.info.size.width >= 480 && plane_uploads < 800) {
             ++plane_uploads;
             u64 sum = 0;
             const std::span<const u8> bytes{swizzle_data.data(), swizzle_data.size()};
             for (size_t i = 0; i < bytes.size(); i += 61) sum += bytes[i];
             const u64 samples = (bytes.size() + 60) / 61;
-            if (plane_uploads <= 24 || plane_uploads % 50 == 0) {
+            if (plane_uploads <= 400) {
                 LOG_INFO(HW_GPU, "NS2 trace: plane upload #{} gpu={:#x} {}x{} format={} bytes={} mean={}",
                          plane_uploads, gpu_addr, image.info.size.width, image.info.size.height, format,
                          bytes.size(), samples ? sum / samples : 0);
@@ -1662,6 +1670,16 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
             LOG_INFO(HW_GPU, "NS2 trace: image gpu={:#x} cpu={:#x} {}x{} format={} type={}",
                      gpu_addr, *cpu_addr, info.size.width, info.size.height, info.format,
                      static_cast<u32>(info.type));
+        }
+    }
+    if ((info.format == PixelFormat::R8_UNORM || info.format == PixelFormat::R8G8_UNORM) &&
+        info.size.width >= 480) {
+        // Movie plane trace: which image ids and addresses the Y/UV textures get.
+        static std::atomic<u32> plane_images{};
+        if (const u32 n = plane_images.fetch_add(1, std::memory_order_relaxed); n < 400) {
+            LOG_INFO(HW_GPU, "NS2 trace: plane image #{} id={} gpu={:#x} cpu={:#x} {}x{} format={} guest_size={:#x} joined_gpu={:#x}",
+                     n, image_id.index, gpu_addr, *cpu_addr, info.size.width, info.size.height,
+                     info.format, image.guest_size_bytes, image.gpu_addr);
         }
     }
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
@@ -2693,6 +2711,14 @@ void TextureCache<P>::DetectUntrackedPlaneWrite(Image& image, ImageId image_id) 
     }
     const bool known = state.gpu_addr == image.gpu_addr;
     const bool changed = known && state.hash != hash;
+    {
+        static u32 checks{};
+        if (format == PixelFormat::R8G8_UNORM && checks++ < 150) {
+            LOG_INFO(HW_GPU, "NS2 trace: plane check id={} gpu={:#x} {}x{} hash={:016x} known={} changed={} frame={}",
+                     image_id.index, image.gpu_addr, image.info.size.width, image.info.size.height,
+                     hash, known, changed, frame_tick);
+        }
+    }
     state.gpu_addr = image.gpu_addr;
     state.frame = frame_tick;
     state.hash = hash;

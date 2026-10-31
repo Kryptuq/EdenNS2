@@ -470,6 +470,19 @@ private:
             return;
         }
         const auto data = ReadDescriptor(w + 2, 16ULL << 20);
+        if (const u32 n = m_inputs_logged++; n < 150 || n % 1000 == 0) {
+            // Input trace: timestamp, size and the H.264 NAL unit types (Annex B), to see whether
+            // the stream reaching the decoder is complete (missing reference frames otherwise).
+            std::string nals;
+            for (size_t i = 0; i + 3 < data.size() && nals.size() < 60; ++i) {
+                if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+                    nals += fmt::format("{} ", data[i + 3] & 0x1f);
+                    i += 2;
+                }
+            }
+            LOG_INFO(Service_AM, "video decoder: input #{} pts {} size {} end {} nals {}", n, pts,
+                     data.size(), end, nals);
+        }
         auto frames = m_decoder.Decode(data, static_cast<s64>(pts));
         if (end) {
             auto rest = m_decoder.Drain();
@@ -546,6 +559,7 @@ private:
     u32 m_outputs_given{};
     u32 m_empty_inputs{};
     u32 m_busy_replies{};
+    u32 m_inputs_logged{};
     // A decoded frame without a free output image waits here. One input can yield up to a few
     // pictures (end-of-stream drain), so the limit is checked before decoding.
     static constexpr size_t MaxWaitingFrames = 6;
