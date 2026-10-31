@@ -187,6 +187,16 @@ void TextureCache<P>::TickFrame() {
     TickAsyncUnswizzle();
 
     runtime.TickFrame();
+    if (!plane_bind_log.empty()) {
+        // Movie plane trace: which Y/UV textures each frame sampled and in which frame they were
+        // last uploaded (to find the stale chroma behind the flicker).
+        static u32 logged{};
+        if (logged++ < 600) {
+            LOG_INFO(HW_GPU, "NS2 trace: frame {} planes{}", frame_tick, plane_bind_log);
+        }
+        plane_bind_log.clear();
+        plane_binds.clear();
+    }
     ++frame_tick;
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
@@ -1254,6 +1264,7 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
                               VideoCommon::CacheType::NoTextureCache);
         if ((image.info.format == PixelFormat::R8_UNORM || image.info.format == PixelFormat::R8G8_UNORM) &&
             image.info.size.width >= 480) {
+            plane_upload_ticks[gpu_addr] = frame_tick;
             static u32 accelerated_plane_uploads{};
             if (accelerated_plane_uploads++ < 300) {
                 LOG_INFO(HW_GPU, "NS2 trace: accelerated plane upload gpu={:#x} {}x{} format={}",
@@ -1271,6 +1282,9 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         // NS2 trace: uploads of large one/two-channel images (movie Y/UV planes) with their
         // average byte value, to see what the game copies out of the decoder.
         const auto format = image.info.format;
+        if ((format == PixelFormat::R8_UNORM || format == PixelFormat::R8G8_UNORM) && image.info.size.width >= 480) {
+            plane_upload_ticks[gpu_addr] = frame_tick;
+        }
         static u32 plane_uploads{};
         if ((format == PixelFormat::R8_UNORM || format == PixelFormat::R8G8_UNORM ||
              format == PixelFormat::R8_UINT || format == PixelFormat::R8G8_UINT) &&
@@ -2669,6 +2683,15 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     } else {
         DetectUntrackedPlaneWrite(image, image_id);
+        if ((image.info.format == PixelFormat::R8_UNORM || image.info.format == PixelFormat::R8G8_UNORM) &&
+            image.info.size.width >= 480 && image.info.type == ImageType::e2D &&
+            std::ranges::find(plane_binds, image.gpu_addr) == plane_binds.end() && plane_binds.size() < 16) {
+            plane_binds.push_back(image.gpu_addr);
+            const auto upload = plane_upload_ticks.find(image.gpu_addr);
+            plane_bind_log += fmt::format(" {}:{:#x}(up {})", image.info.format == PixelFormat::R8_UNORM ? "Y" : "UV",
+                                          image.gpu_addr,
+                                          upload != plane_upload_ticks.end() ? static_cast<s64>(upload->second) : -1);
+        }
         RefreshContents(image, image_id);
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
