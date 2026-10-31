@@ -34,6 +34,7 @@
 #include "core/hle/service/am/service/gpu_session.h"
 #include "core/hle/service/am/service/graphics_supervisor_protocol.h"
 #include "core/hle/service/am/service/graphics_syncpoint_cache.h"
+#include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "core/hle/service/am/service/native_image_layout.h"
@@ -459,6 +460,13 @@ private:
                 Tegra::Texture::SwizzleTexture(m_tiled, m_linear, 4, layout->width, layout->height, 1,
                                                layout->block_log2 - 3, 0, 1, true);
                 memory.WriteBlock(handle->address, m_tiled.data(), m_tiled.size());
+                // The GPU reads this image directly (blit/texture). A CPU write to memory that the
+                // buffer cache also covers only reaches the texture cache at the next GPU sync,
+                // so a blit could still see the frame from the previous use of this image
+                // (the cutscene jumped back and forth). Invalidate the cached copies now.
+                if (handle->d_address != 0) {
+                    system.GPU().InvalidateRegion(handle->d_address, m_tiled.size());
+                }
             } else {
                 memory.WriteBlock(handle->address, m_linear.data(), m_linear.size());
             }
