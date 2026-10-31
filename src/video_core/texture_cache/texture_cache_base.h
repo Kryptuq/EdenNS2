@@ -13,6 +13,7 @@
 #include <span>
 #include <type_traits>
 // TODO: find out which don't require stable iters
+#include <string>
 #include <unordered_map>
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
@@ -519,6 +520,9 @@ private:
         u64 hash{};
     };
     std::unordered_map<u32, PlaneChecksum> plane_checksums;
+    std::unordered_map<GPUVAddr, u64> plane_upload_ticks;
+    std::vector<GPUVAddr> plane_binds;
+    std::string plane_bind_log;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};

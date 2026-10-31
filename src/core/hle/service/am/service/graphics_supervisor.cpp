@@ -240,6 +240,7 @@ public:
                 LOG_INFO(Service_AM, "video decoder: {} (dropping {} waiting frames)",
                          command == 8 ? "flush" : "stop", m_waiting.size());
                 m_waiting.clear();
+                m_pending.clear();
                 m_decoder.Discard();
                 Reply(ctx, {});
                 Signal();
@@ -288,7 +289,7 @@ private:
     // paces its input instead of having inputs refused (refused inputs got lost or came back
     // out of order, which corrupted the picture into blocks and made the movie skip).
     void Signal() {
-        const bool room = m_waiting.size() < MaxWaitingFrames;
+        const bool room = m_waiting.size() < MaxWaitingFrames && m_pending.empty();
         m_ready->can_submit = room;
         if (!m_event) {
             return;
@@ -442,6 +443,7 @@ private:
             WritePicture(image, frame.picture);
             m_outputs.push_back({image, frame.pts, frame.end, nullptr});
             Complete(target);
+            DecodePending();
             Signal();
             return target;
         }
@@ -455,20 +457,6 @@ private:
         // and the end-of-stream flag.
         const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
         const bool end = (w[7] & 0xff) != 0;
-        // Back-pressure: while decoded frames already wait for output images, refuse the input
-        // with the "busy" result. nn::movie keeps the buffer, waits for the notification event
-        // and submits it again. Accepting everything let the game push ~15000 inputs a second;
-        // the waiting queue overflowed, frames lost their pixels and the images kept showing
-        // the movie's first (white) frames.
-        if (m_waiting.size() >= MaxWaitingFrames) {
-            if (const u32 n = m_busy_replies++; n < 8 || n % 500 == 0) {
-                LOG_INFO(Service_AM, "video decoder: input refused (busy, #{}), {} frames waiting", n, m_waiting.size());
-            }
-            Signal();
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push<u32>(DecoderBusy);
-            return;
-        }
         const auto data = ReadDescriptor(w + 2, 16ULL << 20);
         if (const u32 n = m_inputs_logged++; n < 150 || n % 1000 == 0) {
             // Input trace: timestamp, size and the H.264 NAL unit types (Annex B), to see whether
@@ -483,6 +471,35 @@ private:
             LOG_INFO(Service_AM, "video decoder: input #{} pts {} size {} end {} nals {}", n, pts,
                      data.size(), end, nals);
         }
+        // Never refuse input: nn::movie drops a refused frame instead of resubmitting it, and the
+        // lost reference frames broke the picture into blocks. While decoded frames already wait
+        // for output images, keep the compressed input and decode it once an image is free.
+        // The submission-ready event stays cleared meanwhile, so this queue stays short.
+        if (m_waiting.size() >= MaxWaitingFrames || !m_pending.empty()) {
+            m_pending.push_back({data, pts, end});
+            if (const size_t n = m_pending.size(); n > m_pending_peak) {
+                m_pending_peak = n;
+                if (n == 8 || n == 32 || n == 128) {
+                    LOG_INFO(Service_AM, "video decoder: {} inputs queued", n);
+                }
+            }
+        } else {
+            DecodeInput(data, pts, end);
+        }
+        const u64 id = ++m_submitted;
+        Reply(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
+        Signal();
+    }
+
+    void DecodePending() {
+        while (!m_pending.empty() && m_waiting.size() < MaxWaitingFrames) {
+            auto input = std::move(m_pending.front());
+            m_pending.pop_front();
+            DecodeInput(input.data, input.pts, input.end);
+        }
+    }
+
+    void DecodeInput(const std::vector<u8>& data, u64 pts, bool end) {
         auto frames = m_decoder.Decode(data, static_cast<s64>(pts));
         if (end) {
             auto rest = m_decoder.Drain();
@@ -505,9 +522,6 @@ private:
         if (data.empty() && !end && m_empty_inputs++ < 4) {
             LOG_INFO(Service_AM, "video decoder: empty input without end of stream (pts {})", pts);
         }
-        const u64 id = ++m_submitted;
-        Reply(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
-        Signal();
     }
 
     void Emit(std::shared_ptr<Picture> picture, u64 pts, bool end) {
@@ -558,13 +572,17 @@ private:
     u32 m_work_dumps{};
     u32 m_outputs_given{};
     u32 m_empty_inputs{};
-    u32 m_busy_replies{};
+    struct PendingInput {
+        std::vector<u8> data;
+        u64 pts;
+        bool end;
+    };
+    std::deque<PendingInput> m_pending;
+    size_t m_pending_peak{};
     u32 m_inputs_logged{};
     // A decoded frame without a free output image waits here. One input can yield up to a few
     // pictures (end-of-stream drain), so the limit is checked before decoding.
     static constexpr size_t MaxWaitingFrames = 6;
-    // nn::codec's "input queue full": nn::movie answers it by retrying later (result 0x79).
-    static constexpr u32 DecoderBusy = 0x1c266f;
 
     // Logs the first words of the decoder's work memory at a few points, to see whether the
     // client keeps state (for example ring indices) there that the service must update.
