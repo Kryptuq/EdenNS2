@@ -250,3 +250,8 @@
 - 961 (from nn::codec ReadDecoderOutputImageNv12) returns a CPU image descriptor: how a decoded frame lies in the image memory. The game then copies the frame out with the CPU (nn::gs::sdk::ReadUserImageNv12) and uploads it as the background texture. Eden now implements 961 and describes a pitch-linear NV12 layout (Y plane, then interleaved UV).
 - The decoder now writes frames in exactly that layout (NV12 from FFmpeg) instead of block-linear RGBA.
 - Removed the ns2_capture frame dump (texture_cache/ns2_frame_capture.*); it is no longer needed.
+
+## Build 62
+- Build 61: the movie now plays through the decoder. The game takes every decoded frame, reads it back through 961 with the NV12 reader (no abort, so the read succeeded), and returns the images. On screen the background changed from black to plain white, so the game draws its movie layer now, but with white instead of the picture.
+- One of two test runs crashed right after boot. The guest read address 0 three times right after reading frames, then the log just ends. The other run did not show this, so it looks timing dependent; not understood yet.
+- This build logs the average Y/U/V of decoded pictures (to confirm the decoder produces real frames), and the average byte value of every large one/two-channel texture upload (the movie's Y and UV planes on their way to the GPU). Together they show where the picture turns white: in the decoder, in the copy out, or in the GPU's YUV-to-RGB conversion.

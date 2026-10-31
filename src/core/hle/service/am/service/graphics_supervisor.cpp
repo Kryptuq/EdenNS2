@@ -357,9 +357,18 @@ private:
                         picture->rgba.data() + source, row_bytes);
         }
         m_images->process->GetMemory().WriteBlock(handle->address, m_linear.data(), m_linear.size());
-        if (m_pictures_written++ < 4) {
-            LOG_INFO(Service_AM, "video decoder: picture {}x{} written to image {} at {:#x}",
-                     picture->width, picture->height, image_id, handle->address);
+        if (const u32 n = m_pictures_written++; n < 6 || n % 300 == 0) {
+            // Average Y and U/V of the written picture, to tell a real frame from a blank one.
+            u64 y_sum = 0, u_sum = 0, v_sum = 0, y_count = 0, uv_count = 0;
+            for (size_t i = 0; i < luma; i += 97, ++y_count) y_sum += picture->rgba[i];
+            for (size_t i = luma; i + 1 < picture->rgba.size(); i += 98, ++uv_count) {
+                u_sum += picture->rgba[i];
+                v_sum += picture->rgba[i + 1];
+            }
+            LOG_INFO(Service_AM, "video decoder: picture #{} {}x{} written to image {} at {:#x} (mean Y {} U {} V {})",
+                     n, picture->width, picture->height, image_id, handle->address,
+                     y_count ? y_sum / y_count : 0, uv_count ? u_sum / uv_count : 0,
+                     uv_count ? v_sum / uv_count : 0);
         }
     }
 
