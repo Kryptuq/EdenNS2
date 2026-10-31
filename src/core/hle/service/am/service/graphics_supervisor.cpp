@@ -41,6 +41,8 @@
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+#include "core/hle/service/nvdrv/devices/nvhost_as_gpu.h"
+#include "video_core/pte_kind.h"
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/vi/application_display_service.h"
@@ -1629,6 +1631,7 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system_, Kernel::KProcess
         {912, &IGraphicsSupervisor::DestroyNativeImage, "FinalizeDecoderImagePool"},
         {961, &IGraphicsSupervisor::GetCpuUserImageDescriptor, "GetCpuUserImageDescriptor"},
         {428, &IGraphicsSupervisor::QueryNativeImage, "QueryNativeImage"},
+        {426, &IGraphicsSupervisor::QueryNativeImage, "MapNativeImage"},
         {434, &IGraphicsSupervisor::RegisterGpuAddressSpace, "RegisterGpuAddressSpace"},
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
         {901, &IGraphicsSupervisor::InitializeEmptyContext, "InitializeContext901"},
@@ -2377,13 +2380,39 @@ void IGraphicsSupervisor::CreateNativeImage(HLERequestContext& ctx) {
 // == 1 and byte 0x20 == 1 and a non-zero size at 0x2c (offset at 0x28); NVN reads
 // (width - 1) | (height - 1) << 16 at 0x08 and the kind at 0x24 (1: RGBA/BGRA formats, 2: the
 // 0x99-0x9c formats) and lays the texture out itself. Fields as in Eglantine's implementation.
+// 426(u32 handle, u32, u32 address space, u8 permission): nn::gpu::sdk::MapNativeImage, the same
+// reply with the image's GPU address in words 0-1. The image memory is mapped into the given
+// address space at its CPU address (the game's own GPU mappings use GPU address == CPU address).
 void IGraphicsSupervisor::QueryNativeImage(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
+    const bool map = ctx.GetCommand() == 426;
     std::array<u32, 37> words{};
     Result result = Kernel::ResultNotFound;
     {
         const std::scoped_lock images_lock{m_image_registry->mutex};
         const auto image = std::ranges::find(m_image_registry->images, packet[2], &NativeImage::id);
+        if (image != m_image_registry->images.end() && map && m_nv_module) {
+            const auto handle = m_nv_module->GetContainer().GetNvMapFile().GetHandle(image->memory_id);
+            const u32 as_fd = packet[4];
+            const auto as = m_nv_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(static_cast<s32>(as_fd));
+            if (handle && handle->address != 0) {
+                const u64 address = handle->address;
+                const u64 size = Common::AlignUp(image->size, Kernel::PageSize);
+                auto mapped = Nvidia::NvResult::BadParameter;
+                if (as) {
+                    mapped = as->MapNative4K(image->memory_id, address, 0, size,
+                                             static_cast<u8>(Tegra::PTEKind::GENERIC_16BX2));
+                }
+                // Already mapped there (the game's own mapping) works as well.
+                words[0] = static_cast<u32>(address);
+                words[1] = static_cast<u32>(address >> 32);
+                static u32 map_logs{};
+                if (map_logs++ < 16) {
+                    LOG_INFO(Service_AM, "map native image {} into address space {} at {:#x} size {:#x}: {}",
+                             packet[2], as_fd, address, size, static_cast<u32>(mapped));
+                }
+            }
+        }
         if (image != m_image_registry->images.end()) {
             u32* const desc = words.data() + 4;
             desc[0] = 1;
