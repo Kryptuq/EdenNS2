@@ -362,6 +362,26 @@ Id Emit(MethodPtrType sparse_ptr, MethodPtrType non_sparse_ptr, EmitContext& ctx
     return ctx.OpCompositeExtract(result_type, sample, 1U);
 }
 
+// Sirit reserves one word too few for OpImageSparseGather/OpImageSparseDrefGather when image
+// operands are present, so the last operand is dropped (written as id 0) and the module is
+// invalid; NVIDIA drivers crash compiling it. Use the non-sparse gather in that case and report
+// the texels as resident.
+template <typename MethodPtrType, typename... Args>
+Id EmitGather(MethodPtrType sparse_ptr, MethodPtrType non_sparse_ptr, EmitContext& ctx,
+              IR::Inst* inst, Id result_type, const ImageOperands& operands, Args&&... args) {
+    if (operands.MaskOptional()) {
+        if (IR::Inst* const sparse{inst->GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp)}) {
+            sparse->SetDefinition(ctx.true_value);
+            sparse->Invalidate();
+        }
+        return Decorate(ctx, inst,
+                        (ctx.*non_sparse_ptr)(result_type, std::forward<Args>(args)...,
+                                              operands.MaskOptional(), operands.Span()));
+    }
+    return Emit(sparse_ptr, non_sparse_ptr, ctx, inst, result_type, std::forward<Args>(args)...,
+                operands.MaskOptional(), operands.Span());
+}
+
 Id IsScaled(EmitContext& ctx, const IR::Value& index, Id member_index, u32 base_index) {
     const Id push_constant_u32{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U32[1])};
     Id bit{};
@@ -637,10 +657,9 @@ Id EmitImageGather(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id 
     if (ctx.profile.need_gather_subpixel_offset) {
         coords = ImageGatherSubpixelOffset(ctx, info, TextureImage(ctx, info, index), coords);
     }
-    const Id color{Emit(&EmitContext::OpImageSparseGather, &EmitContext::OpImageGather, ctx, inst,
-                        result_type, Texture(ctx, info, index), coords,
-                        ctx.Const(info.gather_component), operands.MaskOptional(),
-                        operands.Span())};
+    const Id color{EmitGather(&EmitContext::OpImageSparseGather, &EmitContext::OpImageGather, ctx,
+                              inst, result_type, operands, Texture(ctx, info, index), coords,
+                              ctx.Const(info.gather_component))};
     return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
 }
 
@@ -653,9 +672,9 @@ Id EmitImageGatherDref(EmitContext& ctx, IR::Inst* inst, const IR::Value& index,
     if (ctx.profile.need_gather_subpixel_offset) {
         coords = ImageGatherSubpixelOffset(ctx, info, TextureImage(ctx, info, index), coords);
     }
-    const Id color{Emit(&EmitContext::OpImageSparseDrefGather, &EmitContext::OpImageDrefGather,
-                        ctx, inst, result_type, Texture(ctx, info, index), coords, dref,
-                        operands.MaskOptional(), operands.Span())};
+    const Id color{EmitGather(&EmitContext::OpImageSparseDrefGather,
+                              &EmitContext::OpImageDrefGather, ctx, inst, result_type, operands,
+                              Texture(ctx, info, index), coords, dref)};
     return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
 }
 
