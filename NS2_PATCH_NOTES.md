@@ -299,3 +299,10 @@
 - Flicker: the textures the game copies movie frames into are reused, and one of them kept a stale old frame. The untracked-write detection skipped textures the GPU had written before, and logged nothing for the movie planes. It now checks those too (the GPU's version is dropped when the CPU contents changed) and logs more detections.
 - Flush (8) and stop (207) now drop decoded frames that have no image yet and everything FFmpeg still holds. Before, frames from before a seek or loop came out afterwards with the old pictures and timestamps, a likely cause of the long white phases when the movie loops.
 - FFmpeg's own warnings (missing reference frames and similar) are now forwarded to the log, to tell picture corruption from decoding apart from lost input.
+
+## Build 71
+- Build 70 video, frame by frame: the flicker frames are the current picture with wrong colours (same clouds and island, tinted yellow and orange). The brightness (Y) is current; the colour (UV) comes from an old frame. So one of the movie's UV textures (960x540 RG8) is stale on every other displayed frame. The rewrite detection never fired for movie planes, so the stale texture is not a CPU rewrite of the same image.
+- FFmpeg reports "Missing reference picture" and "co located POCs unavailable" from 0.2 s after the first input. So frames are missing from the input itself, not lost in our output path.
+- Diagnostic build (no behaviour change):
+  - Logs the first 150 decoder inputs (timestamp, size, H.264 NAL unit types), to see which frames are missing.
+  - Logs every Y/UV plane texture the game creates (image id, address, size), every upload (including accelerated ones) and the UV change checks, to find out where the stale chroma comes from.
