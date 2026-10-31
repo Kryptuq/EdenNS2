@@ -78,9 +78,11 @@ void nvdisp_disp0::Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers
         const auto* session = handle ? container.GetSession(handle->session_id) : nullptr;
         const bool native_tiling = session && session->process->UsesPAuthReturns();
         DAddr address = nvmap.GetHandleAddress(layer.buffer_handle);
-        if (address == 0 && handle && handle->address) {
-            // Native (Switch 2) images are never pinned themselves; the GPU renders into
-            // them through a GPU-session memory handle aliasing the same guest memory.
+        if ((address == 0 || native_tiling) && handle && handle->address) {
+            // Native (Switch 2) images: the GPU renders into them through a GPU-session memory
+            // handle (the image memory's parent pool) aliasing the same guest memory, at that
+            // handle's device address. The image handle's own pin, if any, is a second device
+            // mapping the GPU never writes, so prefer the alias the texture cache knows.
             const DAddr alias = nvmap.FindPinnedAliasAddress(
                 layer.buffer_handle, handle->address + layer.offset,
                 static_cast<u64>(layer.stride) * layer.height * 4);

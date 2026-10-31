@@ -15,6 +15,8 @@
 #include <fmt/format.h>
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/environment.h"
+#include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/frontend/ir/program.h"
@@ -102,6 +104,45 @@ Shader::HostTranslateInfo MakeHostInfo() {
     info.support_viewport_mask = true;
     return info;
 }
+
+// Native (Switch 2) program lowered to Maxwell code laid out as InitializeNativeCode does:
+// a zeroed SPH, then a scheduling word before every three instructions.
+class LoweredEnvironment final : public Shader::Environment {
+public:
+    explicit LoweredEnvironment(const Shader::Ampere::LoweredProgram& lowered, Shader::Stage stage_) {
+        code.resize(sizeof(Shader::ProgramHeader) / sizeof(u64));
+        for (const u64 instruction : lowered.instructions) {
+            if ((code.size() * sizeof(u64)) % 32 == 0) code.push_back(0);
+            code.push_back(instruction);
+        }
+        code.push_back(0);
+        code.push_back(0xe30000000007000fULL); // EXIT guard
+        bound = lowered.required_texture_buffer == ~0U ? 2 : lowered.required_texture_buffer;
+        stage = stage_;
+        start_address = 0;
+    }
+    u64 ReadInstruction(u32 address) override {
+        return address / 8 < code.size() ? code[address / 8] : 0;
+    }
+    u32 ReadCbufValue(u32, u32) override { return 0; }
+    Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override {
+        return Shader::TexturePixelFormat::A8B8G8R8_UNORM;
+    }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    u32 ReadViewportTransformState() override { return 0; }
+    u32 TextureBoundBuffer() const override { return bound; }
+    u32 LocalMemorySize() const override { return 0x1000; }
+    u32 SharedMemorySize() const override { return 0x8000; }
+    std::array<u32, 3> WorkgroupSize() const override { return {64, 1, 1}; }
+    bool HasHLEMacroState() const override { return false; }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override { return std::nullopt; }
+    void Dump(u64, u64) override {}
+
+private:
+    std::vector<u64> code;
+    u32 bound{};
+};
 
 void Write(const std::filesystem::path& path, const std::vector<u32>& code) {
     std::ofstream out(path, std::ios::binary);
@@ -196,4 +237,44 @@ TEST_CASE("NS2 pipeline cache to SPIR-V", "[video_core][ns2-cache]") {
             }
         });
     fmt::print("pipelines: {} graphics, {} compute, {} failed to translate\n", graphics, compute, failed);
+}
+
+// Lowers native programs (raw 16-byte instructions, one program per file in NS2_NATIVE_DIR, as
+// dumped from LogRejectedNativeShader) and runs them through the Maxwell frontend and the SPIR-V
+// backend as compute shaders. Graphics-only operations (attributes) may fail here legitimately.
+TEST_CASE("NS2 native lowering", "[video_core][ns2-lower]") {
+    const char* dir = std::getenv("NS2_NATIVE_DIR");
+    if (!dir) {
+        SKIP("NS2_NATIVE_DIR not set");
+    }
+    const auto profile = MakeProfile();
+    const auto host_info = MakeHostInfo();
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        std::ifstream file(entry.path(), std::ios::binary);
+        std::vector<Shader::Ampere::Instruction> native;
+        Shader::Ampere::Instruction insn;
+        while (file.read(reinterpret_cast<char*>(&insn), sizeof(insn))) native.push_back(insn);
+        const auto lowered = Shader::Ampere::LowerToMaxwell(native);
+        const auto name = entry.path().filename().string();
+        if (!lowered) {
+            fmt::print("{}: lowering failed at {:#x}: {}\n", name, lowered.error_offset, lowered.error);
+            continue;
+        }
+        try {
+            LoweredEnvironment env{lowered, Shader::Stage::Compute};
+            Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block;
+            Shader::ObjectPool<Shader::IR::Inst> inst;
+            Shader::ObjectPool<Shader::IR::Block> block;
+            Shader::Maxwell::Flow::CFG cfg{env, flow_block, sizeof(Shader::ProgramHeader)};
+            auto program = Shader::Maxwell::TranslateProgram(inst, block, env, cfg, host_info);
+            Shader::Backend::Bindings binding;
+            const auto code = Shader::Backend::SPIRV::EmitSPIRV(profile, {}, program, binding);
+            if (const char* out = std::getenv("NS2_SPIRV_OUT")) {
+                Write(std::filesystem::path{out} / (entry.path().stem().string() + ".spv"), code);
+            }
+            fmt::print("{}: ok ({} lowered instructions)\n", name, lowered.instructions.size());
+        } catch (const std::exception& e) {
+            fmt::print("{}: translation failed: {}\n", name, e.what());
+        }
+    }
 }

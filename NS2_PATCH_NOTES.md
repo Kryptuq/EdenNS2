@@ -353,3 +353,18 @@
 - Build 79 crash report: access violation inside the NVIDIA driver (nvoglv64.dll) on a pipeline builder thread, while gameplay pipelines are compiled after the cutscene (and at boot when they are in the shader cache).
 - The user's shader cache (306 pipelines) was translated offline with a new test (tests "[ns2-cache]", env NS2_PIPELINE_CACHE / NS2_SPIRV_OUT, optional NS2_DUMP_HASH to print a shader's IR) and every module checked with spirv-val. Exactly one was invalid: a fragment shader (unique hash 0x61137fb59c949d85, pipeline 0x0105588e3b395ac7, also listed in the first crash report) with a sparse texture gather (TLD4 with residency) and a constant offset. Its OpImageSparseGather carried id 0 as the offset.
 - Cause: Sirit reserves one word too few for OpImageSparseGather and OpImageSparseDrefGather when image operands are present. The last operand is written past the end of the reserved space and comes out as 0 (also out-of-bounds memory use in Eden). Eden now emits the non-sparse gather in that case and reports the texels as resident (Eden has no partially resident textures). After the fix all 509 modules of the cache validate.
+
+## Build 81
+- Build 80: no crash any more. The game gets past the white screen into gameplay, but only the text box is drawn (black world). The cutscene still flickers.
+- Gameplay shaders: 28 different Switch 2 shaders were rejected by the native-to-Maxwell lowering, so their draws and compute dispatches were skipped. They were extracted from the log and all 28 now lower and translate (checked offline with a new test, tests "[ns2-lower]", env NS2_NATIVE_DIR).
+  - Uniform registers UR16-UR27 (only UR0-UR15 were mapped): UR0-21 -> R216-237, UR22-27 -> R240-245, as in Eglantine. Affects ULDC and the other uniform ops.
+  - UISETP/USEL with uniform predicates UP2-UP6 (only UP0/UP1 before).
+  - TXQ with any component mask (e.g. only depth/layers) and any descriptor buffer.
+  - ATOMS.POPC.INC with an immediate shared-memory offset.
+  - FRND with a constant-buffer source (0xb07).
+  - TLD4 (texture gather) with the bindless handle in a register (0x364).
+  - SURED.D, the no-return surface reduction (0x59f), lowered as SUATOM into RZ.
+  - FSET.BF combined with a predicate.
+- Bug fix: the bindless TEX/TLD4 lowerings (0x361, 0xf60, 0xf63) left the Maxwell sparse-predicate field at 0, which means "write texture residency to P0". Every bindless sample overwrote the guest's P0 (with "resident" = false after negation) and also produced the sparse SPIR-V that build 80 had to work around. The field is now PT.
+- Presentation: the swapchain images (native images 3/4) were displayed through the image handle's own pin (device 0x4c111000/0x4c981000), a second device mapping the GPU never writes. The game renders them through the parent memory pool at another device address (0x4b031000/0x4b8a1000), so every frame went through the "most recently rendered 1920x1080 image" fallback, which can pick the frame that is still being drawn. For Switch 2 layers the display now uses the parent pool's alias address, i.e. exactly the image the game presented.
+- Still unsupported: native geometry shaders ("Unsupported native graphics shader stage 4").
