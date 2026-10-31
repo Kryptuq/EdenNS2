@@ -68,7 +68,9 @@ struct H264Decoder::Impl {
         // Pictures come out in presentation order (B-frame reordering), tagged with the
         // timestamp of the access unit they came from.
         context->pkt_timebase = AVRational{1, 1000000};
-        context->thread_type = FF_THREAD_SLICE;
+        // Frame threading: several pictures decode in parallel. It adds a few frames of
+        // latency (drained at end of stream) but keeps 1080p movies at full speed.
+        context->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         context->thread_count = 0;
         if (avcodec_open2(context, codec, nullptr) < 0) {
             LOG_ERROR(HW_GPU, "NS2 video: could not open the H.264 decoder");
@@ -110,9 +112,14 @@ std::vector<H264Decoder::Frame> H264Decoder::Decode(std::span<const u8> data, s6
     std::memcpy(impl->packet->data, data.data(), data.size());
     impl->packet->pts = pts;
     impl->packet->dts = AV_NOPTS_VALUE;
-    const int sent = avcodec_send_packet(impl->context, impl->packet);
+    int sent = avcodec_send_packet(impl->context, impl->packet);
+    if (sent == AVERROR(EAGAIN)) {
+        // Output must be collected before the decoder takes more input.
+        Receive(frames);
+        sent = avcodec_send_packet(impl->context, impl->packet);
+    }
     av_packet_unref(impl->packet);
-    if (sent < 0 && sent != AVERROR(EAGAIN)) {
+    if (sent < 0) {
         if (impl->errors++ < 8) {
             LOG_WARNING(HW_GPU, "NS2 video: H.264 packet of {} bytes rejected ({})", data.size(), sent);
         }
@@ -141,24 +148,44 @@ void H264Decoder::Receive(std::vector<Frame>& frames) {
             av_frame_unref(impl->frame);
             continue;
         }
-        impl->scaler = sws_getCachedContext(impl->scaler, w, h,
-                                            static_cast<AVPixelFormat>(impl->frame->format), w, h,
-                                            AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
-        if (!impl->scaler) {
-            av_frame_unref(impl->frame);
-            continue;
-        }
         Frame& out = frames.emplace_back();
-        // Packed NV12: the Y plane (pitch = width) followed by the interleaved UV plane.
         const size_t luma = static_cast<size_t>(w) * h;
         out.nv12.resize(luma + static_cast<size_t>(w) * ((h + 1) / 2) + 2);
-        u8* dst[4] = {out.nv12.data(), out.nv12.data() + luma, nullptr, nullptr};
-        int dst_stride[4] = {w, (w + 1) & ~1, 0, 0};
-        sws_scale(impl->scaler, impl->frame->data, impl->frame->linesize, 0, h, dst, dst_stride);
         out.width = static_cast<u32>(w);
         out.height = static_cast<u32>(h);
         const s64 best = impl->frame->best_effort_timestamp;
         out.pts = best != AV_NOPTS_VALUE ? best : impl->frame->pts;
+        if (impl->frame->format == AV_PIX_FMT_YUV420P || impl->frame->format == AV_PIX_FMT_YUVJ420P) {
+            // Common case: copy Y and interleave U/V directly (much cheaper than swscale).
+            const AVFrame* f = impl->frame;
+            for (int y = 0; y < h; ++y) {
+                std::memcpy(out.nv12.data() + static_cast<size_t>(y) * w, f->data[0] + static_cast<ptrdiff_t>(y) * f->linesize[0], static_cast<size_t>(w));
+            }
+            const int cw = (w + 1) / 2, ch = (h + 1) / 2;
+            for (int y = 0; y < ch; ++y) {
+                const u8* u = f->data[1] + static_cast<ptrdiff_t>(y) * f->linesize[1];
+                const u8* v = f->data[2] + static_cast<ptrdiff_t>(y) * f->linesize[2];
+                u8* dst = out.nv12.data() + luma + static_cast<size_t>(y) * w;
+                for (int x = 0; x < cw && 2 * x + 1 < w + 1; ++x) {
+                    dst[2 * x] = u[x];
+                    dst[2 * x + 1] = v[x];
+                }
+            }
+            av_frame_unref(impl->frame);
+            continue;
+        }
+        impl->scaler = sws_getCachedContext(impl->scaler, w, h,
+                                            static_cast<AVPixelFormat>(impl->frame->format), w, h,
+                                            AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!impl->scaler) {
+            frames.pop_back();
+            av_frame_unref(impl->frame);
+            continue;
+        }
+        // Packed NV12: the Y plane (pitch = width) followed by the interleaved UV plane.
+        u8* dst[4] = {out.nv12.data(), out.nv12.data() + luma, nullptr, nullptr};
+        int dst_stride[4] = {w, (w + 1) & ~1, 0, 0};
+        sws_scale(impl->scaler, impl->frame->data, impl->frame->linesize, 0, h, dst, dst_stride);
         av_frame_unref(impl->frame);
     }
 }

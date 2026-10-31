@@ -274,3 +274,11 @@
 - Build 65: the background movie shows on the title and New Game screens. It is blocky, freezes and resumes, and sometimes goes white for a moment. Its timestamps jump ahead by about a second at a time and sometimes go backwards (for example 1.87 s, then 0.9 s), so input frames were lost or arrived out of order. That breaks the H.264 reference frames, which causes the block artefacts and the skipping. The refusals ("busy") were the likely cause: the player did not resubmit refused inputs in order.
 - The notification event is nn::codec's "submission ready" event, and the player waits on it before it submits. It is now signalled only while the decoder has room (fewer than 4 decoded frames waiting) and cleared when full. The 4 ms re-signal also respects this. So the player paces itself and inputs are no longer refused in normal operation; refusals are still logged if they happen.
 - Decoder outputs are logged every 100 frames after the first 64, to check that timestamps advance smoothly.
+
+## Build 67
+- Build 66: playback is in order now (only 10 refused inputs in 6 minutes, timestamps advance steadily), but too slowly. The player took about 11 frames per second, while the movie position advanced about 6 s per 9 s of real time and roughly 45% of frames were skipped (100 outputs covered about 180 frames of movie). Frames that are skipped ahead of decoding break the H.264 references, which explains the remaining blocks and stutter.
+- The decoder side is now much cheaper per frame:
+  - FFmpeg frame threading (several pictures decode in parallel; the extra latency is drained at end of stream). A local test decodes 1080p H.264 at about 220 frames per second on 2 cores.
+  - YUV420P to NV12 is a direct copy and interleave instead of swscale.
+  - Pictures are written to the output image in one 3 MiB block instead of zero-filling and writing the whole 8.4 MiB image every frame.
+  - Up to 6 decoded frames may wait for an output image (was 4).
