@@ -309,12 +309,23 @@ struct System::Impl {
                 const char* value = std::getenv("EDEN_NX2_CNTFRQ");
                 return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
             }();
-            const bool switch2_program = (params.program_id >> 56) == 0x04;
+            // params.program_id is often still 0 here (it is read from the loader later), so ask a
+            // temporary loader for it.
+            u64 early_program_id = params.program_id;
+            if (early_program_id == 0 && virtual_filesystem != nullptr) {
+                if (const auto game_file = GetGameFileFromPath(virtual_filesystem, filepath)) {
+                    if (const auto loader = Loader::GetLoader(system, game_file, params.program_id,
+                                                              params.program_index)) {
+                        loader->ReadProgramId(early_program_id);
+                    }
+                }
+            }
+            const bool switch2_program = (early_program_id >> 56) == 0x04;
             const u64 cntfrq = forced_cntfrq != 0 ? forced_cntfrq
                                : switch2_program  ? Common::WallClock::Switch2CNTFRQ
                                                   : Common::WallClock::CNTFRQ;
             Common::g_wall_clock.SetGuestCNTFRQ(cntfrq);
-            LOG_INFO(Core, "Guest counter frequency: {} Hz", cntfrq);
+            LOG_INFO(Core, "Guest counter frequency: {} Hz (program {:016X})", cntfrq, early_program_id);
         }
 
         InitializeKernel(system);
@@ -342,6 +353,12 @@ struct System::Impl {
 
         if (app_loader->ReadProgramId(params.program_id) != Loader::ResultStatus::Success) {
             LOG_ERROR(Core, "Failed to find program id for ROM!");
+        }
+        // Fallback if the early program id lookup above failed: counter reads still follow.
+        if ((params.program_id >> 56) == 0x04 && std::getenv("EDEN_NX2_CNTFRQ") == nullptr &&
+            Common::g_wall_clock.GetGuestCNTFRQ() != Common::WallClock::Switch2CNTFRQ) {
+            Common::g_wall_clock.SetGuestCNTFRQ(Common::WallClock::Switch2CNTFRQ);
+            LOG_WARNING(Core, "Guest counter frequency corrected to {} Hz after loading", Common::WallClock::Switch2CNTFRQ);
         }
 
         std::string name = "Unknown program";
