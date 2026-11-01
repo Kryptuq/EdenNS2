@@ -391,3 +391,8 @@
 - The consumer fence now counts as reached once the GPU thread has processed the copy (guest value). The picture written then reaches the GPU image through a re-upload that is recorded after that copy, so the copy still reads the old picture.
 - The movie order trace now covers the whole cutscene (40000 events) and leaves out channel 1's frequent syncpoints and semaphores.
 - Third test crash (ns2_crash: access violation in nvoglv64.dll on a Vulkan worker thread while the GPU thread executes channel 1) is not analysed yet.
+
+## Build 86
+- Mailbox tests (user): 50-51 fps, flicker much rarer. Measured over the whole cutscene: 21-36 skipped video frames per run with Mailbox, 374 with FIFO (build 85). Frame pacing decides it: the game's movie player drops a video frame when a game frame takes too long, and the renderer still shows the intermediate slot reserved for that frame (the stale picture). The remaining skips cluster at the start of the cutscene (the user sees ~30 fps for a second there) and at hitches.
+- One cause of long game frames is Eden itself: every new picture (1080p) was converted NV12 -> RGBA and swizzled into the decoder image inside the decoder service, while the game's movie thread waits in its image release call (314). That took ~13 ms per picture here (two passes, two 8 MB zero fills, generic swizzle), 30 times a second.
+- Now one pass converts and writes the Switch 2 block-linear layout directly (16-byte sectors, GOB bit 5/6 swap as in Tegra::Texture's native tiling), split across up to 8 host threads, without zero fills: 5 ms on 2 threads here, about 1-2 ms on 8. Verified byte-identical to ConvertNv12ToColor + SwizzleTexture(native tiling) on a random 1920x1080 frame.

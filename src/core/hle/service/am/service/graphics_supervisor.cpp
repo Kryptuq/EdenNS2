@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
+#include <optional>
+#include <string_view>
+#include <thread>
 #include <iterator>
 #include <cstring>
 #include <deque>
@@ -160,6 +164,74 @@ static void ConvertNv12ToColor(std::span<const u8> nv12, u32 width, u32 height, 
             dst[x * 4 + 2] = static_cast<u8>(bgra ? r : b);
             dst[x * 4 + 3] = 255;
         }
+    }
+}
+
+// Converts NV12 to RGBA/BGRA and writes it straight into a Switch 2 block-linear (16-byte sectors in
+// 64x8-byte GOBs, `block_rows` GOB rows per block) image, splitting the work across host
+// threads. This runs while the decoder service is locked, i.e. while the game's movie thread
+// waits in its release/acquire call: doing it in one pass and in parallel keeps that wait at a
+// few milliseconds per 1080p picture instead of a large part of a frame.
+static void ConvertNv12ToBlockLinear(std::span<const u8> nv12, u32 width, u32 height, bool bgra,
+                                     std::span<u8> out, u32 gobs_x, u32 block_rows_log2,
+                                     u32 rows, u32 columns) {
+    const size_t luma = static_cast<size_t>(width) * height;
+    const u32 block_gob_rows = 1U << block_rows_log2;
+    const u32 block_height = 8 * block_gob_rows;
+    const size_t block_bytes = 512 * static_cast<size_t>(block_gob_rows);
+    const u32 block_count = (rows + block_height - 1) / block_height;
+    const auto convert_rows = [&](u32 first_block, u32 last_block) {
+        for (u32 block = first_block; block < last_block; ++block) {
+            const u32 y_end = (std::min)(rows, (block + 1) * block_height);
+            for (u32 y = block * block_height; y < y_end; ++y) {
+                const u8* yrow = nv12.data() + static_cast<size_t>(y) * width;
+                const u8* uvrow = nv12.data() + luma + static_cast<size_t>(y / 2) * width;
+                const size_t row_base = static_cast<size_t>(block) * gobs_x * block_bytes +
+                                        static_cast<size_t>((y % block_height) / 8) * 512 +
+                                        ((y % 8) / 2) * 64 + (y % 2) * 16;
+                for (u32 x = 0; x < columns; x += 4) {
+                    const u32 xb = x * 4; // byte offset in the row, a 16-byte sector
+                    size_t offset = row_base + static_cast<size_t>(xb / 64) * block_bytes +
+                                    ((xb % 64) / 32) * 256 + ((xb % 32) / 16) * 32;
+                    // Switch 2 GOBs swap address bits 5 and 6 when they differ (as
+                    // Tegra::Texture's native tiling does).
+                    const size_t swap = ((offset >> 5) ^ (offset >> 6)) & 1;
+                    offset ^= (swap << 5) | (swap << 6);
+                    if (offset + 16 > out.size()) {
+                        continue;
+                    }
+                    u8* dst = out.data() + offset;
+                    const u32 count = (std::min)(4U, columns - x);
+                    for (u32 i = 0; i < count; ++i) {
+                        const u32 px = x + i;
+                        const int c = (static_cast<int>(yrow[px]) - 16) * 298;
+                        const int d = static_cast<int>(uvrow[px & ~1U]) - 128;
+                        const int e = static_cast<int>(uvrow[(px & ~1U) + 1]) - 128;
+                        const int r = std::clamp((c + 459 * e + 128) >> 8, 0, 255);
+                        const int g = std::clamp((c - 55 * d - 136 * e + 128) >> 8, 0, 255);
+                        const int b = std::clamp((c + 541 * d + 128) >> 8, 0, 255);
+                        dst[i * 4 + 0] = static_cast<u8>(bgra ? b : r);
+                        dst[i * 4 + 1] = static_cast<u8>(g);
+                        dst[i * 4 + 2] = static_cast<u8>(bgra ? r : b);
+                        dst[i * 4 + 3] = 255;
+                    }
+                }
+            }
+        }
+    };
+    const u32 workers = std::clamp(std::thread::hardware_concurrency(), 1U, 8U);
+    if (workers == 1 || block_count < 2) {
+        convert_rows(0, block_count);
+        return;
+    }
+    std::vector<std::thread> threads;
+    const u32 per_worker = (block_count + workers - 1) / workers;
+    for (u32 first = per_worker; first < block_count; first += per_worker) {
+        threads.emplace_back(convert_rows, first, (std::min)(block_count, first + per_worker));
+    }
+    convert_rows(0, (std::min)(block_count, per_worker));
+    for (auto& thread : threads) {
+        thread.join();
     }
 }
 
@@ -458,13 +530,13 @@ private:
             }
             const bool block = layout->kind == DecoderImageLayout::Kind::BlockColor;
             const u32 pitch = block ? layout->width * 4 : layout->pitch;
-            m_linear.assign(static_cast<size_t>(pitch) * layout->height, 0);
-            ConvertNv12ToColor(picture->rgba, picture->width, picture->height, layout->bgra,
-                               m_linear, pitch, rows, row_bytes);
             if (block) {
-                m_tiled.assign(image->size, 0);
-                Tegra::Texture::SwizzleTexture(m_tiled, m_linear, 4, layout->width, layout->height, 1,
-                                               layout->block_log2 - 3, 0, 1, true);
+                if (m_tiled.size() != image->size) {
+                    m_tiled.assign(image->size, 0);
+                }
+                const u32 gobs_x = (layout->width * 4 + 63) / 64;
+                ConvertNv12ToBlockLinear(picture->rgba, picture->width, picture->height, layout->bgra,
+                                         m_tiled, gobs_x, layout->block_log2 - 3, rows, row_bytes);
                 memory.WriteBlock(handle->address, m_tiled.data(), m_tiled.size());
                 // The GPU reads this image directly (blit/texture). A CPU write to memory that the
                 // buffer cache also covers only reaches the texture cache at the next GPU sync,
@@ -474,6 +546,9 @@ private:
                     system.GPU().InvalidateRegion(handle->d_address, m_tiled.size());
                 }
             } else {
+                m_linear.assign(static_cast<size_t>(pitch) * layout->height, 0);
+                ConvertNv12ToColor(picture->rgba, picture->width, picture->height, layout->bgra,
+                                   m_linear, pitch, rows, row_bytes);
                 memory.WriteBlock(handle->address, m_linear.data(), m_linear.size());
             }
         } else {
