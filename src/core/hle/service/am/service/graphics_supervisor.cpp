@@ -32,6 +32,9 @@
 #include "core/hle/kernel/svc_results.h"
 #include "core/hle/service/am/service/graphics_supervisor.h"
 #include "video_core/ns2_order_trace.h"
+#include "core/arm/debug.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/service/am/service/graphics_session.h"
 #include "video_core/native_strict.h"
 #include "video_core/host1x/ns2_video_decoder.h"
@@ -235,6 +238,101 @@ static void ConvertNv12ToBlockLinear(std::span<const u8> nv12, u32 width, u32 he
     }
 }
 
+// Diagnostics: the requesting guest thread's call chain (lr, then the frame-pointer chain), with
+// pointer-authentication bits stripped. The thread is blocked in its IPC call, so its saved
+// context is current.
+static std::string GuestCallChain(HLERequestContext& ctx, size_t depth = 10) {
+    auto& thread = ctx.GetThread();
+    auto* process = thread.GetOwnerProcess();
+    if (!process) {
+        return {};
+    }
+    auto& memory = process->GetMemory();
+    const auto& context = thread.GetContext();
+    constexpr u64 AddressMask = (u64{1} << 40) - 1;
+    std::string chain = fmt::format("{}: {:x}", Core::GetThreadName(&thread).value_or("?"), context.lr & AddressMask);
+    u64 fp = context.fp;
+    for (size_t i = 0; i < depth; ++i) {
+        if (!fp || (fp % 8) != 0 || !memory.IsValidVirtualAddressRange(fp, 16)) {
+            break;
+        }
+        const u64 ret = memory.Read64(fp + 8) & AddressMask;
+        const u64 next = memory.Read64(fp);
+        chain += fmt::format(" {:x}", ret);
+        if (next <= fp) {
+            break;
+        }
+        fp = next;
+    }
+    return chain;
+}
+
+// Diagnostics for the in-game movie: state of nn::movie's native-texture video decoder adapter
+// (movie::detail::DecoderAdapterImpl<VideoDecoder, VideoFrame>), found among the saved registers
+// of the calling thread's frames. Fields (from the SDK disassembly): +0xc4 mode (2 = native
+// texture), +0x1c8 frame count, +0x1e8 ready-list length, +0x1f0 frames array (16 bytes each),
+// +0x52c virtual index wrap, +0x530 next virtual index, +0x538/+0x540 list tail/head of
+// (virtual -> real) entries {prev, next, u32 virtual, u32 real}, +0x548 list length.
+static std::string DumpMovieAdapter(HLERequestContext& ctx) {
+    static u64 cached{};
+    auto& thread = ctx.GetThread();
+    auto* process = thread.GetOwnerProcess();
+    if (!process) {
+        return {};
+    }
+    auto& memory = process->GetMemory();
+    const auto valid = [&](u64 p) {
+        if (!p || (p % 8) != 0 || !memory.IsValidVirtualAddressRange(p, 0x560)) return false;
+        if (memory.Read32(p + 0xc4) != 2) return false;
+        const u64 sentinel = p + 0x538;
+        u64 node = memory.Read64(p + 0x540);
+        for (int i = 0; i < 32; ++i) {
+            if (node == sentinel) return true;
+            if (!node || (node % 8) != 0 || !memory.IsValidVirtualAddressRange(node, 0x18)) return false;
+            node = memory.Read64(node + 8);
+        }
+        return false;
+    };
+    u64 adapter = valid(cached) ? cached : 0;
+    if (!adapter) {
+        const auto& context = thread.GetContext();
+        std::vector<u64> candidates(context.r.begin() + 19, context.r.begin() + 29);
+        u64 fp = context.fp;
+        for (int frame = 0; frame < 10 && fp && (fp % 8) == 0 && memory.IsValidVirtualAddressRange(fp, 0x80); ++frame) {
+            for (u64 off = 0x10; off < 0x80; off += 8) candidates.push_back(memory.Read64(fp + off));
+            const u64 next = memory.Read64(fp);
+            if (next <= fp) break;
+            fp = next;
+        }
+        for (const u64 candidate : candidates) {
+            if (valid(candidate)) {
+                adapter = candidate;
+                break;
+            }
+        }
+        if (!adapter) {
+            return "adapter=?";
+        }
+        cached = adapter;
+    }
+    std::string out = fmt::format("adapter={:x} wrap={} next={} ready={} list[{}]:", adapter,
+                                  memory.Read32(adapter + 0x52c), memory.Read32(adapter + 0x530),
+                                  memory.Read64(adapter + 0x1e8), memory.Read64(adapter + 0x548));
+    const u64 sentinel = adapter + 0x538;
+    u64 node = memory.Read64(adapter + 0x540);
+    for (int i = 0; i < 16 && node != sentinel; ++i) {
+        out += fmt::format(" {}->{}", memory.Read32(node + 0x10), memory.Read32(node + 0x14));
+        node = memory.Read64(node + 8);
+    }
+    const u32 frames = std::min<u32>(memory.Read32(adapter + 0x1c8), 32);
+    const u64 array = memory.Read64(adapter + 0x1f0);
+    out += " frames:";
+    for (u32 i = 0; i < frames && array; ++i) {
+        out += memory.Read64(array + i * 16) ? '1' : '0';
+    }
+    return out;
+}
+
 namespace {
 
 // TIPC payloads follow a 32-bit result, so these handlers push result.raw.
@@ -354,9 +452,10 @@ public:
                 }
                 const u32 target = existing != m_free.end() ? existing->target : GiveBack(packet[2], fence);
                 if (VideoCommon::NS2Order::Take()) {
-                    LOG_INFO(Service_AM, "NS2 order: decoder release image {} (cmd {}) consumer fence {}:{} reached={}",
+                    LOG_INFO(Service_AM, "NS2 order: decoder release image {} (cmd {}) consumer fence {}:{} reached={} by {}",
                              packet[2], command, fence.valid ? fence.id : ~0U, fence.value,
-                             fence.valid ? FenceReached(fence) : true);
+                             fence.valid ? FenceReached(fence) : true, GuestCallChain(ctx));
+                    LOG_INFO(Service_AM, "NS2 order: decoder state {}", DumpMovieAdapter(ctx));
                 }
                 if (m_fences_logged++ < 32) {
                     LOG_INFO(Service_AM, "video decoder: image {} queued (command {}), fence counter {} value {}",
@@ -781,7 +880,9 @@ private:
         const Output output = m_outputs.front();
         m_outputs.pop_front();
         if (VideoCommon::NS2Order::Take()) {
-            LOG_INFO(Service_AM, "NS2 order: decoder output image {} pts {}", output.image, output.pts);
+            LOG_INFO(Service_AM, "NS2 order: decoder output image {} pts {} by {}", output.image, output.pts,
+                     GuestCallChain(ctx, 6));
+            LOG_INFO(Service_AM, "NS2 order: decoder state {}", DumpMovieAdapter(ctx));
         }
         if (const u32 n = m_outputs_given++; n < 64 || n % 100 == 0) {
             LOG_INFO(Service_AM, "video decoder: output {} -> image {} pts {} (free {}, waiting {}, ready {})",

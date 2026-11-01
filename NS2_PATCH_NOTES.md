@@ -405,3 +405,11 @@
 
 ## Build 89
 - Build 88 broke the movies: the title screen background stopped after 8 pictures (white screen) and the cutscene was black. Holding pictures back made nn::codec wait for a notification Eden never sent again, so the game stopped asking for pictures (the 150 ms safety net never ran). The outstanding-picture limit is reverted; everything else is as in build 87.
+
+## Build 90 (diagnostics only, no behaviour change)
+Investigation of the cutscene flicker without code changes so far:
+- Releases (314) follow the order in which pictures were handed out exactly (3662 of 3667 in the build 89 log), so no picture is given back out of order.
+- Pairing the k-th release with the k-th copy (2D blit on channel 3): the copied image is either the released one or the next one, nothing else. Bad run: 645 of 3659 copies took the next image; good run: 15. That is the whole defect: for those frames nn::movie copies the following decoder image into the frame's slot, and the frame itself is skipped.
+- The game's player (main 0x877b0820 output thread, 0x877bca80 display loop, 0x877b208c fetch) and nn::movie's native-texture adapter (AcquireOutputBufferIndex, GetOutputBufferInternal, ReleaseOutputBufferIndex[Internal], CopyTexture) were disassembled. The player fetches every frame it has queued once it is due; drops only happen when GetOutputBuffer fails. CopyTexture cannot fail at random (nvnSyncInitializeFromNvRmSyncNVX always succeeds). The adapter maps rotating virtual indices to decoder buffers through a list; a deferred ReleaseOutputBufferIndex(virtual) after the counter wrapped would remove a newer entry, but the strict release order argues against that as the only mechanism.
+- nn::codec (sdk 0x8fc45e00..): AcquireH264DecoderOutputBuffer pops the client's own 8-entry ring (no IPC) and returns the stored fence; GetH264DecoderOutputBufferProperties(index) fills a per-index cache from 213 replies, matched by image id; ReleaseH264DecoderOutputBuffer sends 314 and clears that index's cache.
+- To decide between the remaining explanations, this build logs, for every 314 and 213 during the cutscene, the guest call chain of the caller (which code path released or acquired the picture) and the adapter's internal state (virtual index wrap and counter, the virtual->real list, ready count, which frames are held).
