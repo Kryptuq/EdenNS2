@@ -63,7 +63,8 @@ void CaptureCommandLists(Tegra::MemoryManager& memory, s32 channel, Tegra::Comma
         }
         memory.ReadBlockUnsafe(entry.addr, entries.captured_words.data() + offset, bytes);
         entries.captured_offsets[i] = static_cast<u32>(offset);
-        entries.captured_sequences[i] = Tegra::NativeSubmissions::Record(channel, entry.addr);
+        entries.captured_sequences[i] = Tegra::NativeSubmissions::Record(
+            channel, entry.addr, std::span{entries.captured_words}.subspan(offset, words));
         offset += words;
     }
     entries.captured_words.resize(offset);

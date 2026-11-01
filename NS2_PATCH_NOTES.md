@@ -433,3 +433,11 @@ Logged now:
 - When the watchdog sees a thread waiting on a host GPU tick: the native draws/dispatches (shader addresses) recorded into that submission.
 - Every 600 frames: drawn / no-pipeline / configure-failed draw counts per render target.
 - The crash report shows the image being uploaded (address, size, format, guest size).
+
+## Build 93
+Build 92 results (user): normal run froze on the white screen again (60 s); with EDEN_NATIVE_PUSHBUFFER_CAPTURE=0 the cutscene flickered but the game went past the white screen into the in-engine cutscene (and stopped presenting about 27 s later, a separate guest-side stall). One more crash at boot.
+- The freeze is caused by build 91's command capture: 2 of 2 runs with it, 0 of 1 without. The watchdog shows the host GPU never finishing a single native compute dispatch (shader 0x1b13391700).
+- Rewritten channel 3 lists (nn::movie) were always submitted again with new contents: the memory was reused, running the submitted version is right. The ~200 rewritten channel 1 lists per second are 3-word placeholders submitted as zeros or stale values and filled in afterwards (e.g. 0 0 0 -> 0x28 0x17 1, values like dispatch dimensions): they are completed in place and must run with the current contents. Build 91 ran the placeholders.
+- Now a changed list runs as submitted only if a later submission of the same memory captured exactly its current contents (reused); otherwise the current contents run (completed in place), as before build 91. Counted and logged per channel ("reused" / "completed in place"). Unit tests: [ns2-submissions].
+- Boot crash report: texture 65536x65536 with guest size 0 (garbage descriptor), only seen with build 91/92; to be checked against this build.
+- Draw summary after the cutscene (capture off): tens of thousands of 3D draws run per 600 frames; skipped are the 4-vertex geometry-shader draws on a few render targets (about 4 per frame on two targets).
