@@ -114,6 +114,18 @@ struct CommandList final {
 
     boost::container::small_vector<CommandListHeader, 512> command_lists;
     boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
+
+    /// Contents of command_lists as they were at submission (native channels). The words of entry
+    /// i start at captured_offsets[i]; ~0U marks an entry that was not captured.
+    std::vector<CommandHeader> captured_words;
+    std::vector<u32> captured_offsets;
+
+    [[nodiscard]] std::span<const CommandHeader> Captured(size_t index) const {
+        if (index >= captured_offsets.size() || captured_offsets[index] == ~0U) {
+            return {};
+        }
+        return std::span{captured_words}.subspan(captured_offsets[index], command_lists[index].size);
+    }
 };
 
 /// @brief The DmaPusher class implements DMA submission to FIFOs, providing an area of memory that the
@@ -147,7 +159,11 @@ private:
     bool HasFailedNativeWork() const;
     bool Step();
     size_t ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset = 0);
+    bool UseCapturedCommands(GPUVAddr address, std::span<const CommandHeader> captured);
     size_t command_resume_offset{};
+    bool resume_from_capture{};
+    u64 rewritten_lists{};
+    Common::ScratchBuffer<CommandHeader> live_headers;
 
     void SetState(const CommandHeader& command_header);
 

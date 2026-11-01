@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
+#include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
@@ -95,8 +97,14 @@ bool DmaPusher::Step() {
                 subchannels[dma_state.subchannel]->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
             }
         }
+        const auto captured = command_list.Captured(dma_pushbuffer_subindex);
+        if (!captured.empty() && command_resume_offset == 0) {
+            resume_from_capture = UseCapturedCommands(header.addr, captured);
+        }
         const bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
-        if (use_safe) {
+        if (!captured.empty() && resume_from_capture) {
+            command_resume_offset += ProcessCommands(captured.subspan(command_resume_offset), command_resume_offset);
+        } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             command_resume_offset += ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -124,6 +132,28 @@ bool DmaPusher::Step() {
         });
     }
 
+    return true;
+}
+
+// The hardware fetches a command list right after it is submitted, but the GPU thread may reach it
+// much later. By then the guest can have recorded new commands into the same memory: nn::movie
+// reuses one command buffer for every video frame copy without waiting for the GPU, and reading it
+// late executed the next frame's copy instead (the cutscene flickered). Run the commands as
+// submitted, unless the GPU itself wrote that memory since (GPU-generated commands).
+bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHeader> captured) {
+    const size_t bytes = captured.size_bytes();
+    if (memory_manager.IsMemoryDirty(address, bytes)) {
+        return false;
+    }
+    live_headers.resize_destructive(captured.size());
+    memory_manager.ReadBlockUnsafe(address, live_headers.data(), bytes);
+    if (std::memcmp(live_headers.data(), captured.data(), bytes) != 0) {
+        const u64 count = ++rewritten_lists;
+        if (count <= 16 || count % 500 == 0) {
+            LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) was rewritten after submission, running it as submitted (#{})",
+                     channel_state.bind_id, address, captured.size(), count);
+        }
+    }
     return true;
 }
 
