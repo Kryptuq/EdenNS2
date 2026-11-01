@@ -33,6 +33,39 @@ Tegra::CommandHeader BuildFenceAction(Tegra::Engines::Puller::FenceOperation op,
     result.syncpoint_id.Assign(syncpoint_id);
     return {result.raw};
 }
+
+// Keeps the submitted command lists as they are now, when the hardware would fetch them; the GPU
+// thread may only reach them after the guest has reused that memory (see DmaPusher).
+// EDEN_NATIVE_PUSHBUFFER_CAPTURE=0 disables this.
+void CaptureCommandLists(Tegra::MemoryManager& memory, Tegra::CommandList& entries) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NATIVE_PUSHBUFFER_CAPTURE");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
+    constexpr u64 MaxWords = 1ULL << 20;
+    if (!enabled || entries.command_lists.empty()) {
+        return;
+    }
+    size_t total = 0;
+    for (const auto& entry : entries.command_lists) {
+        if (entry.size <= MaxWords) total += entry.size;
+    }
+    entries.captured_offsets.assign(entries.command_lists.size(), ~0U);
+    entries.captured_words.resize(total);
+    size_t offset = 0;
+    for (size_t i = 0; i < entries.command_lists.size(); ++i) {
+        const auto& entry = entries.command_lists[i];
+        const u64 words = entry.size;
+        const size_t bytes = static_cast<size_t>(words) * sizeof(u32);
+        if (words == 0 || words > MaxWords || !memory.IsFullyMappedRange(entry.addr, bytes)) {
+            continue;
+        }
+        memory.ReadBlockUnsafe(entry.addr, entries.captured_words.data() + offset, bytes);
+        entries.captured_offsets[i] = static_cast<u32>(offset);
+        offset += words;
+    }
+    entries.captured_words.resize(offset);
+}
 } // namespace
 
 nvhost_gpu::nvhost_gpu(Core::System& system_, EventInterface& events_interface_,
@@ -415,6 +448,9 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
     u32 increment{(flags.fence_increment.Value() != 0 ? 2 : 0) +
                   (flags.increment_value.Value() != 0 ? params.fence.value : 0)};
     params.fence.value = syncpoint_manager.IncrementSyncpointMaxExt(channel_syncpoint, increment);
+    if (UsesNativeAbi() && channel_state->memory_manager) {
+        CaptureCommandLists(*channel_state->memory_manager, entries);
+    }
     gpu.PushGPUEntries(bind_id, std::move(entries));
 
     if (flags.fence_increment.Value()) {
