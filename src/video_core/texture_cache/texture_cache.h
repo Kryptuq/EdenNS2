@@ -219,6 +219,21 @@ typename P::ImageView& TextureCache<P>::GetImageView(ImageViewId id) noexcept {
 }
 
 template <class P>
+std::string TextureCache<P>::DescribeImageView(ImageViewId id) {
+    if (!id) {
+        return "null";
+    }
+    const auto& view = slot_image_views[id];
+    if (!view.image_id) {
+        return fmt::format("view(no image) fmt={}", static_cast<u32>(view.format));
+    }
+    const auto& image = slot_images[view.image_id];
+    return fmt::format("{:#x}:{}x{}x{} layers={} type={} fmt={}", image.gpu_addr, image.info.size.width,
+                       image.info.size.height, image.info.size.depth, image.info.resources.layers,
+                       static_cast<u32>(image.info.type), static_cast<u32>(image.info.format));
+}
+
+template <class P>
 typename P::ImageView& TextureCache<P>::GetImageView(u32 index) noexcept {
     // Not compute!
     const auto image_view_id = VisitImageView(index, false);

@@ -28,6 +28,7 @@
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/ns2_draw_stats.h"
 #include "common/settings.h"
 
 #if defined(_MSC_VER) && defined(NDEBUG)
@@ -450,6 +451,13 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
+    if (VideoCommon::NS2Draw::FrameTraceActive() && !views.empty()) {
+        std::string sampled;
+        for (const auto& view : views) {
+            sampled += " " + texture_cache.DescribeImageView(view.id);
+        }
+        LOG_INFO(Render_Vulkan, "NS2 frame trace:   samples{}", sampled);
+    }
 
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};
     const auto bind_stage_info{[&](size_t stage) LAMBDA_FORCEINLINE {

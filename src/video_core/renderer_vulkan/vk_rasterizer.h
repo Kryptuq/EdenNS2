@@ -14,6 +14,7 @@
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/ns2_draw_stats.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -124,6 +125,7 @@ public:
     void FlushCommands() override;
     void TickFrame() override;
     void NoteNativeDraw();
+    void TraceNativeDraw(VideoCommon::NS2Draw::Result result, bool is_indexed);
     bool AccelerateConditionalRendering() override;
     bool HasDrawTransformFeedback() override;
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
@@ -232,6 +234,7 @@ private:
 
     u32 draw_counter = 0;
     u32 native_summary_frames = 0;
+    u32 native_trace_frames = 0;
 };
 
 } // namespace Vulkan

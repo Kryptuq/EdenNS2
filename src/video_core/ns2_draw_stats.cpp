@@ -74,6 +74,16 @@ bool TakeMethodTrace() {
     return method_trace_budget.fetch_sub(1, std::memory_order_relaxed) > 0;
 }
 
+std::atomic<bool> frame_trace{};
+
+void SetFrameTrace(bool active) {
+    frame_trace.store(active, std::memory_order_relaxed);
+}
+
+bool FrameTraceActive() {
+    return frame_trace.load(std::memory_order_relaxed);
+}
+
 void SetTraceMacroExecute(bool value) {
     trace_macro_execute.store(value, std::memory_order_relaxed);
 }
