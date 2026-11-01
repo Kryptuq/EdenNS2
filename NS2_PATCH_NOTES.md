@@ -441,3 +441,11 @@ Build 92 results (user): normal run froze on the white screen again (60 s); with
 - Now a changed list runs as submitted only if a later submission of the same memory captured exactly its current contents (reused); otherwise the current contents run (completed in place), as before build 91. Counted and logged per channel ("reused" / "completed in place"). Unit tests: [ns2-submissions].
 - Boot crash report: texture 65536x65536 with guest size 0 (garbage descriptor), only seen with build 91/92; to be checked against this build.
 - Draw summary after the cutscene (capture off): tens of thousands of 3D draws run per 600 frames; skipped are the 4-vertex geometry-shader draws on a few render targets (about 4 per frame on two targets).
+
+## Build 94 (diagnostics only, no behaviour change)
+Build 93 results (user): no freeze after the cutscene any more, the in-engine cutscene plays to the end with working text boxes, no crash in 5+ boots. The scene itself is black; the UI is visible. The movie still flickered in a few places.
+- Movie: 951 copies the GPU thread reached after the next copy was recorded were all correct now; 10 wrong copies remain, matching the 10 channel 3 lists classified as "completed in place". That is the expected gap: the GPU thread read the list after the guest had recorded the next copy into it but before that copy was submitted, so no later submission claimed the new contents yet. Not addressed yet.
+- Black scene: per 600 frames tens of thousands of 3D draws run; skipped are 4-vertex geometry-shader draws, about 8 at a time into two render targets (0x8111fc0000, 0x8113af0000) and some into others. Their purpose (for example volume textures such as a colour grading LUT that the tone mapper reads) cannot be told from the logs.
+Logged now:
+- Every 1200 frames one whole frame: every draw with result, shader addresses per stage, render targets (address, size, depth/volume, format, layer), depth target, vertex/instance counts, and the images each drawn draw samples (address, size, layers, type, format).
+- The code of every rejected native shader stage (geometry shaders), 8 KiB once per address, for offline translation tests.

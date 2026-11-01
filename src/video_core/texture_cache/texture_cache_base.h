@@ -166,6 +166,9 @@ public:
     /// Get the imageview from the graphics descriptor table in the specified index
     [[nodiscard]] ImageView& GetImageView(u32 index) noexcept;
 
+    /// Diagnostics: GPU address, size, layers and format of the image behind a view.
+    [[nodiscard]] std::string DescribeImageView(ImageViewId id);
+
     /// Mark an image as modified from the GPU
     void MarkModification(ImageId id) noexcept;
 

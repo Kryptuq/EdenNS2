@@ -28,6 +28,11 @@ bool TakeMethodTrace();
 
 /// Marks that the next native macro execution should log its refreshed parameters.
 void SetTraceMacroExecute(bool value);
+
+/// Frame trace: while active, every draw of the frame is logged with its render targets, shaders
+/// and sampled images (black screen diagnostics).
+void SetFrameTrace(bool active);
+bool FrameTraceActive();
 bool TakeTraceMacroExecute();
 
 } // namespace VideoCommon::NS2Draw

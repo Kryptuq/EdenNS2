@@ -263,6 +263,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     const auto note_draw = [&](VideoCommon::NS2Draw::Result result) {
         if (!gpu_memory->UsesNativeTiling()) return;
         const auto& regs = maxwell3d->regs;
+        if (VideoCommon::NS2Draw::FrameTraceActive()) {
+            TraceNativeDraw(result, is_indexed);
+        }
         VideoCommon::NS2Draw::Note(result, regs.rt[0].Address(), regs.zeta_enable ? regs.zeta.Address() : 0,
                                    is_indexed ? regs.index_buffer.count : regs.vertex_buffer.count, is_indexed);
     };
@@ -328,6 +331,35 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
+}
+
+void RasterizerVulkan::TraceNativeDraw(VideoCommon::NS2Draw::Result result, bool is_indexed) {
+    const auto& regs = maxwell3d->regs;
+    const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+    std::string shaders;
+    for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
+        if (!regs.IsShaderConfigEnabled(index)) continue;
+        const auto& config = regs.pipelines[index];
+        const u64 address = native ? (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]
+                                   : regs.program_region.Address() + config.offset;
+        shaders += fmt::format(" s{}={:#x}", index, address);
+    }
+    std::string targets;
+    for (u32 index = 0; index < regs.rt_control.count; ++index) {
+        const auto& rt = regs.rt[regs.rt_control.Map(index)];
+        if (rt.Address() == 0) continue;
+        targets += fmt::format(" rt{}={:#x}:{}x{}x{}{} fmt={:#x} layer={}", index, rt.Address(), rt.width, rt.height,
+                               rt.depth.Value(), rt.volume ? "v" : "", static_cast<u32>(rt.format), rt.base_layer);
+    }
+    if (regs.zeta_enable) {
+        targets += fmt::format(" zeta={:#x}", regs.zeta.Address());
+    }
+    LOG_INFO(HW_GPU, "NS2 frame trace: draw {} {}{} {} count={} instances={}{}",
+             result == VideoCommon::NS2Draw::Result::Drawn ? "drawn" :
+             result == VideoCommon::NS2Draw::Result::NoPipeline ? "SKIPPED(no pipeline)" : "SKIPPED(configure)",
+             is_indexed ? "indexed" : "arrays", shaders, targets,
+             is_indexed ? regs.index_buffer.count : regs.vertex_buffer.count,
+             maxwell3d->draw_manager.draw_state.instance_count, "");
 }
 
 void RasterizerVulkan::NoteNativeDraw() {
@@ -995,6 +1027,16 @@ void RasterizerVulkan::FlushCommands() {
 
 void RasterizerVulkan::TickFrame() {
     draw_counter = 0;
+    if (gpu_memory && gpu_memory->UsesNativeTiling()) {
+        // Trace one whole frame every 1200 frames.
+        const bool trace = ++native_trace_frames % 1200 == 0;
+        if (trace) {
+            LOG_INFO(HW_GPU, "NS2 frame trace: begin (frame {})", native_trace_frames);
+        } else if (VideoCommon::NS2Draw::FrameTraceActive()) {
+            LOG_INFO(HW_GPU, "NS2 frame trace: end");
+        }
+        VideoCommon::NS2Draw::SetFrameTrace(trace);
+    }
     if (gpu_memory && gpu_memory->UsesNativeTiling() && ++native_summary_frames >= 600) {
         // Black screen diagnostics: per render target, how many draws ran and how many were
         // skipped in the last 600 frames.

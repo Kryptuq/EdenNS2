@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <unordered_set>
 #include <string>
 #include <string_view>
 #include <set>
@@ -469,6 +471,36 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
              program_base, native_source_size, lowered.instructions.size());
 }
 
+// Diagnostics: logs the code of native shader stages that cannot be translated yet (geometry
+// shaders), once per address, so they can be studied offline.
+static void DumpRejectedNativeStage(Tegra::MemoryManager& memory, GPUVAddr address, u32 stage) {
+    static std::mutex mutex;
+    static std::unordered_set<GPUVAddr> dumped;
+    {
+        std::scoped_lock lock{mutex};
+        if (dumped.size() >= 16 || !dumped.insert(address).second) {
+            return;
+        }
+    }
+    constexpr size_t DumpSize = 0x2000;
+    std::array<u8, DumpSize> code{};
+    if (!memory.IsFullyMappedRange(address, DumpSize)) {
+        LOG_INFO(Shader, "NS2 rejected native stage {} at {:#x}: not mapped", stage, address);
+        return;
+    }
+    memory.ReadBlockUnsafe(address, code.data(), code.size());
+    LOG_INFO(Shader, "NS2 rejected native stage {} at {:#x}: dumping {:#x} bytes", stage, address, DumpSize);
+    for (size_t offset = 0; offset < DumpSize; offset += 64) {
+        std::string line;
+        for (size_t i = 0; i < 64; i += 4) {
+            u32 word;
+            std::memcpy(&word, code.data() + offset + i, sizeof(word));
+            line += fmt::format(" {:08x}", word);
+        }
+        LOG_INFO(Shader, "NS2 native dump {:#x}+{:04x}:{}", address, offset, line);
+    }
+}
+
 GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                                          Tegra::MemoryManager& gpu_memory_,
                                          Maxwell::ShaderType program, GPUVAddr program_base_,
@@ -479,6 +511,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
     if (maxwell3d->GetNativeMacroEngine().native_turing) {
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel) {
+            DumpRejectedNativeStage(*gpu_memory, program_base, static_cast<u32>(program));
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
