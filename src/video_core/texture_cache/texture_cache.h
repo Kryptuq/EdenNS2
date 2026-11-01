@@ -16,6 +16,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include "common/alignment.h"
+#include "common/ns2_watch.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state.h"
@@ -1272,6 +1273,14 @@ template <typename StagingBuffer>
 void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) {
     const std::span<u8> mapped_span = staging.mapped_span;
     const GPUVAddr gpu_addr = image.gpu_addr;
+    // Crash diagnostics: the crash report shows the image being uploaded.
+    char upload_detail[96]{};
+    if (gpu_memory->UsesNativeTiling()) {
+        fmt::format_to_n(upload_detail, sizeof(upload_detail) - 1, "gpu={:#x} {}x{}x{} format={} guest_size={:#x} flags={:#x}",
+                         gpu_addr, image.info.size.width, image.info.size.height, image.info.size.depth,
+                         static_cast<u32>(image.info.format), image.guest_size_bytes, static_cast<u32>(image.flags));
+    }
+    Common::NS2Watch::PhaseScope upload_phase{"uploading image", upload_detail};
 
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
         gpu_memory->ReadBlock(gpu_addr, mapped_span.data(), mapped_span.size_bytes(),

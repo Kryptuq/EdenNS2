@@ -421,3 +421,15 @@ Root cause of the cutscene flicker, found with the build 90 log:
 - Eden only queued the command list addresses and the GPU thread read the commands when it got to them. When the GPU thread trailed by more than one copy (19-40 ms in bad runs, ~0.2 ms in good runs; window moves and presentation stalls make the difference), the memory already held the next frame's copy: that copy ran twice and the frame's own copy never ran, so its slot kept an older picture.
 - In every log from build 84 to 90, a copy executed after the next copy was recorded read the wrong image, and no copy executed in time did. With asynchronous GPU emulation off (GPU work runs at submission) the build 90 cutscene had 0 wrong copies and 0 backward jumps.
 - Fix: for native-ABI channels, nvhost_gpu captures the command lists at submission, and DmaPusher runs the captured words (list addresses are kept for engines that refer to them). If the GPU itself has written that memory since (IsMemoryDirty), the live memory is used as before. Lists rewritten after submission are logged ("was rewritten after submission"). EDEN_NATIVE_PUSHBUFFER_CAPTURE=0 restores the old behaviour.
+
+## Build 92 (diagnostics only, no behaviour change)
+Build 91 results (user): no flicker any more, also when moving the window. New: stuck on a white screen after the cutscene, and one crash at the title screen.
+- Hang: about 10 s after the cutscene the GPU thread and the fencing thread wait forever for a host GPU tick ("waiting for host GPU tick" in the watchdog). The host GPU never finishes that submission; no device loss is reported. Builds 89/90 kept presenting (black) frames past the same point with the same shaders, so build 91's command capture is the main suspect.
+- Channel 1 has about 200 small (3-word) command lists per second whose memory changes after submission. If the guest reuses them for later submissions, running them as submitted is right; if it completes them in place after submitting (the GPU would only fetch them later), running the submitted version is wrong. The logs cannot tell these apart.
+- Crash (first run): GPU thread, block-linear unswizzle reading from address 0 while uploading a texture for a draw; the image had no guest data. Single occurrence.
+- Black screen in gameplay: draws with geometry shaders are skipped (native stage 4 unsupported); how many draws that is cannot be seen because the skip log stops after 40.
+Logged now:
+- For every rewritten command list (first 48 per channel, then every 500th): the submitted and current words, and whether the same list was submitted again afterwards (reuse) or not (changed in place), with running totals.
+- When the watchdog sees a thread waiting on a host GPU tick: the native draws/dispatches (shader addresses) recorded into that submission.
+- Every 600 frames: drawn / no-pipeline / configure-failed draw counts per render target.
+- The crash report shows the image being uploaded (address, size, format, guest size).
