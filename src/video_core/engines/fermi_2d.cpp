@@ -65,7 +65,7 @@ void Fermi2D::Blit() {
     {
         static std::atomic<u32> logged{};
         const u32 count = logged.fetch_add(1, std::memory_order_relaxed);
-        VideoCommon::NS2Order::Start(4000);
+        VideoCommon::NS2Order::Start(40000);
         if (VideoCommon::NS2Order::Take()) {
             LOG_INFO(HW_GPU, "NS2 order: blit ch={} {:#x} fmt={} -> {:#x} fmt={}", VideoCommon::NS2Order::Channel(),
                      regs.src.Address(), static_cast<u32>(regs.src.format), regs.dst.Address(),
