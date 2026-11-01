@@ -27,7 +27,7 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
         gpu.BindChannel(channel_state->bind_id);
     }
     VideoCommon::NS2Order::g_channel.store(channel_state->bind_id, std::memory_order_relaxed);
-    if (VideoCommon::NS2Order::Take()) {
+    if (channel_state->bind_id != 1 && VideoCommon::NS2Order::Take()) {
         LOG_INFO(HW_GPU, "NS2 order: submit ch={} lists={} suspended={}", channel_state->bind_id,
                  entries.command_lists.size(), channel_state->payload->dma_pusher.HasPendingNativeAcquire());
     }

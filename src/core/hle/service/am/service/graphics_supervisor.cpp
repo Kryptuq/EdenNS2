@@ -558,9 +558,18 @@ private:
         if (!fence.valid) {
             return true;
         }
-        const u32 current = system.Host1x().GetSyncpointManager().GetHostSyncpointValue(fence.id);
-        return fence.wide ? u64{current} >= fence.value
-                          : static_cast<s32>(current - static_cast<u32>(fence.value)) >= 0;
+        // The guest value is reached once the GPU thread has processed the work up to the fence
+        // (the copy reading this image is recorded); the host value only once the host GPU has
+        // finished it, often 30-40 ms later and much later during window moves or resizes. The
+        // picture written now reaches the image through a re-upload recorded after that copy, so
+        // the guest value is enough, and frames are ready for the movie player in time.
+        auto& manager = system.Host1x().GetSyncpointManager();
+        const auto reached = [&](u32 current) {
+            return fence.wide ? u64{current} >= fence.value
+                              : static_cast<s32>(current - static_cast<u32>(fence.value)) >= 0;
+        };
+        return reached(manager.GetGuestSyncpointValue(fence.id)) ||
+               reached(manager.GetHostSyncpointValue(fence.id));
     }
 
     // Writes waiting frames into free images, in order, as long as the next image's consumer
