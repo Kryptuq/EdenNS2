@@ -353,6 +353,9 @@ public:
                     fence = {true, ~packet[4], (packet[5] & 0xff) == 1, u64{packet[6]} | (u64{packet[7]} << 32)};
                 }
                 const u32 target = existing != m_free.end() ? existing->target : GiveBack(packet[2], fence);
+                if (command == 314) {
+                    ++m_outputs_returned;
+                }
                 if (VideoCommon::NS2Order::Take()) {
                     LOG_INFO(Service_AM, "NS2 order: decoder release image {} (cmd {}) consumer fence {}:{} reached={}",
                              packet[2], command, fence.valid ? fence.id : ~0U, fence.value,
@@ -390,6 +393,7 @@ public:
                 m_waiting.clear();
                 m_pending.clear();
                 m_decoder.Discard();
+                m_outputs_returned = m_outputs_given;
                 Reply(ctx, {});
                 Signal();
                 break;
@@ -771,6 +775,15 @@ private:
         Pump();
     }
 
+    static u32 MaxOutstandingPictures() {
+        static const u32 limit = [] {
+            const char* value = std::getenv("EDEN_NATIVE_VIDEO_OUTSTANDING");
+            const u32 parsed = value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0;
+            return parsed ? parsed : 4U;
+        }();
+        return limit;
+    }
+
     void GetOutput(HLERequestContext& ctx) {
         if (m_outputs.empty()) {
             // The code the client's own acquire uses for an empty ring.
@@ -778,6 +791,31 @@ private:
             rb.Push<u32>(0x1c286f);
             return;
         }
+        // Native texture mode: nn::movie's adapter hands the player rotating virtual buffer
+        // indices and resolves them through a list of (virtual -> decoder image) entries. With
+        // all decoder images handed out at once (Eden decodes far ahead), the virtual indices
+        // wrap while older entries are still outstanding; the player then copies the wrong
+        // (old) image for one frame and drops the next one, which the renderer still shows:
+        // the flicker. Keep at most a few pictures outstanding, like a decoder that delivers at
+        // playback pace; pictures are still ready well before they are due.
+        // Safety net: if the client waits for more pictures than that before consuming any
+        // (e.g. to prebuffer), let one through after 150 ms instead of stalling playback.
+        if (m_outputs_given >= m_outputs_returned + MaxOutstandingPictures()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (!m_holding_since) {
+                m_holding_since = now;
+            }
+            if (now - *m_holding_since < std::chrono::milliseconds{150}) {
+                IPC::ResponseBuilder rb{ctx, 2};
+                rb.Push<u32>(0x1c286f);
+                return;
+            }
+            if (m_hold_timeouts++ < 8) {
+                LOG_WARNING(Service_AM, "video decoder: client consumed no picture for 150 ms with {} outstanding; handing out another",
+                            m_outputs_given - m_outputs_returned);
+            }
+        }
+        m_holding_since.reset();
         const Output output = m_outputs.front();
         m_outputs.pop_front();
         if (VideoCommon::NS2Order::Take()) {
@@ -809,6 +847,9 @@ private:
     u64 m_work_size{};
     u32 m_work_dumps{};
     u32 m_outputs_given{};
+    u32 m_outputs_returned{};
+    std::optional<std::chrono::steady_clock::time_point> m_holding_since;
+    u32 m_hold_timeouts{};
     u32 m_empty_inputs{};
     struct PendingInput {
         std::vector<u8> data;
