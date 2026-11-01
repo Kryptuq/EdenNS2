@@ -1362,7 +1362,24 @@ private:
         android::QueueBufferInput input{};
         android::QueueBufferOutput output{};
         input.crop = {0, 0, native->width, native->height};
-        input.swap_interval = 1;
+        // The present parameters (words 6-21) carry the layer's next swap interval at word 12 as
+        // {u16 denominator (60 = refresh rate), u16 numerator}: interval N -> N<<16 | 60.
+        // Honouring it paces games locked to 30 fps (interval 2); with 1 they ran at 40-50 fps
+        // and their frame-count based logic (e.g. the in-game movie) got ahead of real time.
+        {
+            const u32 numerator = packet[12] >> 16, denominator = packet[12] & 0xffff;
+            s32 interval = 1;
+            if (numerator != 0 && denominator != 0) {
+                interval = static_cast<s32>((numerator * 60 + denominator / 2) / denominator);
+            }
+            interval = std::clamp(interval, 1, 4);
+            static s32 last_interval{};
+            if (interval != last_interval) {
+                LOG_INFO(Service_AM, "VI2 present swap interval {} (word 12 = {:#x})", interval, packet[12]);
+                last_interval = interval;
+            }
+            input.swap_interval = interval;
+        }
         input.fence = android::Fence::NoFence();
         if (fence_id != ~u32{0}) {
             input.fence.num_fences = 1;
