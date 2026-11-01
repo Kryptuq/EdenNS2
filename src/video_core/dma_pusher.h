@@ -119,7 +119,7 @@ struct CommandList final {
     /// i start at captured_offsets[i]; ~0U marks an entry that was not captured.
     std::vector<CommandHeader> captured_words;
     std::vector<u32> captured_offsets;
-    std::vector<u64> captured_sequences; ///< NativeSubmissions sequence of each entry
+    std::vector<u64> captured_sequences; ///< NativeSubmissions::Record sequence of each entry
 
     [[nodiscard]] std::span<const CommandHeader> Captured(size_t index) const {
         if (index >= captured_offsets.size() || captured_offsets[index] == ~0U) {
@@ -129,11 +129,12 @@ struct CommandList final {
     }
 };
 
-/// Diagnostics: which native command lists were submitted, to tell a list the guest reused for a
-/// later submission from one it changed in place.
+/// Native command list submissions with a hash of their captured contents, to tell a list the guest
+/// reused for a later submission from one it completed in place (see DmaPusher).
 namespace NativeSubmissions {
-u64 Record(s32 channel, GPUVAddr address);
-u64 Latest(s32 channel, GPUVAddr address);
+u64 Record(s32 channel, GPUVAddr address, std::span<const CommandHeader> words);
+/// Whether a later submission of the list at `address` captured contents with this hash.
+bool ClaimedLater(s32 channel, GPUVAddr address, u64 sequence, u64 hash);
 } // namespace NativeSubmissions
 
 /// @brief The DmaPusher class implements DMA submission to FIFOs, providing an area of memory that the
@@ -170,8 +171,8 @@ private:
     bool UseCapturedCommands(GPUVAddr address, std::span<const CommandHeader> captured, u64 sequence);
     size_t command_resume_offset{};
     bool resume_from_capture{};
-    u64 rewritten_lists{};
-    u64 rewritten_resubmitted{};
+    u64 reused_lists{};
+    u64 completed_lists{};
     Common::ScratchBuffer<CommandHeader> live_headers;
 
     void SetState(const CommandHeader& command_header);

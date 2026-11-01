@@ -22,6 +22,7 @@ add_executable(tests
     core/graphics_supervisor.cpp
     core/internal_network/network.cpp
     video_core/native_semaphore.cpp
+    video_core/native_submissions.cpp
     video_core/native_shader.cpp
     video_core/ns2_pipeline_cache_spirv.cpp
     video_core/native_swizzle.cpp

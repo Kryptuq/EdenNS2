@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <fmt/format.h>
+#include "common/cityhash.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -142,10 +143,16 @@ bool DmaPusher::Step() {
 }
 
 // The hardware fetches a command list right after it is submitted, but the GPU thread may reach it
-// much later. By then the guest can have recorded new commands into the same memory: nn::movie
-// reuses one command buffer for every video frame copy without waiting for the GPU, and reading it
-// late executed the next frame's copy instead (the cutscene flickered). Run the commands as
-// submitted, unless the GPU itself wrote that memory since (GPU-generated commands).
+// much later, and its memory may have changed by then. Two cases occur:
+// - The guest reused the memory for a later submission (nn::movie records every video frame copy
+//   into the same command buffer without waiting for the GPU): the current contents belong to
+//   that later submission, so run this one as it was submitted. Reading it late executed the next
+//   frame's copy instead and the cutscene flickered.
+// - The guest completed the list in place after submitting it (channel 1 submits small lists with
+//   placeholder values and fills them in before the GPU is meant to read them): run the current
+//   contents, as the GPU would. Running the placeholders hung the GPU after the cutscene.
+// The current contents belong to a later submission when that submission captured exactly them.
+// Lists the GPU itself wrote since (GPU-generated commands) always run from memory.
 bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHeader> captured, u64 sequence) {
     const size_t bytes = captured.size_bytes();
     if (memory_manager.IsMemoryDirty(address, bytes)) {
@@ -153,51 +160,50 @@ bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHea
     }
     live_headers.resize_destructive(captured.size());
     memory_manager.ReadBlockUnsafe(address, live_headers.data(), bytes);
-    if (std::memcmp(live_headers.data(), captured.data(), bytes) != 0) {
-        const u64 count = ++rewritten_lists;
-        const u64 latest = NativeSubmissions::Latest(channel_state.bind_id, address);
-        const bool resubmitted = latest > sequence;
-        rewritten_resubmitted += resubmitted ? 1 : 0;
-        if (count <= 48 || count % 500 == 0) {
-            const auto words = [](std::span<const CommandHeader> list) {
-                std::string text;
-                for (size_t i = 0; i < (std::min)(list.size(), size_t{12}); ++i) {
-                    text += fmt::format(" {:08x}", list[i].argument);
-                }
-                return text;
-            };
-            LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) was rewritten after submission, running it as submitted (#{}, resubmitted later: {} [{} of all], seq {} latest {}); submitted:{} now:{}",
-                     channel_state.bind_id, address, captured.size(), count, resubmitted, rewritten_resubmitted,
-                     sequence, latest, words(captured), words({live_headers.data(), captured.size()}));
-        }
+    if (std::memcmp(live_headers.data(), captured.data(), bytes) == 0) {
+        return true;
     }
-    return true;
+    const u64 live_hash = Common::CityHash64(reinterpret_cast<const char*>(live_headers.data()), bytes);
+    const bool reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, address, sequence, live_hash);
+    const u64 count = reused ? ++reused_lists : ++completed_lists;
+    if (count <= 16 || count % 1000 == 0) {
+        LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) changed after submission: {} (#{}; reused {}, completed in place {})",
+                 channel_state.bind_id, address, captured.size(),
+                 reused ? "reused for a later submission, running it as submitted" : "completed in place, running the current contents",
+                 count, reused_lists, completed_lists);
+    }
+    return reused;
 }
 
 namespace NativeSubmissions {
 namespace {
+struct Submission {
+    u64 sequence;
+    u64 hash;
+};
 std::mutex mutex;
-std::unordered_map<u64, u64> latest;
+std::unordered_map<u64, Submission> latest;
 u64 next_sequence{};
 u64 Key(s32 channel, GPUVAddr address) {
     return (static_cast<u64>(static_cast<u32>(channel)) << 40) | (address & ((1ULL << 40) - 1));
 }
 } // namespace
 
-u64 Record(s32 channel, GPUVAddr address) {
+u64 Record(s32 channel, GPUVAddr address, std::span<const CommandHeader> words) {
+    const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(words.data()), words.size_bytes());
     std::scoped_lock lock{mutex};
-    if (latest.size() > (1U << 16)) {
+    if (latest.size() > (1U << 18)) {
         latest.clear();
     }
     const u64 sequence = ++next_sequence;
-    latest[Key(channel, address)] = sequence;
+    latest[Key(channel, address)] = {sequence, hash};
     return sequence;
 }
 
-u64 Latest(s32 channel, GPUVAddr address) {
+bool ClaimedLater(s32 channel, GPUVAddr address, u64 sequence, u64 hash) {
     std::scoped_lock lock{mutex};
     const auto it = latest.find(Key(channel, address));
-    return it != latest.end() ? it->second : 0;
+    return it != latest.end() && it->second.sequence > sequence && it->second.hash == hash;
 }
 } // namespace NativeSubmissions
 
