@@ -37,6 +37,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "common/ns2_watch.h"
 #include "video_core/ns2_draw_stats.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -286,6 +287,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
     draw_func();
     submitted = true;
+    if (gpu_memory->UsesNativeTiling()) {
+        NoteNativeDraw();
+    }
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
         std::getenv("EDEN_NATIVE_DRAW_CAPTURE") && native_capture_count < 16) {
@@ -324,6 +328,20 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
+}
+
+void RasterizerVulkan::NoteNativeDraw() {
+    // Hang diagnostics: the shaders of every native draw and the host tick it is recorded into.
+    const auto& regs = maxwell3d->regs;
+    const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+    u64 shaders[6]{};
+    for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
+        if (!regs.IsShaderConfigEnabled(index)) continue;
+        const auto& config = regs.pipelines[index];
+        shaders[index] = native ? (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]
+                                : regs.program_region.Address() + config.offset;
+    }
+    Common::NS2Watch::NoteWork(scheduler.CurrentTick(), 0, shaders);
 }
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
@@ -683,6 +701,10 @@ void RasterizerVulkan::DispatchCompute() {
         });
         return;
     }
+    if (kepler_compute->IsNativeMode()) {
+        const u64 shaders[6]{kepler_compute->regs.code_loc.Address() + qmd.program_start};
+        Common::NS2Watch::NoteWork(scheduler.CurrentTick(), 1, shaders);
+    }
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
     const std::array<u32, 3> max_dim{device.GetMaxComputeWorkGroupCount()};
     if (dim[0] > max_dim[0] || dim[1] > max_dim[1] || dim[2] > max_dim[2]) {
@@ -973,6 +995,20 @@ void RasterizerVulkan::FlushCommands() {
 
 void RasterizerVulkan::TickFrame() {
     draw_counter = 0;
+    if (gpu_memory && gpu_memory->UsesNativeTiling() && ++native_summary_frames >= 600) {
+        // Black screen diagnostics: per render target, how many draws ran and how many were
+        // skipped in the last 600 frames.
+        native_summary_frames = 0;
+        const std::string summary = VideoCommon::NS2Draw::Summary();
+        VideoCommon::NS2Draw::Reset();
+        size_t start = 0;
+        while (start < summary.size()) {
+            const size_t end = summary.find('\n', start);
+            LOG_INFO(HW_GPU, "NS2 draw summary:{}", summary.substr(start, end - start));
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+    }
     guest_descriptor_queue.TickFrame();
     compute_pass_descriptor_queue.TickFrame();
     descriptor_buffer_ring.TickFrame();

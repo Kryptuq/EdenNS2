@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/logging.h"
@@ -92,9 +94,23 @@ void NS2Watchdog::Dump(u64 stalled_ms) {
                 stalled_ms / 1000, Common::NS2Watch::g_present_count.load(),
                 Common::NS2Watch::g_composite_count.load());
 
+    u64 oldest_waited_tick = ~0ULL;
     for (const auto& phase : Common::NS2Watch::CollectPhases(1000)) {
         LOG_WARNING(Core, "NS2 watchdog: host thread '{}' busy for {} ms: {} {} value={:#x}",
                     phase.thread, phase.age_ms, phase.label, phase.detail, phase.value);
+        if (std::string_view{phase.label} == "waiting for host GPU tick") {
+            oldest_waited_tick = (std::min)(oldest_waited_tick, phase.value);
+        }
+    }
+    if (oldest_waited_tick != ~0ULL) {
+        // The host GPU never finished this submission: list the work recorded into it (and the
+        // one before, for context).
+        for (const auto& work : Common::NS2Watch::CollectWork()) {
+            if (work.tick + 1 < oldest_waited_tick) continue;
+            LOG_WARNING(Core, "NS2 watchdog: tick {:#x} {} x{} shaders {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
+                        work.tick, work.kind == 0 ? "draw" : "dispatch", work.count, work.shaders[0],
+                        work.shaders[1], work.shaders[2], work.shaders[3], work.shaders[4], work.shaders[5]);
+        }
     }
 
     Kernel::KProcess* process = m_system.ApplicationProcess();

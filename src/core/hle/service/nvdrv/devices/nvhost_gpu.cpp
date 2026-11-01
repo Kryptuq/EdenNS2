@@ -37,7 +37,7 @@ Tegra::CommandHeader BuildFenceAction(Tegra::Engines::Puller::FenceOperation op,
 // Keeps the submitted command lists as they are now, when the hardware would fetch them; the GPU
 // thread may only reach them after the guest has reused that memory (see DmaPusher).
 // EDEN_NATIVE_PUSHBUFFER_CAPTURE=0 disables this.
-void CaptureCommandLists(Tegra::MemoryManager& memory, Tegra::CommandList& entries) {
+void CaptureCommandLists(Tegra::MemoryManager& memory, s32 channel, Tegra::CommandList& entries) {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NATIVE_PUSHBUFFER_CAPTURE");
         return value == nullptr || std::strcmp(value, "0") != 0;
@@ -51,6 +51,7 @@ void CaptureCommandLists(Tegra::MemoryManager& memory, Tegra::CommandList& entri
         if (entry.size <= MaxWords) total += entry.size;
     }
     entries.captured_offsets.assign(entries.command_lists.size(), ~0U);
+    entries.captured_sequences.assign(entries.command_lists.size(), 0);
     entries.captured_words.resize(total);
     size_t offset = 0;
     for (size_t i = 0; i < entries.command_lists.size(); ++i) {
@@ -62,6 +63,7 @@ void CaptureCommandLists(Tegra::MemoryManager& memory, Tegra::CommandList& entri
         }
         memory.ReadBlockUnsafe(entry.addr, entries.captured_words.data() + offset, bytes);
         entries.captured_offsets[i] = static_cast<u32>(offset);
+        entries.captured_sequences[i] = Tegra::NativeSubmissions::Record(channel, entry.addr);
         offset += words;
     }
     entries.captured_words.resize(offset);
@@ -449,7 +451,7 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                   (flags.increment_value.Value() != 0 ? params.fence.value : 0)};
     params.fence.value = syncpoint_manager.IncrementSyncpointMaxExt(channel_syncpoint, increment);
     if (UsesNativeAbi() && channel_state->memory_manager) {
-        CaptureCommandLists(*channel_state->memory_manager, entries);
+        CaptureCommandLists(*channel_state->memory_manager, channel_state->bind_id, entries);
     }
     gpu.PushGPUEntries(bind_id, std::move(entries));
 

@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #ifdef _WIN32
@@ -64,6 +66,40 @@ void CopyDetail(char* out, const char* detail) {
 }
 
 } // namespace
+
+namespace {
+std::mutex g_work_mutex;
+std::array<RecentWork, 256> g_work{};
+size_t g_work_next{};
+size_t g_work_size{};
+} // namespace
+
+void NoteWork(u64 tick, u32 kind, const u64 (&shaders)[6]) {
+    std::scoped_lock lock{g_work_mutex};
+    if (g_work_size != 0) {
+        RecentWork& last = g_work[(g_work_next + g_work.size() - 1) % g_work.size()];
+        if (last.tick == tick && last.kind == kind && std::memcmp(last.shaders, shaders, sizeof(shaders)) == 0) {
+            ++last.count;
+            return;
+        }
+    }
+    RecentWork& entry = g_work[g_work_next];
+    entry.tick = tick;
+    entry.kind = kind;
+    entry.count = 1;
+    std::memcpy(entry.shaders, shaders, sizeof(shaders));
+    g_work_next = (g_work_next + 1) % g_work.size();
+    g_work_size = (std::min)(g_work_size + 1, g_work.size());
+}
+
+std::vector<RecentWork> CollectWork() {
+    std::scoped_lock lock{g_work_mutex};
+    std::vector<RecentWork> out;
+    for (size_t i = 0; i < g_work_size; ++i) {
+        out.push_back(g_work[(g_work_next + g_work.size() - g_work_size + i) % g_work.size()]);
+    }
+    return out;
+}
 
 u64 NowMs() {
     using namespace std::chrono;

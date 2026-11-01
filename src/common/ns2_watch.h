@@ -39,6 +39,18 @@ struct PhaseInfo {
 /// Returns phases active for at least `min_age_ms`.
 std::vector<PhaseInfo> CollectPhases(u64 min_age_ms);
 
+/// Recent GPU work recorded by the renderer: draws (kind 0) and dispatches (kind 1) with the host
+/// tick of the submission they are recorded into and their shader addresses. Repeats of the same
+/// work in the same tick are counted instead of stored again.
+struct RecentWork {
+    u64 tick;
+    u32 kind;
+    u32 count;
+    u64 shaders[6];
+};
+void NoteWork(u64 tick, u32 kind, const u64 (&shaders)[6]);
+std::vector<RecentWork> CollectWork();
+
 /// Installs a last-chance crash handler that writes the exception (code, address, module offset,
 /// a stack of return addresses) and every thread's current phase to `path` before the process
 /// dies. Eden's own log is written asynchronously and loses its last lines in a crash.
