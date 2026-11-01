@@ -969,6 +969,8 @@ bool IsDMALevelSafe();
 bool IsGPUFenceBehaviorDefault();
 bool IsGPUFenceBehaviorBalanced();
 bool IsGPUFenceBehaviorAccurate();
+/// Whether GPU fence results (syncpoints, fence semaphores) wait for the host GPU to finish.
+bool IsGPUFenceDelayed();
 
 bool IsFastmemEnabled();
 void SetNceEnabled(bool is_64bit);
