@@ -857,7 +857,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 coordinate = insn.Bits(24, 8), data = insn.Bits(32, 8);
             const u32 dimension = insn.Bits(61, 3);
             const bool reduction = opcode == 0x59f;
-            if (insn.words[2] != (reduction ? 0x0010e000U : 0x001ee000U) || (dimension != 1 && dimension < 3) || dimension > 5 ||
+            // Operation at bits 87-89 in Maxwell's numbering (ADD, MIN, MAX, INC, DEC, AND, OR, XOR).
+            const u32 operation = insn.Bits(87, 3);
+            if ((insn.words[2] & ~0x03800000U) != (reduction ? 0x0010e000U : 0x001ee000U) || (dimension != 1 && dimension < 3) || dimension > 5 ||
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) ||
                 coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native surface atomic mode");
@@ -865,7 +867,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 return fail(index, "native surface descriptor buffer conflict");
             result.required_texture_buffer = binding;
             emit(0xea00000000000000ULL | predicate | (reduction ? 255U : dest) | (u64{coordinate} << 8) |
-                (u64{data} << 20) | (u64{dimension} << 33) | (u64{offset} << 36));
+                (u64{data} << 20) | (u64{operation} << 29) | (u64{dimension} << 33) | (u64{offset} << 36));
             break;
         }
         case 0xb9b: { // SUST.P.2D/3D.IGN, direct descriptor and all four channels.
