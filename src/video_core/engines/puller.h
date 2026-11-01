@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <chrono>
 #include <optional>
 #include <vector>
 #include "common/bit_field.h"
@@ -75,9 +76,11 @@ public:
         BitField<8, 24, u32> syncpoint_id;
     };
 
-    [[nodiscard]] bool HasPendingNativeAcquire() const { return native_acquire.has_value(); }
+    [[nodiscard]] bool HasPendingNativeAcquire() const { return native_acquire.has_value() || native_syncpoint_wait.has_value(); }
     [[nodiscard]] bool CanResumeNativeAcquire(DmaPusher& dma_pusher) const;
     bool ResumeNativeAcquire(DmaPusher& dma_pusher);
+    static bool SyncpointReached(DmaPusher& dma_pusher, u32 id, u32 value);
+    static bool SyncpointWaitDisabled();
 
     void CallMethod(DmaPusher& dma_pusher, const MethodCall& method_call);
     void CallMultiMethod(DmaPusher& dma_pusher, u32 method, u32 subchannel, const u32* base_start, u32 amount, u32 methods_pending);
@@ -137,6 +140,14 @@ private:
     [[nodiscard]] bool ExecuteMethodOnEngine(DmaPusher& dma_pusher, u32 method);
 
     std::optional<NativeSemaphoreWait> native_acquire;
+    /// Syncpoint wait (fence action Acquire) of a native channel; the channel is suspended
+    /// until another channel or engine reaches the value, as on hardware.
+    struct NativeSyncpointWait {
+        u32 id;
+        u32 value;
+        std::chrono::steady_clock::time_point since;
+    };
+    std::optional<NativeSyncpointWait> native_syncpoint_wait;
 
     /// Mapping of command subchannels to their bound engine ids
     std::array<EngineID, 8> bound_engines{};

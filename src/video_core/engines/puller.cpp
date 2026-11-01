@@ -19,6 +19,8 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/engines/puller.h"
+#include "video_core/host1x/host1x.h"
+#include <string_view>
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_query_trace.h"
@@ -103,11 +105,28 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
 
 void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
     switch (regs.fence_action.op) {
-    case Puller::FenceOperation::Acquire:
-        // UNIMPLEMENTED_MSG("Channel Scheduling pending.");
-        // WaitFence(regs.fence_action.syncpoint_id, regs.fence_value);
+    case Puller::FenceOperation::Acquire: {
         dma_pusher.rasterizer->ReleaseFences();
+        if (!dma_pusher.channel_state.native_abi || SyncpointWaitDisabled()) break;
+        const u32 id = regs.fence_action.syncpoint_id;
+        const u32 value = regs.fence_value;
+        if (SyncpointReached(dma_pusher, id, value)) break;
+        dma_pusher.rasterizer->ReleaseFences(true);
+        if (SyncpointReached(dma_pusher, id, value)) break;
+        // Another channel (or engine) has not produced the awaited work yet. On hardware this
+        // channel stalls here; executing on would read results before they are written (for
+        // example a video frame copy that is submitted after the draw that samples it).
+        native_syncpoint_wait = NativeSyncpointWait{id, value, std::chrono::steady_clock::now()};
+        static u32 wait_traces{};
+        if (wait_traces < 32 || wait_traces % 1000 == 0) {
+            auto& manager = dma_pusher.system.Host1x().GetSyncpointManager();
+            LOG_INFO(HW_GPU, "Native channel {} waits for syncpoint {} >= {} (guest {}, host {}) #{}",
+                     dma_pusher.channel_state.bind_id, id, value, manager.GetGuestSyncpointValue(id),
+                     manager.GetHostSyncpointValue(id), wait_traces);
+        }
+        ++wait_traces;
         break;
+    }
     case Puller::FenceOperation::Increment:
         if (dma_pusher.channel_state.native_abi) {
             const auto& context = dma_pusher.channel_state.native_macro_context;
@@ -132,12 +151,45 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
     }
 }
 
+bool Puller::SyncpointWaitDisabled() {
+    static const bool disabled = [] {
+        const char* value = std::getenv("EDEN_NATIVE_SYNCPOINT_WAIT");
+        return value && std::string_view{value} == "0";
+    }();
+    return disabled;
+}
+
+bool Puller::SyncpointReached(DmaPusher& dma_pusher, u32 id, u32 value) {
+    auto& manager = dma_pusher.system.Host1x().GetSyncpointManager();
+    const auto reached = [value](u32 current) { return static_cast<s32>(current - value) >= 0; };
+    return reached(manager.GetGuestSyncpointValue(id)) || reached(manager.GetHostSyncpointValue(id));
+}
+
 bool Puller::CanResumeNativeAcquire(DmaPusher& dma_pusher) const {
+    if (native_syncpoint_wait) {
+        if (dma_pusher.memory_manager.IsShuttingDown()) return true;
+        if (SyncpointReached(dma_pusher, native_syncpoint_wait->id, native_syncpoint_wait->value)) return true;
+        // Safety net against waits nothing in the emulator will ever satisfy.
+        return std::chrono::steady_clock::now() - native_syncpoint_wait->since > std::chrono::milliseconds{250};
+    }
     return native_acquire && !dma_pusher.memory_manager.IsShuttingDown() &&
            native_acquire->Matches(ReadNativeSemaphoreWord(dma_pusher, native_acquire->address));
 }
 
 bool Puller::ResumeNativeAcquire(DmaPusher& dma_pusher) {
+    if (native_syncpoint_wait) {
+        if (!CanResumeNativeAcquire(dma_pusher)) return false;
+        if (!SyncpointReached(dma_pusher, native_syncpoint_wait->id, native_syncpoint_wait->value)) {
+            static u32 timeout_traces{};
+            if (timeout_traces++ < 32) {
+                LOG_WARNING(HW_GPU, "Native channel {} syncpoint wait {} >= {} timed out; continuing",
+                            dma_pusher.channel_state.bind_id, native_syncpoint_wait->id,
+                            native_syncpoint_wait->value);
+            }
+        }
+        native_syncpoint_wait.reset();
+        return true;
+    }
     if (!native_acquire) return true;
     if (!CanResumeNativeAcquire(dma_pusher)) return false;
     LOG_WARNING(HW_GPU, "Native channel resumed after semaphore: channel={}, address={:#x}, current={}, required={}",
