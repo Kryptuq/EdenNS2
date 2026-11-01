@@ -19,6 +19,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/engines/puller.h"
+#include "video_core/ns2_order_trace.h"
 #include "video_core/host1x/host1x.h"
 #include <string_view>
 #include "video_core/gpu.h"
@@ -143,6 +144,10 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
                          trace_index, dma_pusher.channel_state.bind_id, regs.fence_action.syncpoint_id.Value());
             }
         }
+        if (dma_pusher.channel_state.native_abi && VideoCommon::NS2Order::Take()) {
+            LOG_INFO(HW_GPU, "NS2 order: syncpoint ch={} id={} +1", dma_pusher.channel_state.bind_id,
+                     regs.fence_action.syncpoint_id.Value());
+        }
         dma_pusher.rasterizer->SignalSyncPoint(regs.fence_action.syncpoint_id);
         break;
     default:
@@ -208,6 +213,10 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
     if (op == GpuSemaphoreOperation::WriteLong) {
         const GPUVAddr sequence_address{regs.semaphore_address.SemaphoreAddress()};
         const u32 payload = regs.semaphore_sequence;
+        if (dma_pusher.channel_state.native_abi && VideoCommon::NS2Order::Take()) {
+            LOG_INFO(HW_GPU, "NS2 order: release ch={} {:#x} = {}", dma_pusher.channel_state.bind_id,
+                     sequence_address, payload);
+        }
         const auto properties = dma_pusher.channel_state.native_abi && (regs.semaphore_trigger & (1U << 24))
             ? VideoCommon::QueryPropertiesFlags::IsAFence : VideoCommon::QueryPropertiesFlags::HasTimeout;
         dma_pusher.rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
@@ -222,6 +231,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                     if (op == GpuSemaphoreOperation::AcquireMask) return (word & regs.semaphore_sequence) != 0;
                     return false;
                 };
+                if (VideoCommon::NS2Order::Take()) {
+                    LOG_INFO(HW_GPU, "NS2 order: acquire ch={} {:#x} op={} need={} have={} ready={}",
+                             dma_pusher.channel_state.bind_id, regs.semaphore_address.SemaphoreAddress(),
+                             static_cast<u32>(op), regs.semaphore_sequence, word, ready());
+                }
                 if (!ready()) {
                     dma_pusher.rasterizer->ReleaseFences(true);
                     word = ReadNativeSemaphoreWord(dma_pusher, regs.semaphore_address.SemaphoreAddress());
@@ -277,6 +291,10 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
 void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
     const GPUVAddr sequence_address{regs.semaphore_address.SemaphoreAddress()};
     const u32 payload = regs.semaphore_release;
+    if (dma_pusher.channel_state.native_abi && VideoCommon::NS2Order::Take()) {
+        LOG_INFO(HW_GPU, "NS2 order: release(legacy) ch={} {:#x} = {}", dma_pusher.channel_state.bind_id,
+                 sequence_address, payload);
+    }
     dma_pusher.rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
 }
 

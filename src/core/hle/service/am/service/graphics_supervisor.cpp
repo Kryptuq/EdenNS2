@@ -27,6 +27,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/svc_results.h"
 #include "core/hle/service/am/service/graphics_supervisor.h"
+#include "video_core/ns2_order_trace.h"
 #include "core/hle/service/am/service/graphics_session.h"
 #include "video_core/native_strict.h"
 #include "video_core/host1x/ns2_video_decoder.h"
@@ -280,6 +281,11 @@ public:
                     fence = {true, ~packet[4], (packet[5] & 0xff) == 1, u64{packet[6]} | (u64{packet[7]} << 32)};
                 }
                 const u32 target = existing != m_free.end() ? existing->target : GiveBack(packet[2], fence);
+                if (VideoCommon::NS2Order::Take()) {
+                    LOG_INFO(Service_AM, "NS2 order: decoder release image {} (cmd {}) consumer fence {}:{} reached={}",
+                             packet[2], command, fence.valid ? fence.id : ~0U, fence.value,
+                             fence.valid ? FenceReached(fence) : true);
+                }
                 if (m_fences_logged++ < 32) {
                     LOG_INFO(Service_AM, "video decoder: image {} queued (command {}), fence counter {} value {}",
                              packet[2], command, m_syncpoint.value_or(~0U), target);
@@ -582,6 +588,11 @@ private:
             auto frame = std::move(m_waiting.front());
             m_waiting.pop_front();
             WritePicture(free.image, frame.picture);
+            if (VideoCommon::NS2Order::Take()) {
+                LOG_INFO(Service_AM, "NS2 order: decoder wrote image {} pts {} (fence {}:{} reached={})",
+                         free.image, frame.pts, free.fence.valid ? free.fence.id : ~0U, free.fence.value,
+                         free.fence.valid ? FenceReached(free.fence) : true);
+            }
             m_outputs.push_back({free.image, frame.pts, frame.end, nullptr});
             Complete(free.target);
             progressed = true;
@@ -685,6 +696,9 @@ private:
         }
         const Output output = m_outputs.front();
         m_outputs.pop_front();
+        if (VideoCommon::NS2Order::Take()) {
+            LOG_INFO(Service_AM, "NS2 order: decoder output image {} pts {}", output.image, output.pts);
+        }
         if (const u32 n = m_outputs_given++; n < 64 || n % 100 == 0) {
             LOG_INFO(Service_AM, "video decoder: output {} -> image {} pts {} (free {}, waiting {}, ready {})",
                      m_outputs_given, output.image, output.pts, m_free.size(), m_waiting.size(), m_outputs.size());

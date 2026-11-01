@@ -8,6 +8,7 @@
 #include "common/assert.h"
 #include "common/logging.h"
 #include "video_core/engines/fermi_2d.h"
+#include "video_core/ns2_order_trace.h"
 #include "video_core/engines/sw_blitter/blitter.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -64,7 +65,12 @@ void Fermi2D::Blit() {
     {
         static std::atomic<u32> logged{};
         const u32 count = logged.fetch_add(1, std::memory_order_relaxed);
-        if (count < 200 || count % 2000 == 0) {
+        VideoCommon::NS2Order::Start(4000);
+        if (VideoCommon::NS2Order::Take()) {
+            LOG_INFO(HW_GPU, "NS2 order: blit ch={} {:#x} fmt={} -> {:#x} fmt={}", VideoCommon::NS2Order::Channel(),
+                     regs.src.Address(), static_cast<u32>(regs.src.format), regs.dst.Address(),
+                     static_cast<u32>(regs.dst.format));
+        } else if (count < 200 || count % 2000 == 0) {
             LOG_INFO(HW_GPU, "NS2 trace: 2D blit #{} {:#x} {}x{} fmt={} -> {:#x} {}x{} fmt={}", count,
                      regs.src.Address(), regs.src.width, regs.src.height, static_cast<u32>(regs.src.format),
                      regs.dst.Address(), regs.dst.width, regs.dst.height, static_cast<u32>(regs.dst.format));

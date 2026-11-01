@@ -11,6 +11,8 @@
 #include "common/assert.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/control/scheduler.h"
+#include "video_core/ns2_order_trace.h"
+#include "common/logging.h"
 #include "video_core/gpu.h"
 
 namespace Tegra::Control {
@@ -23,6 +25,11 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
         ASSERT(it != channels.end());
         channel_state = it->second;
         gpu.BindChannel(channel_state->bind_id);
+    }
+    VideoCommon::NS2Order::g_channel.store(channel_state->bind_id, std::memory_order_relaxed);
+    if (VideoCommon::NS2Order::Take()) {
+        LOG_INFO(HW_GPU, "NS2 order: submit ch={} lists={} suspended={}", channel_state->bind_id,
+                 entries.command_lists.size(), channel_state->payload->dma_pusher.HasPendingNativeAcquire());
     }
     // Process commands outside the lock to reduce contention.
     // Multiple channels can prepare their commands in parallel.
@@ -43,6 +50,10 @@ void Scheduler::ResumePending(GPU& gpu) {
             {
                 std::scoped_lock lock{scheduling_guard};
                 gpu.BindChannel(state->bind_id);
+            }
+            VideoCommon::NS2Order::g_channel.store(state->bind_id, std::memory_order_relaxed);
+            if (VideoCommon::NS2Order::Take()) {
+                LOG_INFO(HW_GPU, "NS2 order: resume ch={}", state->bind_id);
             }
             state->payload->dma_pusher.DispatchCalls();
         });
