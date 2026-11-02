@@ -826,6 +826,10 @@ std::span<const Shader::IR::RegisterRemap> FileEnvironment::RegisterRemaps(u32 a
     return it == register_remaps.end() ? std::span<const Shader::IR::RegisterRemap>{} : it->second;
 }
 
+bool FileEnvironment::IsNativeProgram() const {
+    return Shader::Ampere::HasNativeAddressMap(code);
+}
+
 u32 FileEnvironment::TranslateProgramAddress(u32 address) const {
     if (const auto translated = Shader::Ampere::NativeProgramAddress(code, address)) return *translated;
     if (Shader::Ampere::HasNativeAddressMap(code))

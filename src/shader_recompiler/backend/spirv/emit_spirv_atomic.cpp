@@ -56,6 +56,7 @@ std::pair<Id, Id> AtomicArgs(EmitContext& ctx) {
 
 Id SharedAtomicU32(EmitContext& ctx, Id offset, Id value,
                    Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
+    offset = ctx.SharedOffset(offset, 4);
     const Id pointer{SharedPointer(ctx, offset)};
     const auto [scope, semantics]{AtomicArgs(ctx)};
     return (ctx.*atomic_func)(ctx.U32[1], pointer, scope, semantics, value);
@@ -130,12 +131,14 @@ Id EmitSharedAtomicUMax32(EmitContext& ctx, Id offset, Id value) {
 }
 
 Id EmitSharedAtomicInc32(EmitContext& ctx, Id offset, Id value) {
+    offset = ctx.SharedOffset(offset, 4);
     const Id shift_id{ctx.Const(2U)};
     const Id index{ctx.OpShiftRightArithmetic(ctx.U32[1], offset, shift_id)};
     return ctx.OpFunctionCall(ctx.U32[1], ctx.increment_cas_shared, index, value);
 }
 
 Id EmitSharedAtomicDec32(EmitContext& ctx, Id offset, Id value) {
+    offset = ctx.SharedOffset(offset, 4);
     const Id shift_id{ctx.Const(2U)};
     const Id index{ctx.OpShiftRightArithmetic(ctx.U32[1], offset, shift_id)};
     return ctx.OpFunctionCall(ctx.U32[1], ctx.decrement_cas_shared, index, value);
@@ -158,6 +161,7 @@ Id EmitSharedAtomicExchange32(EmitContext& ctx, Id offset, Id value) {
 }
 
 Id EmitSharedAtomicExchange64(EmitContext& ctx, Id offset, Id value) {
+    offset = ctx.SharedOffset(offset, 8);
     if (ctx.profile.support_shared_int64_atomics && ctx.uses_explicit_workgroup_layout) {
         const Id shift_id{ctx.Const(3U)};
         const Id index{ctx.OpShiftRightArithmetic(ctx.U32[1], offset, shift_id)};
@@ -178,6 +182,7 @@ Id EmitSharedAtomicExchange64(EmitContext& ctx, Id offset, Id value) {
 }
 
 Id EmitSharedAtomicExchange32x2(EmitContext& ctx, Id offset, Id value) {
+    offset = ctx.SharedOffset(offset, 8);
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
     const Id pointer_1{SharedPointer(ctx, offset, 0)};
     const Id pointer_2{SharedPointer(ctx, offset, 1)};

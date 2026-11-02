@@ -84,6 +84,9 @@ public:
         return {};
     }
 
+    /// True for programs lowered from native Switch 2 (Ampere-class) code.
+    [[nodiscard]] virtual bool IsNativeProgram() const { return false; }
+
     [[nodiscard]] virtual u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) = 0;
 
     [[nodiscard]] virtual TextureType ReadTextureType(u32 raw_handle) = 0;
