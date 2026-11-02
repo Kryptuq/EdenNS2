@@ -6,6 +6,7 @@
 // can be validated (spirv-val) without the game or a GPU. Set NS2_PIPELINE_CACHE to a copy of the
 // cache file and NS2_SPIRV_OUT to the output directory; skipped otherwise.
 
+#include <unordered_map>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
@@ -118,12 +119,21 @@ public:
         }
         code.push_back(0);
         code.push_back(0xe30000000007000fULL); // EXIT guard
+        for (const auto& range : lowered.register_remaps) {
+            for (u32 index = range.first; index < range.last; ++index) {
+                remaps[0x50U + index * 8 + ((index + 1) / 3) * 8].push_back({range.from, range.to});
+            }
+        }
         bound = lowered.required_texture_buffer == ~0U ? 2 : lowered.required_texture_buffer;
         stage = stage_;
         start_address = 0;
     }
     u64 ReadInstruction(u32 address) override {
         return address / 8 < code.size() ? code[address / 8] : 0;
+    }
+    std::span<const Shader::IR::RegisterRemap> RegisterRemaps(u32 address) const override {
+        const auto it = remaps.find(address);
+        return it == remaps.end() ? std::span<const Shader::IR::RegisterRemap>{} : it->second;
     }
     u32 ReadCbufValue(u32, u32) override { return 0; }
     Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
@@ -145,6 +155,7 @@ public:
     }
 
 private:
+    std::unordered_map<u32, std::vector<Shader::IR::RegisterRemap>> remaps;
     std::vector<u64> code;
     u32 bound{};
 };

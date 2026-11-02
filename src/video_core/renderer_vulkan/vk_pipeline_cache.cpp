@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <fstream>
 #include <iostream>
@@ -988,6 +989,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
 
+    const auto build_start = std::chrono::steady_clock::now();
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
 
     // Dump it before error.
@@ -996,6 +998,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     }
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    const auto translated = std::chrono::steady_clock::now();
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
@@ -1012,6 +1015,22 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const std::vector<u32> code{EmitSPIRV(profile, program)};
     device.SaveShader(code);
     vk::ShaderModule spv_module{BuildShader(device, code)};
+    {
+        // Large native programs (DLSS-style matrix kernels) can take long to translate; log the
+        // cost so slow or failing builds can be told apart in user logs.
+        const auto done = std::chrono::steady_clock::now();
+        const auto ms = [](auto a, auto b) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+        };
+        if (ms(build_start, done) >= 50 || code.size() >= 0x40000) {
+            LOG_INFO(Render_Vulkan,
+                     "NS2: compute shader {:016x}: translate {} ms, SPIR-V {} ms ({} words), {} blocks, "
+                     "workgroup {}x{}x{}, shared {} bytes, host max subgroup {}",
+                     key.unique_hash, ms(build_start, translated), ms(translated, done), code.size(),
+                     program.blocks.size(), program.workgroup_size[0], program.workgroup_size[1],
+                     program.workgroup_size[2], program.shared_memory_size, device.GetMaxSubgroupSize());
+        }
+    }
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();

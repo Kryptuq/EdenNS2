@@ -706,6 +706,14 @@ void RasterizerVulkan::DispatchCompute() {
     gpu_memory->FlushCaching();
 
     ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};
+    if (VideoCommon::NS2Draw::FrameTraceActive() && kepler_compute->IsNativeMode()) {
+        const auto& launch{kepler_compute->launch_description};
+        LOG_INFO(HW_GPU, "NS2 frame trace: dispatch {} shader={:#x} grid={}x{}x{} block={}x{}x{}{}",
+                 pipeline ? "run" : "skipped", kepler_compute->regs.code_loc.Address() + launch.program_start,
+                 launch.grid_dim_x.Value(), launch.grid_dim_y.Value(), launch.grid_dim_z.Value(),
+                 launch.block_dim_x.Value(), launch.block_dim_y.Value(), launch.block_dim_z.Value(),
+                 kepler_compute->GetIndirectComputeAddress() ? " (indirect)" : "");
+    }
     if (!pipeline) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
         return;

@@ -107,12 +107,19 @@ void IREmitter::DeviceMemoryBarrier() {
     Inst(Opcode::DeviceMemoryBarrier);
 }
 
+static IR::Reg Remap(std::span<const RegisterRemap> remap, IR::Reg reg) {
+    for (const RegisterRemap& entry : remap) {
+        if (static_cast<size_t>(reg) == entry.from) return ExtendedReg(entry.to);
+    }
+    return reg;
+}
+
 U32 IREmitter::GetReg(IR::Reg reg) {
-    return Inst<U32>(Opcode::GetRegister, reg);
+    return Inst<U32>(Opcode::GetRegister, Remap(register_remap, reg));
 }
 
 void IREmitter::SetReg(IR::Reg reg, const U32& value) {
-    Inst(Opcode::SetRegister, reg, value);
+    Inst(Opcode::SetRegister, Remap(register_remap, reg), value);
 }
 
 U1 IREmitter::GetPred(IR::Pred pred, bool is_negated) {
