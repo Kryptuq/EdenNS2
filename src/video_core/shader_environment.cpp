@@ -335,12 +335,12 @@ namespace {
 // Diagnostics: saves the code of every native program once to <log dir>/ns2_native/<key>.bin (raw
 // 16-byte instructions, the input format of the [ns2-lower] corpus test), so changes to the
 // lowering can be checked offline against exactly the programs a game runs.
-// EDEN_NS2_NATIVE_DUMP=0 turns it off. Returns the program key.
+// Off by default; EDEN_NS2_NATIVE_DUMP=1 turns it on. Returns the program key.
 u64 SaveNativeProgram(const std::vector<Shader::Ampere::Instruction>& native) {
     const u64 key = Shader::Ampere::NativeProgramKey(native);
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NS2_NATIVE_DUMP");
-        return !(value && std::strcmp(value, "0") == 0);
+        return value && std::strcmp(value, "1") == 0;
     }();
     if (!enabled) {
         return key;

@@ -533,3 +533,18 @@ Changed (experiment, can be turned off):
 - Shared memory addresses of lowered Switch 2 compute shaders are clamped into the shared memory size the dispatch declares (loads, stores and atomics, every size). In-range accesses are unchanged; an out-of-range access now reads or writes the last element instead of faulting. If the upscaled area no longer closes Eden, the out-of-range access is confirmed as the crash; the picture there may still be wrong, which then points at the inputs. Environment variable EDEN_NS2_ROBUST_SHARED=0 turns it off (startup line "NS2: shared memory addresses of native compute shaders are ...").
 Logged now:
 - For the first three runs of every native compute pipeline, the contents of each small read-only storage buffer (up to 256 bytes), after downloading what the host GPU wrote to it, with NaN/Inf counts as 32-bit and 16-bit floats and the largest finite value ("NS2 storage buffer ... read by pipeline ..."). This shows the DLSS network output the failing shader reads. EDEN_NS2_SSBO_PEEK=0 turns it off.
+
+## Build 103 (diagnostics only, no behaviour change)
+Build 102 results (user, mod removed, one run into the upscaled area):
+- Shared memory clamping was active (startup line; offline, all 21 shared memory accesses of the failing shader are clamped). Eden still closed at the area entry, and the Windows event log again shows "Error occurred on GPUID: 100" twice (an error, not a timeout). So an out-of-range shared memory access is not the cause, or not the only one.
+- Difference to builds 100 and 101: the first run of compute shader a7e217052ec1940b (after the first DLSS chain) now finished; the second run (next frame, after the second DLSS chain) was started by the host GPU and never finished. Before, the first run already hung. The second run reads the history images the first run wrote. One run per build, so only a hint.
+- The DLSS output was not logged: the failing shader's storage buffer has size 0 in its descriptor, and the logging skipped size 0.
+- No ns2_crash.txt, no device loss, no uncaught exception: Eden ended without passing any of its handlers. The clamping stays (in-range accesses are unchanged).
+Logged now:
+- First-chance exceptions that are not part of normal operation (access violations inside a module such as eden.exe or a driver DLL, illegal instructions, heap corruption, and so on; JIT fastmem faults and C++ exceptions are skipped), at most 16, with code, thread, module and offset ("NS2: first-chance exception ..."). They are logged before any handler runs, so also when a later handler ends the process.
+- abort(), invalid C runtime parameters and pure virtual calls: thread and stack in ns2_crash.txt and the log.
+- exit() from any thread, with the calling stack ("NS2: process exit() ..."; expected at a normal shutdown).
+- If another component replaces the unhandled exception filter, it is put back (the other one is chained) and the module that replaced it is logged.
+- Small read-only storage buffers without a size in their descriptor are now logged too (first 256 bytes).
+Changed:
+- Native shader code is no longer saved to ns2_native by default (EDEN_NS2_NATIVE_DUMP=1 turns it on).

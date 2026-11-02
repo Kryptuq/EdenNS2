@@ -166,7 +166,16 @@ void LogSmallStorageBuffer(Tegra::MemoryManager& gpu_memory, BufferCache& buffer
         return !(value && value[0] == '0');
     }();
     constexpr u32 MaxBytes = 0x100;
-    if (!enabled || size == 0 || size > MaxBytes || size % 4 != 0) {
+    if (!enabled || address == 0 || size > MaxBytes) {
+        return;
+    }
+    if (size == 0) {
+        // No size in the descriptor: the buffer cache binds up to the end of the mapping, show
+        // its start (the producer usually wrote only a few hundred bytes).
+        size = static_cast<u32>((std::min)(gpu_memory.GetMemoryLayoutSize(address), size_t{MaxBytes}));
+    }
+    size &= ~3U;
+    if (size == 0) {
         return;
     }
     const auto device_address = gpu_memory.GpuToCpuAddress(address, size);

@@ -61,6 +61,8 @@ void RunGpuPoll();
 /// a stack of return addresses) and every thread's current phase to `path` before the process
 /// dies. Eden's own log is written asynchronously and loses its last lines in a crash.
 void InstallCrashReport(const std::string& path);
+/// Watchdog: re-installs the crash filter if another component replaced it (logged).
+void CheckCrashReport();
 
 /// RAII helper that restores the previous phase on scope exit.
 class PhaseScope {
