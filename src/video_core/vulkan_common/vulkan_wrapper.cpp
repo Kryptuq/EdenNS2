@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -12,6 +13,7 @@
 
 #include "common/common_types.h"
 #include "common/logging.h"
+#include "common/thread.h"
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -331,6 +333,14 @@ bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {
            X(vkGetPhysicalDeviceMemoryProperties) && X(vkGetPhysicalDeviceMemoryProperties2) &&
            X(vkGetPhysicalDeviceProperties) && X(vkGetPhysicalDeviceQueueFamilyProperties);
 #undef X
+}
+
+void Exception::LogCreation() const {
+    static std::atomic<u32> logged{0};
+    if (logged.fetch_add(1) < 64) {
+        LOG_CRITICAL(Render_Vulkan, "NS2: Vulkan error {} ({}) raised as an exception in thread '{}'",
+                     static_cast<int>(result), string_VkResult(result), Common::GetCurrentThreadName());
+    }
 }
 
 const char* Exception::what() const noexcept {

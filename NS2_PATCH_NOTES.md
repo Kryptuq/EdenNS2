@@ -548,3 +548,16 @@ Logged now:
 - Small read-only storage buffers without a size in their descriptor are now logged too (first 256 bytes).
 Changed:
 - Native shader code is no longer saved to ns2_native by default (EDEN_NS2_NATIVE_DUMP=1 turns it on).
+
+## Build 104 (diagnostics, plus an opt-in experiment)
+Build 103 results (user, mod removed, one run into the upscaled area):
+- Compute shader a7e217052ec1940b hung on its first run again (build 102's finished first run was chance).
+- The DLSS output it reads (first 256 bytes) holds no NaN or Inf as 32- or 16-bit floats; the 16-bit values are small (about 1e-5 to 1e-2). Broken numbers from the DLSS network are less likely now.
+- How Eden ends: the Windows application log of the build 102 run shows eden.exe ending in ucrtbase.dll with code c0000409, which is how abort() ends a process (no exception filter runs). In build 103 ns2_crash.txt was created but stayed empty: the new abort() handler started and did not get its buffered text to disk. Windows also logged "display driver nvlddmkm stopped responding and has recovered".
+- Why no report so far: with MSVC, std::set_terminate applies only to the calling thread. The uncaught-exception report was installed on one thread only, so an exception that is not caught on any other thread (for example a Vulkan call failing after the GPU error) went straight to abort(). Most likely sequence, not proven yet: GPU error in the shader -> a Vulkan call fails -> the exception is not caught on a render thread -> abort().
+Logged now:
+- Every thread named by Eden installs the uncaught-exception report (exception text and thread, in the log and ns2_crash.txt).
+- Every Vulkan error raised as an exception is logged when it is raised, with code and thread ("NS2: Vulkan error ... raised as an exception ...", at most 64).
+- ns2_crash.txt is written unbuffered and appended to (emptied at game start), so a partly written report survives, and the abort() report also names the exception in flight.
+Experiment (off unless set):
+- EDEN_NS2_SKIP_PIPELINE=<hash>[,<hash>...] skips all dispatches of those compute pipelines (hashes as in "NS2 dispatch resources"); their outputs keep their old contents. Used with a7e217052ec1940b to see whether the frame continues without that shader and whether another shader fails after it.

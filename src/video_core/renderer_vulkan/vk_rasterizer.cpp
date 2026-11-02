@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <string>
+#include <vector>
 #include <memory>
 #include <cstdlib>
 #include <fstream>
@@ -724,6 +727,46 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     }
 }
 
+namespace {
+// NS2 experiment: EDEN_NS2_SKIP_PIPELINE=<hash>[,<hash>...] (compute pipeline hashes as logged in
+// "NS2 dispatch resources") skips those dispatches entirely, to see whether the rest of the frame
+// runs without them. Their outputs keep their previous contents.
+bool NS2SkipComputePipeline(u64 hash) {
+    static const std::vector<u64> skipped = [] {
+        std::vector<u64> hashes;
+        const char* value = std::getenv("EDEN_NS2_SKIP_PIPELINE");
+        if (!value) {
+            return hashes;
+        }
+        std::string text{value};
+        size_t start = 0;
+        while (start < text.size()) {
+            size_t end = text.find_first_of(",; ", start);
+            if (end == std::string::npos) {
+                end = text.size();
+            }
+            const std::string item = text.substr(start, end - start);
+            if (!item.empty()) {
+                hashes.push_back(std::strtoull(item.c_str(), nullptr, 16));
+            }
+            start = end + 1;
+        }
+        for (const u64 h : hashes) {
+            LOG_WARNING(Render_Vulkan, "NS2 experiment: dispatches of compute pipeline {:016x} are skipped (EDEN_NS2_SKIP_PIPELINE)", h);
+        }
+        return hashes;
+    }();
+    if (skipped.empty() || std::find(skipped.begin(), skipped.end(), hash) == skipped.end()) {
+        return false;
+    }
+    static std::atomic<u32> logged{0};
+    if (logged.fetch_add(1) < 8) {
+        LOG_WARNING(Render_Vulkan, "NS2 experiment: skipped a dispatch of compute pipeline {:016x}", hash);
+    }
+    return true;
+}
+} // Anonymous namespace
+
 void RasterizerVulkan::DispatchCompute() {
     FlushWork();
     gpu_memory->FlushCaching();
@@ -739,6 +782,9 @@ void RasterizerVulkan::DispatchCompute() {
     }
     if (!pipeline) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
+        return;
+    }
+    if (kepler_compute->IsNativeMode() && NS2SkipComputePipeline(pipeline->ShaderHash())) {
         return;
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};

@@ -14,6 +14,7 @@
 #include "common/error.h"
 #include "common/logging.h"
 #include "common/assert.h"
+#include "common/ns2_watch.h"
 #include "common/thread.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -513,6 +514,7 @@ std::string GetCurrentThreadName() {
 
 void SetCurrentThreadName(const char* name) {
     g_current_thread_name = name ? name : "";
+    NS2Watch::InstallThreadTerminateHandler();
 #ifdef _MSC_VER
     // Sets the debugger-visible name of the current thread.
     if (auto pf = (decltype(&SetThreadDescription))(void*)GetProcAddress(GetModuleHandle(TEXT("KernelBase.dll")), "SetThreadDescription"); pf)
