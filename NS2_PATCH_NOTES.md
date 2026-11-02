@@ -470,3 +470,18 @@ DLSS (Option A) findings:
 - The game's own switch is Unreal's NGX setting: with -ngxdisable on the command line, the DLSS module reports "not supported" at startup and the engine uses its normal upscaler. Unreal reads the command line from nn::os::GetHostArgv (argument 0 is skipped).
 - Eden's program arguments ("Homebrew Args") never reached the game: they were placed in rtld's data segment in front of .bss, but rtld clears .bss and passes nnosInitialize the address right after its page-aligned image (base + 0x20000 here), which is where the HOS loader puts them. Fixed: the arguments now go after .bss at the page-aligned end of the image, as on hardware. Logged as "Passing program arguments at module offset ...".
 - Movie: the grace wait for memory with a reuse history is raised from 2 ms to 10 ms.
+
+## Build 98
+Build 97 results (user): the arguments reach the game ("Passing program arguments at module offset 0x20000: game -ngxdisable"), but DLSS stayed on. The DLSS plugin only honours -ngxdisable when r.NGX.Enable.AllowCommandLine is set, and its default is 0 in this game (the registration passes 0); the release build has no other command-line cvar overrides. With a test IPS mod that changes the default of r.NGX.Enable to 0 (main + 0x6348d90, mov w2,#1 -> #0), DLSS is off and the area renders black instead of red/yellow.
+- Black screen cause: from that area on the game renders at 960x540 and upscales to 1920x1080 (before: 1400x788 without upscaling). With DLSS off the upscaled image comes from Unreal's own compute upscaler, and 16 compute shaders of that area were rejected, so the 1080p image (0x1af8ba0000) was never written.
+- All 16 now lower, translate and compile to SPIR-V offline (dumped code from the log). Lowered:
+  - IMAD with a negated constant-buffer addend (0x624).
+  - F2I with any rounding mode (bits 78-79 map onto Maxwell F2I's rounding field) and either FTZ setting.
+  - RET whose return pair setup has return-value moves in between, and RET through the link register itself.
+  - Non-scalar uniform-bindless TEX (bit 60 clear: coordinates consecutive from Ra, LOD/offsets/reference from Rb).
+  - Scalar register-bindless TEX.B (operand list coordinates, handle, LOD... packed into Ra/Rb). The previous lowering read these as non-scalar, which put the handle in the wrong register.
+  - LDG with a register address (0x381), and the load predicate of LDG (bits 64-67, encoded backwards; a false predicate returns 0 per Mesa NAK). The uniform-address LDG (0x981) ignored this predicate until now and loaded unconditionally.
+  - HSETP2 register form.
+  - Also shipped now with tests: IMAD.HI (signed/unsigned, register/immediate/constant), IABS, general LEA/LEA.HI.X without carry-out, IMAD.WIDE (64-bit addend, constant-buffer addend pair), uniform IMAD.WIDE and LEA, IADD3.X with a constant-buffer source, BAR with deferred blocking.
+- Regression check over 246 dumped native programs: 214 lowered before, 230 now, none lost.
+- Unit tests in [native-shader] (numeric for arithmetic and conversions, operand layout for textures and predicated loads, accept/reject for returns).
