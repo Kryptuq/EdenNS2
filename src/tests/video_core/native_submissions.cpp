@@ -44,3 +44,20 @@ TEST_CASE("NativeSubmissions: channels are separate", "[ns2-submissions]") {
     Record(6, 0x3000, b);
     REQUIRE_FALSE(ClaimedLater(5, 0x3000, first, Hash(b)));
 }
+
+TEST_CASE("NativeSubmissions: reuse history", "[ns2-submissions]") {
+    const std::array<CommandHeader, 3> a{{{13}, {14}, {15}}};
+    Record(7, 0x4000, a);
+    Record(8, 0x4000, a);
+    REQUIRE_FALSE(UsuallyReused(7, 0x4000));
+    for (int i = 0; i < 8; ++i) NoteOutcome(7, 0x4000, true);
+    REQUIRE(UsuallyReused(7, 0x4000));
+    REQUIRE_FALSE(UsuallyReused(8, 0x4000));
+    // Mostly completed in place: no reuse history.
+    for (int i = 0; i < 8; ++i) NoteOutcome(8, 0x4000, true);
+    for (int i = 0; i < 40; ++i) NoteOutcome(8, 0x4000, false);
+    REQUIRE_FALSE(UsuallyReused(8, 0x4000));
+    // A new submission keeps the history.
+    Record(7, 0x4000, a);
+    REQUIRE(UsuallyReused(7, 0x4000));
+}

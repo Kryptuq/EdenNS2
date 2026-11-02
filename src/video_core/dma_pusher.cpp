@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstring>
+#include <thread>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -163,14 +165,29 @@ bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHea
     if (std::memcmp(live_headers.data(), captured.data(), bytes) == 0) {
         return true;
     }
-    const u64 live_hash = Common::CityHash64(reinterpret_cast<const char*>(live_headers.data()), bytes);
-    const bool reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, address, sequence, live_hash);
+    u64 live_hash = Common::CityHash64(reinterpret_cast<const char*>(live_headers.data()), bytes);
+    bool reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, address, sequence, live_hash);
+    if (!reused && NativeSubmissions::UsuallyReused(channel_state.bind_id, address)) {
+        // The guest may be recording the next list into this memory right now and submit it a
+        // moment later (nn::movie: record, then submit). Memory with a history of reuse gets a
+        // short grace period for that submission to arrive before the change counts as completed
+        // in place; reading it now ran the next frame's copy (the remaining movie flicker).
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{2};
+        while (!reused && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+            memory_manager.ReadBlockUnsafe(address, live_headers.data(), bytes);
+            live_hash = Common::CityHash64(reinterpret_cast<const char*>(live_headers.data()), bytes);
+            reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, address, sequence, live_hash);
+        }
+        ++waited_lists;
+    }
+    NativeSubmissions::NoteOutcome(channel_state.bind_id, address, reused);
     const u64 count = reused ? ++reused_lists : ++completed_lists;
     if (count <= 16 || count % 1000 == 0) {
-        LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) changed after submission: {} (#{}; reused {}, completed in place {})",
+        LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) changed after submission: {} (#{}; reused {}, completed in place {}, waited for a submission {})",
                  channel_state.bind_id, address, captured.size(),
                  reused ? "reused for a later submission, running it as submitted" : "completed in place, running the current contents",
-                 count, reused_lists, completed_lists);
+                 count, reused_lists, completed_lists, waited_lists);
     }
     return reused;
 }
@@ -180,6 +197,8 @@ namespace {
 struct Submission {
     u64 sequence;
     u64 hash;
+    u32 reused;    ///< Changes of this list that a later submission claimed
+    u32 completed; ///< Changes that no submission claimed (completed in place)
 };
 std::mutex mutex;
 std::unordered_map<u64, Submission> latest;
@@ -196,8 +215,24 @@ u64 Record(s32 channel, GPUVAddr address, std::span<const CommandHeader> words) 
         latest.clear();
     }
     const u64 sequence = ++next_sequence;
-    latest[Key(channel, address)] = {sequence, hash};
+    Submission& entry = latest[Key(channel, address)];
+    entry.sequence = sequence;
+    entry.hash = hash;
     return sequence;
+}
+
+void NoteOutcome(s32 channel, GPUVAddr address, bool reused) {
+    std::scoped_lock lock{mutex};
+    const auto it = latest.find(Key(channel, address));
+    if (it == latest.end()) return;
+    u32& counter = reused ? it->second.reused : it->second.completed;
+    counter = (std::min)(counter + 1, 1U << 30);
+}
+
+bool UsuallyReused(s32 channel, GPUVAddr address) {
+    std::scoped_lock lock{mutex};
+    const auto it = latest.find(Key(channel, address));
+    return it != latest.end() && it->second.reused >= 8 && it->second.reused > 4 * it->second.completed;
 }
 
 bool ClaimedLater(s32 channel, GPUVAddr address, u64 sequence, u64 hash) {

@@ -135,6 +135,10 @@ namespace NativeSubmissions {
 u64 Record(s32 channel, GPUVAddr address, std::span<const CommandHeader> words);
 /// Whether a later submission of the list at `address` captured contents with this hash.
 bool ClaimedLater(s32 channel, GPUVAddr address, u64 sequence, u64 hash);
+/// Records how a change of the list at `address` was resolved.
+void NoteOutcome(s32 channel, GPUVAddr address, bool reused);
+/// Whether changes of the list at `address` were mostly claimed by later submissions.
+bool UsuallyReused(s32 channel, GPUVAddr address);
 } // namespace NativeSubmissions
 
 /// @brief The DmaPusher class implements DMA submission to FIFOs, providing an area of memory that the
@@ -173,6 +177,7 @@ private:
     bool resume_from_capture{};
     u64 reused_lists{};
     u64 completed_lists{};
+    u64 waited_lists{};
     Common::ScratchBuffer<CommandHeader> live_headers;
 
     void SetState(const CommandHeader& command_header);
