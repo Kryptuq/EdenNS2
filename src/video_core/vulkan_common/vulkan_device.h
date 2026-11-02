@@ -698,6 +698,16 @@ FN_MAX_LIMIT_LIST
         return features.host_query_reset.hostQueryReset != VK_FALSE;
     }
 
+    /// Nanoseconds per timestamp tick (NS2 GPU timing diagnostics).
+    float GetTimestampPeriod() const {
+        return properties.properties.limits.timestampPeriod;
+    }
+
+    /// Returns true if timestamps can be written on the graphics and compute queues.
+    bool SupportsGraphicsComputeTimestamps() const {
+        return properties.properties.limits.timestampComputeAndGraphics != VK_FALSE;
+    }
+
     /// Returns true if the device supports VK_EXT_transform_feedback.
     bool IsExtTransformFeedbackSupported() const {
         return extensions.transform_feedback;

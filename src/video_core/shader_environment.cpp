@@ -332,6 +332,37 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     return entry;
 }
 namespace {
+// Diagnostics: saves the code of every native program once to <log dir>/ns2_native/<key>.bin (raw
+// 16-byte instructions, the input format of the [ns2-lower] corpus test), so changes to the
+// lowering can be checked offline against exactly the programs a game runs.
+// EDEN_NS2_NATIVE_DUMP=0 turns it off. Returns the program key.
+u64 SaveNativeProgram(const std::vector<Shader::Ampere::Instruction>& native) {
+    const u64 key = Shader::Ampere::NativeProgramKey(native);
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NS2_NATIVE_DUMP");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    if (!enabled) {
+        return key;
+    }
+    static std::mutex mutex;
+    static std::unordered_set<u64> saved;
+    std::scoped_lock lock{mutex};
+    if (!saved.insert(key).second) {
+        return key;
+    }
+    std::error_code ec;
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_native";
+    std::filesystem::create_directories(dir, ec);
+    const auto path = dir / fmt::format("{:016x}.bin", key);
+    if (!std::filesystem::exists(path, ec)) {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(native.data()),
+                   static_cast<std::streamsize>(native.size() * sizeof(Shader::Ampere::Instruction)));
+    }
+    return key;
+}
+
 // Logs a rejected native shader once per program so missing lowerings can be added
 // from an ordinary log. Bounded to keep logs readable.
 void LogRejectedNativeShader(const std::vector<Shader::Ampere::Instruction>& native, GPUVAddr base,
@@ -453,6 +484,7 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         throw Shader::RuntimeError("Native shader at {:#x}, instruction {:#x}: {}",
                                    program_base, lowered.error_offset, lowered.error);
     }
+    const u64 native_key = SaveNativeProgram(native);
     if (lowered.required_texture_buffer != ~0U) {
         // Native TEX carries its cbuf index explicitly; TEXS obtains it from the environment.
         texture_bound = lowered.required_texture_buffer;
@@ -481,8 +513,8 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     register_remaps = Shader::Ampere::NativeRegisterRemaps(code);
     cached_lowest = 0;
     cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
-    LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
-             program_base, native_source_size, lowered.instructions.size());
+    LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions, key {:016x}",
+             program_base, native_source_size, lowered.instructions.size(), native_key);
     {
         // Warp matrix emulation (DLSS-style kernels) and register renaming, for diagnosing them.
         size_t multiplies = 0, matrix_loads = 0;

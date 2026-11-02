@@ -236,6 +236,23 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
 #endif
 } // namespace
 
+namespace {
+std::mutex g_gpu_poll_mutex;
+std::function<void()> g_gpu_poll;
+} // namespace
+
+void SetGpuPoll(std::function<void()> poll) {
+    std::scoped_lock lock{g_gpu_poll_mutex};
+    g_gpu_poll = std::move(poll);
+}
+
+void RunGpuPoll() {
+    std::scoped_lock lock{g_gpu_poll_mutex};
+    if (g_gpu_poll) {
+        g_gpu_poll();
+    }
+}
+
 void InstallCrashReport(const std::string& path) {
     static std::atomic<bool> installed{false};
     g_crash_path = path;

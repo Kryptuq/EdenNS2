@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 
 #include <boost/container/static_vector.hpp>
 
@@ -21,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
+#include "video_core/renderer_vulkan/vk_ns2_gpu_timeline.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
@@ -125,6 +127,8 @@ public:
     void FlushCommands() override;
     void TickFrame() override;
     void NoteNativeDraw();
+    void NativeDrawShaders(u64 (&shaders)[6]) const;
+    NS2GpuTimeline* NS2Timeline();
     void TraceNativeDraw(VideoCommon::NS2Draw::Result result, bool is_indexed);
     bool AccelerateConditionalRendering() override;
     bool HasDrawTransformFeedback() override;
@@ -235,6 +239,10 @@ private:
     u32 draw_counter = 0;
     u32 native_summary_frames = 0;
     u32 native_trace_frames = 0;
+
+    // NS2 GPU timing diagnostics (created on the first native draw or dispatch).
+    std::unique_ptr<NS2GpuTimeline> ns2_timeline;
+    bool ns2_timeline_checked = false;
 };
 
 } // namespace Vulkan
