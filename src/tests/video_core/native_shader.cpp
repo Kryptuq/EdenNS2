@@ -3508,3 +3508,44 @@ TEST_CASE("Native warp reductions combine only active lanes for every unsigned o
         }
     }
 }
+
+TEST_CASE("Native geometry shader instructions lower to Maxwell geometry operations", "[native-shader]") {
+    // Encodings per Mesa NAK sm70_encode.rs; predicate PT (7) in bits 12-15.
+    const auto native = [](u32 opcode, u32 w0, u32 w1, u32 w2) {
+        return Native{{0x7000U | opcode | w0, w1, w2, 0x000fe400U}};
+    };
+    const std::array code{
+        native(0x34e, 0, 0, 0),                          // epilogue setup (dropped)
+        native(0x919, 0, 0, 29U << 8),                   // S2R R0, SR_INVOCATION_INFO
+        native(0x923, (7U << 16) | (4U << 24), 0, 0),    // ISBERD R7, [R4]
+        native(0x224, (1U << 16) | (255U << 24), 255, 0x000e0401), // IMAD.X R1, RZ, RZ, R1, P0
+        native(0x324, (0U << 16) | (0U << 24), 255, 0x4000), // OUT.EMIT R0, R0, RZ
+        native(0x324, (255U << 16) | (0U << 24), 255, 0), // OUT final (dropped)
+        native(0x957, 0, 0, 0),                          // epilogue end (dropped)
+        native(0x94d, 0, 0, 0x03800000),                 // EXIT
+    };
+    const auto lowered = Shader::Ampere::LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    using Shader::Maxwell::Opcode;
+    std::vector<Opcode> opcodes;
+    for (const u64 word : lowered.instructions) opcodes.push_back(Shader::Maxwell::Decode(word));
+    const auto find = [&](Opcode opcode) { return std::ranges::find(opcodes, opcode) - opcodes.begin(); };
+    REQUIRE(std::ranges::count(opcodes, Opcode::S2R) == 1);
+    const auto isberd = static_cast<size_t>(find(Opcode::ISBERD));
+    REQUIRE(isberd < opcodes.size());
+    REQUIRE((lowered.instructions[isberd] & 0xff) == 7);          // destination
+    REQUIRE(((lowered.instructions[isberd] >> 8) & 0xff) == 4);   // index register
+    REQUIRE(((lowered.instructions[isberd] >> 33) & 3) == 0);     // map access
+    REQUIRE(std::ranges::count(opcodes, Opcode::OUT_reg) == 1);   // OUT final emits nothing
+    const u64 out = lowered.instructions[static_cast<size_t>(find(Opcode::OUT_reg))];
+    REQUIRE(((out >> 39) & 1) == 1);                              // emit
+    REQUIRE(((out >> 40) & 1) == 0);                              // no cut
+    REQUIRE(((out >> 20) & 0xff) == 255);                         // stream RZ
+    REQUIRE(std::ranges::count(opcodes, Opcode::SEL_reg) == 1);   // IMAD.X carry as 0/1
+}
+
+TEST_CASE("Native undocumented geometry epilogue operations must have no operands", "[native-shader]") {
+    const std::array code{Native{{0x7000U | 0x357U | (5U << 16), 0, 0, 0x000fe400U}}};
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code));
+}
