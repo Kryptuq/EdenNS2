@@ -1272,6 +1272,7 @@ TEST_CASE("Native integer multiply preserves high words and modular multiply-add
         case Opcode::ISCADD_reg: visitor.ISCADD_reg(word); break;
         case Opcode::SHR_imm: visitor.SHR_imm(word); break;
         case Opcode::IADD_reg: visitor.IADD_reg(word); break;
+        case Opcode::MOV_reg: visitor.MOV_reg(word); break;
         case Opcode::EXIT: break;
         default: FAIL("Unexpected canonical integer multiplication instruction");
         }
@@ -2366,6 +2367,9 @@ struct ScalarNativeMachine {
             case IR::Opcode::FPFma16: result = EncodeTestHalf(std::fma(DecodeTestHalf(static_cast<u16>(arg(0))),
                 DecodeTestHalf(static_cast<u16>(arg(1))), DecodeTestHalf(static_cast<u16>(arg(2))))); break;
             case IR::Opcode::FPFloor32: result = std::bit_cast<u32>(std::floor(std::bit_cast<float>(static_cast<u32>(arg(0))))); break;
+            case IR::Opcode::FPCeil32: result = std::bit_cast<u32>(std::ceil(std::bit_cast<float>(static_cast<u32>(arg(0))))); break;
+            case IR::Opcode::FPOrdGreaterThan16: result = DecodeTestHalf(static_cast<u16>(arg(0))) > DecodeTestHalf(static_cast<u16>(arg(1))); break;
+            case IR::Opcode::LoadGlobal32: result = global.at(arg(0)); break;
             case IR::Opcode::ConvertF32F16: result = std::bit_cast<u32>(static_cast<float>(DecodeTestHalf(static_cast<u16>(arg(0))))); break;
             case IR::Opcode::FPOrdEqual32: result = std::bit_cast<float>(static_cast<u32>(arg(0))) == std::bit_cast<float>(static_cast<u32>(arg(1))); break;
             case IR::Opcode::FPOrdGreaterThanEqual32: result = std::bit_cast<float>(static_cast<u32>(arg(0))) >= std::bit_cast<float>(static_cast<u32>(arg(1))); break;
@@ -3549,3 +3553,302 @@ TEST_CASE("Native undocumented geometry epilogue operations must have no operand
     const std::array code{Native{{0x7000U | 0x357U | (5U << 16), 0, 0, 0x000fe400U}}};
     REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code));
 }
+
+namespace {
+// Lowers and translates one native instruction followed by EXIT.
+void TranslateOne(const Native& instruction, IR::Block& block) {
+    const std::array<Native, 2> input{{instruction, VertexTransform.back()}};
+    TranslateScalarNative(input, block);
+}
+std::vector<u64> LowerOne(const Native& instruction) {
+    const std::array<Native, 2> input{{instruction, VertexTransform.back()}};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    INFO("offset=" << lowered.error_offset << " error=" << lowered.error);
+    REQUIRE(lowered);
+    return lowered.instructions;
+}
+} // Anonymous namespace
+
+TEST_CASE("Native wide and high multiplies keep 64-bit products and addends", "[native-shader]") {
+    const std::array<u32, 5> samples{0U, 1U, 0x7fffffffU, 0x80000000U, 0xfedcba98U};
+    SECTION("IMAD.WIDE immediate, signed, register addend pair") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0x060c7825, 2, 0x078e0210, 0}}, block);
+        for (u32 a : samples) {
+            ScalarNativeMachine machine;
+            machine.regs[6] = a;
+            machine.regs[16] = 0xffffffff;
+            machine.regs[17] = 0x10;
+            machine.Execute(block);
+            const u64 expected = static_cast<u64>(s64{static_cast<s32>(a)} * 2) + 0x10ffffffffULL;
+            REQUIRE((u64{machine.regs[13]} << 32 | machine.regs[12]) == expected);
+        }
+    }
+    SECTION("IMAD.WIDE.U32 with a constant-buffer addend pair") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0x06047625, 0x5a00, 0x078e0005, 0}}, block);
+        for (u32 a : samples) {
+            ScalarNativeMachine machine;
+            machine.regs[6] = a;
+            machine.regs[5] = 0x89abcdef;
+            machine.constants[0x168] = 0xfffffff0;
+            machine.constants[0x16c] = 3;
+            machine.Execute(block);
+            const u64 expected = u64{a} * 0x89abcdef + 0x3fffffff0ULL;
+            REQUIRE((u64{machine.regs[5]} << 32 | machine.regs[4]) == expected);
+        }
+    }
+    SECTION("IMAD.HI.U32 register and constant-buffer multipliers") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block reg_block{pool}, cbuf_block{pool};
+        TranslateOne(Native{{0x08087227, 3, 0x078e00ff, 0}}, reg_block);
+        TranslateOne(Native{{0x003a0a27, 0xa800, 0x078e00ff, 0}}, cbuf_block);
+        for (u32 a : samples) {
+            ScalarNativeMachine machine;
+            machine.regs[8] = a;
+            machine.regs[3] = 0xcccccccd;
+            machine.Execute(reg_block);
+            REQUIRE(machine.regs[8] == static_cast<u32>((u64{a} * 0xcccccccd) >> 32));
+            ScalarNativeMachine cbuf_machine;
+            cbuf_machine.regs[0] = a;
+            cbuf_machine.constants[0x2a0] = 0x9e3779b9;
+            cbuf_machine.Execute(cbuf_block);
+            REQUIRE(cbuf_machine.regs[58] == static_cast<u32>((u64{a} * 0x9e3779b9) >> 32));
+        }
+    }
+    SECTION("Uniform IMAD.WIDE into a uniform register pair") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0x070872a5, 4, 0x0f8e003f, 0}}, block);
+        for (u32 a : samples) {
+            ScalarNativeMachine machine;
+            machine.regs[216 + 7] = a;
+            machine.regs[216 + 4] = 0x12345678;
+            machine.Execute(block);
+            REQUIRE((u64{machine.regs[216 + 9]} << 32 | machine.regs[216 + 8]) == u64{a} * 0x12345678);
+        }
+    }
+    SECTION("IMAD with a negated constant-buffer addend") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0xff0e7624, 0x81002800, 0x078e02ff, 0}}, block);
+        ScalarNativeMachine machine;
+        machine.constants[(u64{4} << 32) | 0xa0] = 0x1234;
+        machine.Execute(block);
+        REQUIRE(machine.regs[14] == 0U - 0x1234U);
+    }
+}
+
+TEST_CASE("Native LEA pairs, uniform LEA, IABS and IADD3.X keep integer results", "[native-shader]") {
+    SECTION("64-bit LEA with carry-out and LEA.HI.X with constant-buffer addends") {
+        const std::array<Native, 3> input{{
+            {{0x04327a11, 0x5c00, 0x078208ff, 0}},
+            {{0x04337a11, 0x5d00, 0x008f0c03, 0}},
+            VertexTransform.back(),
+        }};
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateScalarNative(input, block);
+        for (const auto& [low, high, base] : std::array<std::tuple<u32, u32, u64>, 3>{{
+                 {0x80000001U, 0x7U, 0x100000000ULL}, {0xffffffffU, 0x1U, 0xffffffffULL}, {5U, 0U, 0x10ULL}}}) {
+            ScalarNativeMachine machine;
+            machine.regs[4] = low;
+            machine.regs[3] = high;
+            machine.constants[0x170] = static_cast<u32>(base);
+            machine.constants[0x174] = static_cast<u32>(base >> 32);
+            machine.Execute(block);
+            const u64 expected = ((u64{high} << 32 | low) << 1) + base;
+            REQUIRE((u64{machine.regs[51]} << 32 | machine.regs[50]) == expected);
+        }
+    }
+    SECTION("Uniform LEA") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0x04047291, 6, 0x0f8e183f, 0}}, block);
+        ScalarNativeMachine machine;
+        machine.regs[220] = 0x10000003;
+        machine.regs[222] = 0x40;
+        machine.Execute(block);
+        REQUIRE(machine.regs[220] == (0x10000003U << 3) + 0x40);
+    }
+    SECTION("IABS") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0x00137213, 0x13, 0, 0}}, block);
+        for (const s32 value : {0, 5, -5, std::numeric_limits<s32>::max(), std::numeric_limits<s32>::min()}) {
+            ScalarNativeMachine machine;
+            machine.regs[19] = static_cast<u32>(value);
+            machine.Execute(block);
+            REQUIRE(machine.regs[19] == (value == std::numeric_limits<s32>::min() ? 0x80000000U
+                                                                                   : static_cast<u32>(std::abs(value))));
+        }
+    }
+    SECTION("IADD3.X with a constant-buffer source and predicate carry-in") {
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(Native{{0x9f297a10, 0x5900, 0x00ffe4ff, 0}}, block);
+        for (const bool carry : {false, true}) {
+            ScalarNativeMachine machine;
+            machine.regs[0x9f] = 0x11;
+            machine.constants[0x164] = 0x22;
+            machine.predicates[1] = carry;
+            machine.Execute(block);
+            REQUIRE(machine.regs[0x29] == 0x33U + carry);
+        }
+    }
+}
+
+TEST_CASE("Native float-to-integer conversions honour every rounding mode", "[native-shader]") {
+    Shader::ObjectPool<IR::Inst> pool;
+    IR::Block ceil_block{pool}, trunc_block{pool};
+    TranslateOne(Native{{0x000b7305, 0x12, 0x0020b000, 0}}, ceil_block); // unsigned, toward +inf
+    TranslateOne(Native{{0x003b7305, 0x0e, 0x0020f100, 0}}, trunc_block); // signed, toward zero, no FTZ
+    for (const auto& [value, ceiling, truncated] : std::array<std::tuple<float, u32, s32>, 6>{{
+             {1.2f, 2, 1}, {3.0f, 3, 3}, {-0.5f, 0, 0}, {-1.7f, 0, -1}, {2.9f, 3, 2}, {0.0f, 0, 0}}}) {
+        ScalarNativeMachine machine;
+        machine.regs[0x12] = std::bit_cast<u32>(value);
+        machine.Execute(ceil_block);
+        REQUIRE(machine.regs[0x0b] == ceiling);
+        ScalarNativeMachine signed_machine;
+        signed_machine.regs[0x0e] = std::bit_cast<u32>(value);
+        signed_machine.Execute(trunc_block);
+        REQUIRE(signed_machine.regs[0x3b] == static_cast<u32>(truncated));
+    }
+}
+
+TEST_CASE("Native half comparison writes the selected lane result to a predicate", "[native-shader]") {
+    Shader::ObjectPool<IR::Inst> pool;
+    IR::Block block{pool};
+    // P0 = R23.H1 > 0 (RZ.H0_H0), AND PT.
+    TranslateOne(Native{{0x17007234, 0x200000ff, 0x03f04c00, 0}}, block);
+    for (const auto& [packed, expected] : std::array<std::pair<u32, bool>, 4>{{
+             {0x3c000000U, true}, {0xbc003c00U, false}, {0x00003c00U, false}, {0x00010000U, true}}}) {
+        ScalarNativeMachine machine;
+        machine.regs[23] = packed;
+        machine.Execute(block);
+        REQUIRE(machine.predicates[0] == expected);
+    }
+}
+
+TEST_CASE("Native global loads use register addresses and zero results under a false load predicate", "[native-shader]") {
+    SECTION("Unpredicated register-address load") {
+        Native instruction{{0x2e1c7381, 0x800, 0x001e8900, 0}};
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        TranslateOne(instruction, block);
+        ScalarNativeMachine machine;
+        machine.regs[46] = 0xfffffffc;
+        machine.regs[47] = 0x21;
+        machine.global[0x2200000004ULL] = 0xcafef00d;
+        machine.Execute(block);
+        REQUIRE(machine.regs[28] == 0xcafef00d);
+    }
+    SECTION("Predicated loads (register and uniform address)") {
+        // Bits 64-66 = 7 - predicate, bit 67 negates: 0xe is !P1.
+        for (const Native instruction : {Native{{0x2e1c7381, 0x800, 0x001e890e, 0}},
+                                         Native{{0x00057981, 0x00000400, 0x081e090e, 0}}}) {
+            const auto words = LowerOne(instruction);
+            u32 loads{}, clears{};
+            for (const u64 word : words) {
+                const Shader::Maxwell::Instruction maxwell{word};
+                if (Shader::Maxwell::Decode(word) == Shader::Maxwell::Opcode::LDG) {
+                    REQUIRE(maxwell.Pred().index == 1);
+                    REQUIRE(maxwell.Pred().negated);
+                    ++loads;
+                }
+                if (Shader::Maxwell::Decode(word) == Shader::Maxwell::Opcode::MOV_reg) {
+                    REQUIRE(maxwell.Pred().index == 1);
+                    REQUIRE_FALSE(maxwell.Pred().negated);
+                    REQUIRE(((word >> 20) & 0xff) == 255);
+                    REQUIRE((word & 0xff) == instruction.Bits(16, 8));
+                    ++clears;
+                }
+            }
+            REQUIRE(loads == 1);
+            REQUIRE(clears == 1);
+        }
+    }
+}
+
+TEST_CASE("Native bindless texture operand packing follows the scalar bit", "[native-shader]") {
+    const auto copies = [](const std::vector<u64>& words) {
+        std::unordered_map<u32, u32> moves;
+        for (const u64 word : words) {
+            if (Shader::Maxwell::Decode(word) == Shader::Maxwell::Opcode::MOV_reg)
+                moves[static_cast<u32>(word & 0xff)] = static_cast<u32>((word >> 20) & 0xff);
+        }
+        return moves;
+    };
+    const auto texture = [](const std::vector<u64>& words) {
+        for (const u64 word : words)
+            if (Shader::Maxwell::Decode(word) == Shader::Maxwell::Opcode::TEX_b) return word;
+        FAIL("No bindless texture instruction");
+        return u64{};
+    };
+    SECTION("Vector uniform-bindless cube array sample with explicit LOD") {
+        // Coordinates R16..R19 (layer first), LOD in R21, handle UR4 (R220).
+        const auto words = LowerOne(Native{{0x10107f60, 0xe0000415, 0x099e0f12, 0}});
+        auto moves = copies(words);
+        for (u32 i = 0; i < 4; ++i) REQUIRE(moves.at(250 + i) == 16 + i);
+        REQUIRE(moves.at(246) == 220);
+        REQUIRE(moves.at(247) == 21);
+        const u64 tex = texture(words);
+        REQUIRE(((tex >> 28) & 7) == 7);
+        REQUIRE(((tex >> 37) & 7) == 3);
+    }
+    SECTION("Scalar register-bindless 3D sample: XY in Ra, Z and handle in Rb") {
+        const auto words = LowerOne(Native{{0x02027361, 0x58000008, 0x049e0f08, 0}});
+        auto moves = copies(words);
+        REQUIRE(moves.at(250) == 2);
+        REQUIRE(moves.at(251) == 3);
+        REQUIRE(moves.at(252) == 8);
+        REQUIRE(moves.at(246) == 9);
+        const u64 tex = texture(words);
+        REQUIRE(((tex >> 28) & 7) == 4);
+        REQUIRE(((tex >> 37) & 7) == 1);
+    }
+    SECTION("Scalar register-bindless 2D sample: handle then LOD in Rb") {
+        const auto words = LowerOne(Native{{0x2c2a7361, 0x3800002a, 0x019e01ff, 0}});
+        auto moves = copies(words);
+        REQUIRE(moves.at(250) == 0x2c);
+        REQUIRE(moves.at(251) == 0x2d);
+        REQUIRE(moves.at(246) == 0x2a);
+        REQUIRE(moves.at(247) == 0x2b);
+        REQUIRE(((texture(words) >> 37) & 7) == 3);
+    }
+}
+
+TEST_CASE("Native returns accept return-value moves and returns through the link register", "[native-shader]") {
+    std::vector<Native> input{
+        {{0x00007802, 0x40000000, 0x00000f00, 0}},
+        {{0x00377802, 0x00000030, 0x00000f00, 0}},
+        {{0x00007944, 0x00000020, 0x03c00000, 0}},
+        {{0xff007322, 0x00007003, 0x000000ff, 0}},
+        VertexTransform.back(),
+        {{0x00037421, 0x40400000, 0x00010000, 0}},
+        {{0x00087202, 0x00000037, 0x00000f00, 0}},
+        {{0x00097802, 0x00000000, 0x00000f00, 0}},
+        {{0x00047202, 0x00000003, 0x00000f00, 0}}, // return value move after the link pair
+        {{0x08007950, 0xffffff60, 0x03c3ffff, 0}},
+    };
+    REQUIRE(Shader::Ampere::LowerToMaxwell(input));
+    auto not_a_move = input;
+    not_a_move[8] = Native{{0x00047421, 0x40400000, 0x00010000, 0}};
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(not_a_move));
+    auto through_link = input;
+    through_link[6] = Native{{0x00047202, 0x00000003, 0x00000f00, 0}};
+    through_link[7] = Native{{0x00387802, 0x00000000, 0x00000f00, 0}};
+    through_link[8] = Native{{0x00057202, 0x00000003, 0x00000f00, 0}};
+    through_link[9] = Native{{0x37007950, 0xffffff60, 0x03c3ffff, 0}};
+    REQUIRE(Shader::Ampere::LowerToMaxwell(through_link));
+    auto missing_high = through_link;
+    missing_high[7] = Native{{0x00067202, 0x00000003, 0x00000f00, 0}};
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(missing_high));
+}
+
+TEST_CASE("Native barrier with deferred blocking lowers", "[native-shader]") {
+    REQUIRE_FALSE(LowerOne(Native{{0x00007b1d, 0, 0x00010000, 0}}).empty());
+}
+
