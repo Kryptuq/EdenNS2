@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <string>
 
@@ -19,6 +20,7 @@
 #include <windows.h>
 #endif
 
+#include "common/logging.h"
 #include "common/ns2_watch.h"
 #include "common/thread.h"
 
@@ -253,12 +255,44 @@ void RunGpuPoll() {
     }
 }
 
+namespace {
+// An uncaught C++ exception (for example a Vulkan call failing with VK_ERROR_DEVICE_LOST) ends the
+// process through std::terminate, which the crash filter above does not see.
+[[noreturn]] void TerminateHandler() {
+    std::string message = "std::terminate without an active exception";
+    if (const std::exception_ptr exception = std::current_exception()) {
+        try {
+            std::rethrow_exception(exception);
+        } catch (const std::exception& e) {
+            message = e.what();
+        } catch (...) {
+            message = "non-standard exception";
+        }
+    }
+    const std::string thread = Common::GetCurrentThreadName();
+    // Critical messages are flushed to the log file immediately.
+    LOG_CRITICAL(Common, "NS2: uncaught exception in thread '{}': {}", thread, message);
+    if (!g_crash_path.empty()) {
+        if (FILE* file = std::fopen(g_crash_path.c_str(), "w")) {
+            std::fprintf(file, "uncaught C++ exception in thread '%s': %s\n", thread.c_str(),
+                         message.c_str());
+#ifdef _WIN32
+            WritePhases(file);
+#endif
+            std::fclose(file);
+        }
+    }
+    std::abort();
+}
+} // namespace
+
 void InstallCrashReport(const std::string& path) {
     static std::atomic<bool> installed{false};
     g_crash_path = path;
     if (installed.exchange(true)) {
         return;
     }
+    std::set_terminate(TerminateHandler);
 #ifdef _WIN32
     SetUnhandledExceptionFilter(CrashFilter);
 #endif

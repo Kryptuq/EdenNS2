@@ -76,8 +76,9 @@ std::unique_ptr<NS2GpuTimeline> NS2GpuTimeline::Create(const Device& device, Sch
     device.GetLogical().ResetQueryPool(*pool, 0, NumRecords * 2);
     LOG_INFO(Render_Vulkan,
              "NS2 GPU timing: enabled ({} records, {} ns per tick); reports native work unfinished "
-             "for {} ms and dispatches/draws of {} ms or more",
-             NumRecords, device.GetTimestampPeriod(), StuckReportMs, SlowMs);
+             "for {} ms and dispatches/draws of {} ms or more; driver fault reports {}",
+             NumRecords, device.GetTimestampPeriod(), StuckReportMs, SlowMs,
+             device.SupportsDeviceFaultReports() ? "supported" : "NOT supported");
     return std::make_unique<NS2GpuTimeline>(device, scheduler, std::move(pool));
 }
 
@@ -157,6 +158,10 @@ void NS2GpuTimeline::End(u64 id) {
 
 void NS2GpuTimeline::Poll() {
     std::scoped_lock lock{mutex};
+    if (stuck_reported && !fault_logged && device.SupportsDeviceFaultReports()) {
+        // After a hang report, ask the driver for its fault report until it has one.
+        fault_logged = device.LogDeviceFault("after unfinished native work");
+    }
     if (device_lost) {
         return;
     }
@@ -188,6 +193,9 @@ void NS2GpuTimeline::Poll() {
     }
     if (result == VK_ERROR_DEVICE_LOST) {
         device_lost = true;
+        if (!fault_logged) {
+            fault_logged = device.LogDeviceFault("timestamps: device lost");
+        }
         for (u64 id = poll_id; id < next_id; ++id) {
             const Record& record = records[id % NumRecords];
             if (record.id == id) {
@@ -263,6 +271,7 @@ void NS2GpuTimeline::Account(const Record& record, double ms) {
 
 void NS2GpuTimeline::ReportStuck(const Record& record, bool begun, u64 unfinished_ms,
                                  const char* what) {
+    stuck_reported = true;
     // Errors flush the log file immediately, so these lines survive a driver reset or crash.
     LOG_ERROR(Render_Vulkan, "NS2 GPU: {}: work #{} {} (GPU {} it, unfinished for {} ms, host tick {:#x})",
               what, record.id, Describe(record.kind, record.shaders, record.grid, record.indirect),

@@ -511,3 +511,14 @@ Logged now:
 - The original code of every native program, once, to <log dir>/ns2_native/<key>.bin (input format of the [ns2-lower] corpus test), and the key in the "Lowered native shader" line, so the lowering of exactly the shaders that hang can be checked offline.
 - Indirect dispatches in the watchdog's per-tick work list.
 EDEN_NS2_GPU_TIMING=0 and EDEN_NS2_NATIVE_DUMP=0 turn the new diagnostics off.
+
+## Build 101 (diagnostics only, no behaviour change)
+Build 100 results (user, mod removed, one run into the upscaled area):
+- Native GPU work is small during the whole run (about 0.3-0.6 s per 10 s) and no draw or dispatch took 50 ms or more, the DLSS network kernels included. The DLSS emulation is not the slow part.
+- At the area entry all DLSS kernels ran and finished. The next dispatch, compute shader 0x1a996e1000 (native key 85237f4449a5ebe7, 78096 bytes; pipeline a7e217052ec1940b, 16x16 workgroups, 6912 bytes shared memory, grid 60x34), was started by the host GPU and never finished; Eden closed about 3 s later without logging a device loss. The same shader ran right after the DLSS kernels in the build 99 red/yellow run.
+- Offline (translated from the user's pipeline cache with the NVIDIA settings): one loop, bounded by the tile region (at most 24x24 entries, 8192-iteration safety counter), and one barrier inside a branch that is uniform for the workgroup. Nothing in it can run forever or deadlock, so a GPU fault (invalid memory or descriptor access) is the most likely cause. Not proven.
+- Windows event log (nvlddmkm, event 153): "Reset/Restarting TDR" for the build 99 cutscene run (a timeout); "Error occurred on GPUID: 100" twice at each of the two runs that ended in the upscaled area (an error, not a timeout). Windows does not show the error code.
+Logged now:
+- VK_EXT_device_fault is enabled when the driver offers it (startup line "driver fault reports supported/NOT supported"). The driver's fault description, faulting addresses (invalid read/write/execute) and vendor codes are logged after a device loss and, after unfinished native work was reported, on every watchdog poll until the driver has a report ("Device fault report ...", as errors, flushed immediately).
+- Uncaught C++ exceptions (for example a Vulkan call failing with VK_ERROR_DEVICE_LOST) are logged with their message and thread and written to ns2_crash.txt before the process ends; until now they ended Eden without any trace.
+- The resources of the first three runs of every native compute pipeline: pipeline hash, shader address, grid, block, shared memory, storage buffers (guest address and size) and images (address, size, format, written or not) ("NS2 dispatch resources ..."), so the inputs of a faulting dispatch are in the log.

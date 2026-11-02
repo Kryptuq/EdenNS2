@@ -244,6 +244,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdPushDescriptorSetWithTemplateKHR vkCmdPushDescriptorSetWithTemplateKHR{};
     PFN_vkCmdResetQueryPool vkCmdResetQueryPool{};
     PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp{};
+    PFN_vkGetDeviceFaultInfoEXT vkGetDeviceFaultInfoEXT{};
     PFN_vkCmdResolveImage vkCmdResolveImage{};
     PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants{};
     PFN_vkCmdSetCullModeEXT vkCmdSetCullModeEXT{};
@@ -1161,6 +1162,14 @@ public:
 
     void ResetQueryPool(VkQueryPool query_pool, u32 first, u32 count) const noexcept {
         dld->vkResetQueryPool(handle, query_pool, first, count);
+    }
+
+    /// VK_EXT_device_fault; returns VK_ERROR_EXTENSION_NOT_PRESENT when it was not loaded.
+    VkResult GetFaultInfo(VkDeviceFaultCountsEXT* counts, VkDeviceFaultInfoEXT* info) const noexcept {
+        if (!dld->vkGetDeviceFaultInfoEXT) {
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        }
+        return dld->vkGetDeviceFaultInfoEXT(handle, counts, info);
     }
 
     VkResult GetQueryResults(VkQueryPool query_pool, u32 first, u32 count, std::size_t data_size,
