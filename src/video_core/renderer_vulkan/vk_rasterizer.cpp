@@ -288,7 +288,17 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     query_cache.NotifySegment(true);
     HandleTransformFeedback();
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
+    NS2GpuTimeline* const timeline = gpu_memory->UsesNativeTiling() ? NS2Timeline() : nullptr;
+    u64 timing_id = 0;
+    if (timeline) {
+        u64 shaders[6]{};
+        NativeDrawShaders(shaders);
+        timing_id = timeline->Begin(NS2GpuTimeline::Kind::Draw, shaders, {}, false);
+    }
     draw_func();
+    if (timeline) {
+        timeline->End(timing_id);
+    }
     submitted = true;
     if (gpu_memory->UsesNativeTiling()) {
         NoteNativeDraw();
@@ -364,17 +374,30 @@ void RasterizerVulkan::TraceNativeDraw(VideoCommon::NS2Draw::Result result, bool
              maxwell3d->draw_manager.draw_state.instance_count, "");
 }
 
-void RasterizerVulkan::NoteNativeDraw() {
-    // Hang diagnostics: the shaders of every native draw and the host tick it is recorded into.
+void RasterizerVulkan::NativeDrawShaders(u64 (&shaders)[6]) const {
     const auto& regs = maxwell3d->regs;
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
-    u64 shaders[6]{};
     for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
+        shaders[index] = 0;
         if (!regs.IsShaderConfigEnabled(index)) continue;
         const auto& config = regs.pipelines[index];
         shaders[index] = native ? (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]
                                 : regs.program_region.Address() + config.offset;
     }
+}
+
+NS2GpuTimeline* RasterizerVulkan::NS2Timeline() {
+    if (!ns2_timeline_checked) {
+        ns2_timeline_checked = true;
+        ns2_timeline = NS2GpuTimeline::Create(device, scheduler);
+    }
+    return ns2_timeline.get();
+}
+
+void RasterizerVulkan::NoteNativeDraw() {
+    // Hang diagnostics: the shaders of every native draw and the host tick it is recorded into.
+    u64 shaders[6]{};
+    NativeDrawShaders(shaders);
     Common::NS2Watch::NoteWork(scheduler.CurrentTick(), 0, shaders);
 }
 
@@ -734,6 +757,15 @@ void RasterizerVulkan::DispatchCompute() {
         const auto [buffer, offset] =
             buffer_cache.ObtainBuffer(*indirect_address, 12, sync_info, post_op);
         scheduler.RequestOutsideRenderPassOperationContext();
+        NS2GpuTimeline* const timeline = kepler_compute->IsNativeMode() ? NS2Timeline() : nullptr;
+        u64 timing_id = 0;
+        if (kepler_compute->IsNativeMode()) {
+            const u64 shaders[6]{kepler_compute->regs.code_loc.Address() + qmd.program_start};
+            Common::NS2Watch::NoteWork(scheduler.CurrentTick(), 1, shaders);
+            if (timeline) {
+                timing_id = timeline->Begin(NS2GpuTimeline::Kind::Dispatch, shaders, {}, true);
+            }
+        }
         scheduler.Record([pipeline, indirect_buffer = buffer->Handle(),
                           indirect_offset = offset](vk::CommandBuffer cmdbuf) {
             if (!pipeline->IsBound()) {
@@ -741,6 +773,9 @@ void RasterizerVulkan::DispatchCompute() {
             }
             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
         });
+        if (timeline) {
+            timeline->End(timing_id);
+        }
         return;
     }
     if (kepler_compute->IsNativeMode()) {
@@ -761,12 +796,21 @@ void RasterizerVulkan::DispatchCompute() {
     };
     scheduler.Record([](vk::CommandBuffer cmdbuf) { cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                0, READ_BARRIER); });
+    NS2GpuTimeline* const timeline = kepler_compute->IsNativeMode() ? NS2Timeline() : nullptr;
+    u64 timing_id = 0;
+    if (timeline) {
+        const u64 shaders[6]{kepler_compute->regs.code_loc.Address() + qmd.program_start};
+        timing_id = timeline->Begin(NS2GpuTimeline::Kind::Dispatch, shaders, dim, false);
+    }
     scheduler.Record([pipeline, dim](vk::CommandBuffer cmdbuf) {
         if (!pipeline->IsBound()) {
             return;
         }
         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
     });
+    if (timeline) {
+        timeline->End(timing_id);
+    }
 
     // Log compute dispatch
     if (GPU::Logging::IsActive() &&

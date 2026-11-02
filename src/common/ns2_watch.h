@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,11 @@ struct RecentWork {
 };
 void NoteWork(u64 tick, u32 kind, const u64 (&shaders)[6]);
 std::vector<RecentWork> CollectWork();
+
+/// Renderer-side poll run by the watchdog thread about every 500 ms (GPU timing diagnostics).
+/// Setting an empty function removes it; the call waits for a poll in progress to finish.
+void SetGpuPoll(std::function<void()> poll);
+void RunGpuPoll();
 
 /// Installs a last-chance crash handler that writes the exception (code, address, module offset,
 /// a stack of return addresses) and every thread's current phase to `path` before the process
