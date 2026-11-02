@@ -532,6 +532,16 @@ Id EmitContext::BitOffset16(const IR::Value& offset) {
     return OpBitwiseAnd(U32[1], OpShiftLeftLogical(U32[1], Def(offset), Const(3u)), Const(16u));
 }
 
+Id EmitContext::SharedOffset(Id offset, u32 access_bytes) {
+    if (!robust_shared_memory) {
+        return offset;
+    }
+    // Unsigned, so negative offsets clamp too. The arrays hold at least shared_memory_size bytes
+    // (DefineSharedMemory rounds up), so [limit, limit + access_bytes) is always inside them.
+    const u32 limit{shared_memory_size >= access_bytes ? shared_memory_size - access_bytes : 0U};
+    return OpUMin(U32[1], offset, Const(limit));
+}
+
 void EmitContext::DefineCommonTypes(const Info& info) {
     void_id = TypeVoid();
 
@@ -608,6 +618,8 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
     if (program.shared_memory_size == 0) {
         return;
     }
+    robust_shared_memory = program.robust_shared_memory;
+    shared_memory_size = program.shared_memory_size;
     const auto make{[&](Id element_type, u32 element_size) {
         const u32 num_elements{Common::DivCeil(program.shared_memory_size, element_size)};
         const Id array_type{TypeArray(element_type, Const(num_elements))};

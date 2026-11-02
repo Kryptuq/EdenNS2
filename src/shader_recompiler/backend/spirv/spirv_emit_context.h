@@ -173,6 +173,10 @@ public:
     [[nodiscard]] Id BitOffset8(const IR::Value& offset);
     [[nodiscard]] Id BitOffset16(const IR::Value& offset);
 
+    /// Byte offset of a shared memory access of `access_bytes`, clamped into the shared memory
+    /// size when the program asks for robust shared memory; the offset itself otherwise.
+    [[nodiscard]] Id SharedOffset(Id offset, u32 access_bytes);
+
     Id Const(u32 value) {
         return Constant(U32[1], value);
     }
@@ -312,6 +316,8 @@ public:
     Id local_memory{};
 
     bool uses_explicit_workgroup_layout{};
+    bool robust_shared_memory{};
+    u32 shared_memory_size{};
     Id shared_memory_u8{};
     Id shared_memory_u16{};
     Id shared_memory_u32{};

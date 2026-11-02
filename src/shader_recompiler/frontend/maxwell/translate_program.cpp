@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <bitset>
 #include <memory>
@@ -12,6 +13,7 @@
 #include <vector>
 #include <queue>
 
+#include "common/logging.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
@@ -25,6 +27,20 @@
 
 namespace Shader::Maxwell {
 namespace {
+// NS2: lowered Switch 2 compute shaders get shared memory addresses clamped into the declared
+// size (EDEN_NS2_ROBUST_SHARED=0 turns it off).
+bool RobustNativeSharedMemory() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NS2_ROBUST_SHARED");
+        const bool on = !(value && value[0] == '0');
+        LOG_INFO(Shader, "NS2: shared memory addresses of native compute shaders are {}",
+                 on ? "clamped into the shared memory size (EDEN_NS2_ROBUST_SHARED=0 turns it off)"
+                    : "not clamped (EDEN_NS2_ROBUST_SHARED=0)");
+        return on;
+    }();
+    return enabled;
+}
+
 IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     size_t num_syntax_blocks{};
     for (const auto& node : syntax_list) {
@@ -367,6 +383,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     case Stage::Compute:
         program.workgroup_size = env.WorkgroupSize();
         program.shared_memory_size = env.SharedMemorySize();
+        program.robust_shared_memory = env.IsNativeProgram() && RobustNativeSharedMemory();
         break;
     default:
         break;

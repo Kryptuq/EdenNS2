@@ -6,6 +6,7 @@
 // can be validated (spirv-val) without the game or a GPU. Set NS2_PIPELINE_CACHE to a copy of the
 // cache file and NS2_SPIRV_OUT to the output directory; skipped otherwise.
 
+#include <algorithm>
 #include <unordered_map>
 #include <cstring>
 #include <cstdlib>
@@ -343,4 +344,102 @@ TEST_CASE("NS2 native geometry shader", "[video_core][ns2-lower-gs]") {
     fmt::print("geometry shader: {} lowered instructions, {} SPIR-V words, output topology {}, max vertices {}\n",
                lowered.instructions.size(), code.size(), static_cast<u32>(program.output_topology),
                program.output_vertices);
+}
+
+namespace {
+// Maxwell compute program: S2R R1, SR_TID.X; LDS.32 R3, [R1]; STS.32 [R1 + 0x10], R3;
+// STS.64 [R1 + 0x20], R2; EXIT, with scheduling words at every 32-byte boundary.
+class SharedComputeEnvironment final : public Shader::Environment {
+public:
+    explicit SharedComputeEnvironment(bool native_) : native{native_} {
+        const std::array<u64, 5> instructions{
+            0xf0c8000000000000ULL | (0x21ULL << 20) | 1,           // S2R R1, SR_TID.X
+            0xef4c000000000000ULL | (1ULL << 8) | 3,               // LDS.32 R3, [R1]
+            0xef5c000000000000ULL | (0x10ULL << 20) | (1ULL << 8) | 3, // STS.32 [R1 + 0x10], R3
+            0xef5d000000000000ULL | (0x20ULL << 20) | (1ULL << 8) | 2, // STS.64 [R1 + 0x20], R2
+            0xe30000000007000fULL,                                 // EXIT
+        };
+        for (const u64 instruction : instructions) {
+            if (code.size() % 4 == 0) code.push_back(0);
+            code.push_back(instruction);
+        }
+        code.push_back(0xe30000000007000fULL);
+        stage = Shader::Stage::Compute;
+        start_address = 0;
+    }
+    u64 ReadInstruction(u32 address) override {
+        return address / 8 < code.size() ? code[address / 8] : 0;
+    }
+    bool IsNativeProgram() const override { return native; }
+    u32 ReadCbufValue(u32, u32) override { return 0; }
+    Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override {
+        return Shader::TexturePixelFormat::A8B8G8R8_UNORM;
+    }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    u32 ReadViewportTransformState() override { return 0; }
+    u32 TextureBoundBuffer() const override { return 0; }
+    u32 LocalMemorySize() const override { return 0; }
+    u32 SharedMemorySize() const override { return 6912; }
+    std::array<u32, 3> WorkgroupSize() const override { return {16, 16, 1}; }
+    bool HasHLEMacroState() const override { return false; }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override { return std::nullopt; }
+    void Dump(u64, u64) override {}
+
+private:
+    std::vector<u64> code;
+    bool native;
+};
+
+// Limits of GLSL.std.450 UMin instructions in a module.
+std::vector<u32> UMinLimits(const std::vector<u32>& code) {
+    std::unordered_map<u32, u32> constants;
+    std::vector<std::pair<u32, u32>> umins; // operand ids
+    for (size_t i = 5; i < code.size();) {
+        const u32 count = code[i] >> 16;
+        const u32 opcode = code[i] & 0xffff;
+        if (count == 0) break;
+        if (opcode == 43 && count == 4) constants[code[i + 2]] = code[i + 3]; // OpConstant
+        if (opcode == 12 && count == 7 && code[i + 4] == 38) umins.emplace_back(code[i + 5], code[i + 6]);
+        i += count;
+    }
+    std::vector<u32> limits;
+    for (const auto& [x, y] : umins) {
+        const auto it = constants.find(y);
+        limits.push_back(it == constants.end() ? ~0U : it->second);
+    }
+    return limits;
+}
+} // namespace
+
+TEST_CASE("Native compute shaders clamp shared memory addresses into the shared size", "[video_core][ns2-shared]") {
+    const auto host_info = MakeHostInfo();
+    for (const bool explicit_layout : {true, false}) {
+        auto profile = MakeProfile();
+        profile.support_explicit_workgroup_layout = explicit_layout;
+        for (const bool native : {true, false}) {
+            SharedComputeEnvironment env{native};
+            Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block;
+            Shader::ObjectPool<Shader::IR::Inst> inst;
+            Shader::ObjectPool<Shader::IR::Block> block;
+            Shader::Maxwell::Flow::CFG cfg{env, flow_block, env.StartAddress()};
+            auto program = Shader::Maxwell::TranslateProgram(inst, block, env, cfg, host_info);
+            REQUIRE(program.robust_shared_memory == native);
+            Shader::Backend::Bindings binding;
+            const auto code = Shader::Backend::SPIRV::EmitSPIRV(profile, {}, program, binding);
+            if (const char* out = std::getenv("NS2_SPIRV_OUT")) {
+                std::filesystem::create_directories(out);
+                Write(std::filesystem::path{out} / fmt::format("shared_{}_{}.spv", explicit_layout, native), code);
+            }
+            auto limits = UMinLimits(code);
+            std::ranges::sort(limits);
+            INFO("explicit layout " << explicit_layout << " native " << native);
+            if (native) {
+                // One clamp per access: the 32-bit load and store, and the 64-bit store.
+                REQUIRE(limits == std::vector<u32>{6904, 6908, 6908});
+            } else {
+                REQUIRE(limits.empty());
+            }
+        }
+    }
 }

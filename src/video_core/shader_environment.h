@@ -65,6 +65,10 @@ public:
         return native_source_size;
     }
 
+    [[nodiscard]] bool IsNativeProgram() const override {
+        return native_source_size != 0;
+    }
+
     [[nodiscard]] bool CanBeSerialized() const noexcept;
 
     [[nodiscard]] u64 CalculateHash() const;
@@ -186,6 +190,9 @@ public:
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
     [[nodiscard]] std::span<const Shader::IR::RegisterRemap> RegisterRemaps(u32 address) const override;
+
+    /// Cached native programs end with the native address map.
+    [[nodiscard]] bool IsNativeProgram() const override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 

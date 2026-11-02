@@ -26,6 +26,9 @@ struct Program {
     u32 invocations{};
     u32 local_memory_size{};
     u32 shared_memory_size{};
+    /// Clamp shared memory addresses into the declared size (lowered Switch 2 compute shaders):
+    /// out-of-range shared accesses fault on some host GPUs instead of being ignored.
+    bool robust_shared_memory{};
     bool is_geometry_passthrough{};
 };
 
