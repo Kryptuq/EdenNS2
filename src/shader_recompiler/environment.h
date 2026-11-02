@@ -7,12 +7,14 @@
 #pragma once
 
 #include <array>
+#include <span>
 #include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/shader_info.h"
 #include "shader_recompiler/stage.h"
+#include "shader_recompiler/frontend/ir/reg.h"
 #include "shader_recompiler/frontend/ir/value.h"
 
 namespace Shader::IR {
@@ -75,6 +77,12 @@ public:
     [[nodiscard]] virtual u64 ReadInstruction(u32 address) = 0;
 
     [[nodiscard]] virtual u32 TranslateProgramAddress(u32 address) const { return address; }
+
+    /// Register redirections for the instruction at `address` (lowered native programs).
+    [[nodiscard]] virtual std::span<const IR::RegisterRemap> RegisterRemaps(u32 address) const {
+        (void)address;
+        return {};
+    }
 
     [[nodiscard]] virtual u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) = 0;
 

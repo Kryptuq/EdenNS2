@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <unordered_map>
 #include <filesystem>
 #include <iosfwd>
 #include <limits>
@@ -48,6 +49,7 @@ public:
     [[nodiscard]] u64 ReadInstruction(u32 address) final;
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
+    [[nodiscard]] std::span<const Shader::IR::RegisterRemap> RegisterRemaps(u32 address) const override;
 
     [[nodiscard]] std::optional<u64> Analyze();
 
@@ -88,6 +90,7 @@ protected:
     GPUVAddr program_base{};
 
     std::vector<u64> code;
+    std::unordered_map<u32, std::vector<Shader::IR::RegisterRemap>> register_remaps;
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;
@@ -182,6 +185,7 @@ public:
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
+    [[nodiscard]] std::span<const Shader::IR::RegisterRemap> RegisterRemaps(u32 address) const override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
@@ -212,6 +216,7 @@ public:
 
 private:
     std::vector<u64> code;
+    std::unordered_map<u32, std::vector<Shader::IR::RegisterRemap>> register_remaps;
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;

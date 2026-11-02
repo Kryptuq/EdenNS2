@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/ns2_draw_stats.h"
 #include "video_core/shader_notify.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -219,6 +220,26 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    if (VideoCommon::NS2Draw::FrameTraceActive()) {
+        // Images in descriptor order: texture buffers, image buffers, sampled, storage ("w" written).
+        std::string described;
+        size_t view_index = 0;
+        const auto describe = [&](size_t count, const char* kind, bool written) {
+            for (size_t i = 0; i < count && view_index < views.size(); ++i, ++view_index) {
+                described += fmt::format(" {}{}:{}", kind, written ? "w" : "",
+                                         texture_cache.DescribeImageView(views[view_index].id));
+            }
+        };
+        for (const auto& desc : info.texture_buffer_descriptors) describe(desc.count, "tb", false);
+        for (const auto& desc : info.image_buffer_descriptors) describe(desc.count, "ib", desc.is_written);
+        for (const auto& desc : info.texture_descriptors) describe(desc.count, "t", false);
+        for (const auto& desc : info.image_descriptors) describe(desc.count, "i", desc.is_written);
+        u32 written_buffers = 0;
+        for (const auto& desc : info.storage_buffers_descriptors) written_buffers += desc.is_written ? 1 : 0;
+        LOG_INFO(Render_Vulkan, "NS2 frame trace:   uses {} storage buffers ({} written), shared {} bytes,{}",
+                 info.storage_buffers_descriptors.size(), written_buffers, kepler_compute.launch_description.shared_alloc.Value(),
+                 described.empty() ? std::string{" no images"} : described);
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};

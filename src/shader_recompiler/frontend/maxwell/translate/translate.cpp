@@ -18,6 +18,7 @@ void Translate(Environment& env, IR::Block* block, u32 location_begin, u32 locat
         TranslatorVisitor visitor{env, *block};
         for (Location pc = location_begin; pc != location_end; ++pc) {
             u64 const insn = env.ReadInstruction(pc.Offset());
+            visitor.ir.register_remap = env.RegisterRemaps(pc.Offset());
             Opcode const opcode = Decode(insn);
             switch (opcode) {
 #define INST(name, cute, mask) case Opcode::name: visitor.name(insn); break;

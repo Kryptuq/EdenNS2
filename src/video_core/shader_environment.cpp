@@ -171,6 +171,11 @@ u64 GenericEnvironment::ReadInstruction(u32 address) {
     return gpu_memory->Read<u64>(program_base + address);
 }
 
+std::span<const Shader::IR::RegisterRemap> GenericEnvironment::RegisterRemaps(u32 address) const {
+    const auto it = register_remaps.find(address);
+    return it == register_remaps.end() ? std::span<const Shader::IR::RegisterRemap>{} : it->second;
+}
+
 u32 GenericEnvironment::TranslateProgramAddress(u32 address) const {
     if (const auto translated = Shader::Ampere::NativeProgramAddress(code, address)) return *translated;
     if (native_source_size || Shader::Ampere::HasNativeAddressMap(code))
@@ -461,14 +466,35 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         }
         code.push_back(instruction);
     }
-    // Keep the original padding ABI, then retain the native address map as
-    // unreachable data. Existing disk-cache serialization carries it with code.
+    // Keep the original padding ABI, then retain the register redirections and the native
+    // address map as unreachable data. Existing disk-cache serialization carries them with code.
     code.push_back(0);
+    std::vector<std::pair<u32, Shader::IR::RegisterRemap>> remaps;
+    for (const auto& range : lowered.register_remaps) {
+        for (u32 index = range.first; index < range.last; ++index) {
+            remaps.emplace_back(0x50U + index * 8 + ((index + 1) / 3) * 8,
+                                Shader::IR::RegisterRemap{range.from, range.to});
+        }
+    }
+    Shader::Ampere::AppendNativeRegisterRemaps(code, remaps);
     Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
+    register_remaps = Shader::Ampere::NativeRegisterRemaps(code);
     cached_lowest = 0;
     cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
     LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
              program_base, native_source_size, lowered.instructions.size());
+    {
+        // Warp matrix emulation (DLSS-style kernels) and register renaming, for diagnosing them.
+        size_t multiplies = 0, matrix_loads = 0;
+        for (const u64 instruction : lowered.instructions) {
+            multiplies += (instruction >> 51) == (0xe100000000000000ULL >> 51) ? 1 : 0;
+            matrix_loads += (instruction >> 51) == (0xe108000000000000ULL >> 51) ? 1 : 0;
+        }
+        if (multiplies || matrix_loads || !lowered.register_remaps.empty()) {
+            LOG_INFO(Shader, "NS2 native shader at {:#x}: {} matrix multiplies, {} matrix loads, {} renamed registers",
+                     program_base, multiplies, matrix_loads, lowered.register_remaps.size());
+        }
+    }
 }
 
 // Diagnostics: logs the code of native shader stages that cannot be translated yet (geometry
@@ -716,6 +742,7 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         .read(reinterpret_cast<char*>(&stage), sizeof(stage));
     code.resize(Common::DivCeil(code_size, sizeof(u64)));
     file.read(reinterpret_cast<char*>(code.data()), code_size);
+    register_remaps = Shader::Ampere::NativeRegisterRemaps(code);
     for (size_t i = 0; i < num_texture_types; ++i) {
         u32 key;
         Shader::TextureType type;
@@ -760,6 +787,11 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
 
 void FileEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
+}
+
+std::span<const Shader::IR::RegisterRemap> FileEnvironment::RegisterRemaps(u32 address) const {
+    const auto it = register_remaps.find(address);
+    return it == register_remaps.end() ? std::span<const Shader::IR::RegisterRemap>{} : it->second;
 }
 
 u32 FileEnvironment::TranslateProgramAddress(u32 address) const {
