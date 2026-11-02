@@ -220,7 +220,13 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
-    if (VideoCommon::NS2Draw::FrameTraceActive()) {
+    // NS2 diagnostics: the resources of the first runs of every native compute pipeline, so the
+    // inputs of a dispatch that faults or hangs the host GPU are in the log.
+    const bool native_first_runs = kepler_compute.IsNativeMode() && ns2_traced_runs < 3;
+    if (native_first_runs) {
+        ++ns2_traced_runs;
+    }
+    if (VideoCommon::NS2Draw::FrameTraceActive() || native_first_runs) {
         // Images in descriptor order: texture buffers, image buffers, sampled, storage ("w" written).
         std::string described;
         size_t view_index = 0;
@@ -236,9 +242,27 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         for (const auto& desc : info.image_descriptors) describe(desc.count, "i", desc.is_written);
         u32 written_buffers = 0;
         for (const auto& desc : info.storage_buffers_descriptors) written_buffers += desc.is_written ? 1 : 0;
-        LOG_INFO(Render_Vulkan, "NS2 frame trace:   uses {} storage buffers ({} written), shared {} bytes,{}",
-                 info.storage_buffers_descriptors.size(), written_buffers, kepler_compute.launch_description.shared_alloc.Value(),
-                 described.empty() ? std::string{" no images"} : described);
+        if (VideoCommon::NS2Draw::FrameTraceActive()) {
+            LOG_INFO(Render_Vulkan, "NS2 frame trace:   uses {} storage buffers ({} written), shared {} bytes,{}",
+                     info.storage_buffers_descriptors.size(), written_buffers, kepler_compute.launch_description.shared_alloc.Value(),
+                     described.empty() ? std::string{" no images"} : described);
+        }
+        if (native_first_runs) {
+            // Storage buffers as the guest describes them: 64-bit address and 32-bit size in a cbuf.
+            std::string buffers;
+            for (const auto& desc : info.storage_buffers_descriptors) {
+                const GPUVAddr descriptor{cbufs[desc.cbuf_index].Address() + desc.cbuf_offset};
+                buffers += fmt::format(" sb{}:{:#x}+{:#x}", desc.is_written ? "w" : "",
+                                       gpu_memory.Read<u64>(descriptor), gpu_memory.Read<u32>(descriptor + 8));
+            }
+            LOG_INFO(Render_Vulkan,
+                     "NS2 dispatch resources (run {}, pipeline {:016x}, shader {:#x}, grid {}x{}x{}, block {}x{}x{}, shared {}):{}{}",
+                     ns2_traced_runs, shader_hash, kepler_compute.regs.code_loc.Address() + qmd.program_start,
+                     qmd.grid_dim_x.Value(), qmd.grid_dim_y.Value(), qmd.grid_dim_z.Value(),
+                     qmd.block_dim_x.Value(), qmd.block_dim_y.Value(), qmd.block_dim_z.Value(),
+                     qmd.shared_alloc.Value(), buffers.empty() ? std::string{" no storage buffers"} : buffers,
+                     described.empty() ? std::string{" no images"} : described);
+        }
     }
 
     buffer_cache.UnbindComputeTextureBuffers();

@@ -63,6 +63,7 @@ private:
     DescriptorBufferRing& descriptor_buffer_ring;
     Shader::Info info;
     u64 shader_hash{};
+    u32 ns2_traced_runs{}; ///< NS2 diagnostics: resources are logged for the first runs.
     u32 num_descriptor_entries{};
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};

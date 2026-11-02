@@ -896,9 +896,66 @@ VkFormat Device::GetSupportedFormat(VkFormat wanted_format, VkFormatFeatureFlags
 
 void Device::ReportLoss() const {
     LOG_CRITICAL(Render_Vulkan, "Device loss occurred!");
+    LogDeviceFault("device loss");
 
     // Wait for the log to flush and for Nsight Aftermath to dump the results
     std::this_thread::sleep_for(std::chrono::seconds{15});
+}
+
+bool Device::LogDeviceFault(const char* context) const {
+    if (!SupportsDeviceFaultReports()) {
+        LOG_ERROR(Render_Vulkan, "Device fault report ({}): not supported by the driver", context);
+        return false;
+    }
+    VkDeviceFaultCountsEXT counts{.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    VkResult result = logical.GetFaultInfo(&counts, nullptr);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        LOG_ERROR(Render_Vulkan, "Device fault report ({}): query failed ({})", context, static_cast<int>(result));
+        return false;
+    }
+    std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+    std::vector<VkDeviceFaultVendorInfoEXT> vendor(counts.vendorInfoCount);
+    counts.vendorBinarySize = 0;
+    VkDeviceFaultInfoEXT info{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+        .pNext = nullptr,
+        .description = {},
+        .pAddressInfos = addresses.empty() ? nullptr : addresses.data(),
+        .pVendorInfos = vendor.empty() ? nullptr : vendor.data(),
+        .pVendorBinaryData = nullptr,
+    };
+    result = logical.GetFaultInfo(&counts, &info);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        LOG_ERROR(Render_Vulkan, "Device fault report ({}): query failed ({})", context, static_cast<int>(result));
+        return false;
+    }
+    if (info.description[0] == '\0' && counts.addressInfoCount == 0 && counts.vendorInfoCount == 0) {
+        return false;
+    }
+    const auto address_type = [](VkDeviceFaultAddressTypeEXT type) {
+        switch (type) {
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "none";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "invalid read";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "invalid write";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "invalid execute";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "instruction pointer (unknown)";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "instruction pointer (invalid)";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "instruction pointer (fault)";
+        default: return "other";
+        }
+    };
+    LOG_ERROR(Render_Vulkan, "Device fault report ({}): \"{}\", {} addresses, {} vendor entries",
+              context, info.description, counts.addressInfoCount, counts.vendorInfoCount);
+    for (u32 i = 0; i < counts.addressInfoCount; ++i) {
+        LOG_ERROR(Render_Vulkan, "Device fault report:   address {:#x} (precision {:#x}): {}",
+                  addresses[i].reportedAddress, addresses[i].addressPrecision,
+                  address_type(addresses[i].addressType));
+    }
+    for (u32 i = 0; i < counts.vendorInfoCount; ++i) {
+        LOG_ERROR(Render_Vulkan, "Device fault report:   vendor \"{}\" code {:#x} data {:#x}",
+                  vendor[i].description, vendor[i].vendorFaultCode, vendor[i].vendorFaultData);
+    }
+    return true;
 }
 
 void Device::SaveShader(std::span<const u32> spirv) const {
@@ -1046,6 +1103,12 @@ bool Device::GetSuitability(bool requires_swapchain) {
     FOR_EACH_VK_FEATURE_EXT(FEATURE_EXTENSION);
     FOR_EACH_VK_EXTENSION(EXTENSION);
 
+    // Device fault reports for GPU hang/crash diagnostics.
+    if (supported_extensions.contains(VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+        loaded_extensions.insert(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        extensions.device_fault = true;
+    }
+
     extensions.depth_stencil_resolve =
         extensions.depth_stencil_resolve &&
         (instance_version >= VK_API_VERSION_1_2 || extensions.create_renderpass2);
@@ -1124,6 +1187,10 @@ bool Device::GetSuitability(bool requires_swapchain) {
 
     FOR_EACH_VK_FEATURE_1_1(FEATURE);
     FOR_EACH_VK_FEATURE_EXT(EXT_FEATURE);
+    if (extensions.device_fault) {
+        features.device_fault.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
+        SetNext(next, features.device_fault);
+    }
     if (instance_version >= VK_API_VERSION_1_2) {
         FOR_EACH_VK_FEATURE_1_2(FEATURE);
     } else {
@@ -1140,6 +1207,8 @@ bool Device::GetSuitability(bool requires_swapchain) {
 
     // Perform the feature test.
     physical.GetFeatures2(features2);
+    // Fault reports are only used for their description and addresses.
+    features.device_fault.deviceFaultVendorBinary = VK_FALSE;
 
     // Base Vulkan 1.0 features are always valid regardless of instance version.
     features.features = features2.features;

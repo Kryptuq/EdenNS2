@@ -88,6 +88,8 @@ private:
     u64 stuck_id = 0;
     u64 stuck_since_ms = 0;
     bool device_lost = false;
+    bool stuck_reported = false;
+    bool fault_logged = false;
     u32 slow_logged = 0;
 
     std::unordered_map<u64, Totals> totals;

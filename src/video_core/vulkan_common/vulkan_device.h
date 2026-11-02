@@ -698,6 +698,15 @@ FN_MAX_LIMIT_LIST
         return features.host_query_reset.hostQueryReset != VK_FALSE;
     }
 
+    /// Returns true if the driver reports device faults (VK_EXT_device_fault).
+    bool SupportsDeviceFaultReports() const {
+        return extensions.device_fault && features.device_fault.deviceFault != VK_FALSE;
+    }
+
+    /// Logs the driver's description of a device fault (VK_EXT_device_fault) as errors. Returns
+    /// true when the driver reported anything.
+    bool LogDeviceFault(const char* context) const;
+
     /// Nanoseconds per timestamp tick (NS2 GPU timing diagnostics).
     float GetTimestampPeriod() const {
         return properties.properties.limits.timestampPeriod;
@@ -1181,6 +1190,8 @@ private:
 
 #undef EXTENSION
 #undef FEATURE
+        // VK_EXT_device_fault (its feature struct name does not follow the FEATURE macro pattern).
+        bool device_fault{};
     };
 
     struct Features {
@@ -1198,6 +1209,7 @@ private:
 #undef FEATURE_CORE
 #undef FEATURE_EXT
 
+        VkPhysicalDeviceFaultFeaturesEXT device_fault{};
         VkPhysicalDeviceFeatures features{};
     };
 
