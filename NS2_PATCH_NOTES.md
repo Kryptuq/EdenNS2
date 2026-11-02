@@ -457,3 +457,8 @@ Build 94 frame trace (gameplay frame, 1067 draws): the scene draws run. The fina
 - Native geometry shaders are no longer rejected.
 - Verified offline with the dumped shader ([ns2-lower-gs], NS2_NATIVE_SHADER=<dump with native header>): valid SPIR-V geometry shader, triangles in, triangle strip out, 3 x (position, attribute 0 xy, gl_Layer = attribute 1 x), EmitStreamVertex each. Unit tests for the new lowerings in [native-shader].
 - Frame trace now marks render targets declared as 3D ("(3D)"), to see whether the LUT is rendered as a 3D image or as a 2D array aliasing it.
+
+## Build 96
+Build 95 results (user): gameplay renders with textures. In a later area the screen shows a red/yellow gradient with green blocks: the final colour pass samples a 1920x1080 image (0x1b5b4b0000) that DLSS (nvnDlss*/NGX, tensor-core network kernels using HMMA/LDSM) should produce; those compute shaders are rejected. Option A (make the game use its non-DLSS upscaler) is being investigated; nothing changed for it yet.
+- Remaining movie flicker: in the last three logs, 36 of 37 wrong copies coincide with a channel 3 list classified as "completed in place". The GPU thread read the list while nn::movie was recording the next copy into it, before submitting it, so no later submission had claimed the new contents yet.
+- Now, when a change is not claimed and the list's memory has a history of reuse (at least 8 claimed changes and more than 4x as many claimed as unclaimed; the movie list is ~1000:16), the GPU thread waits up to 2 ms for the claiming submission before treating the change as completed in place. Channel 1 placeholder lists have no reuse history and never wait. Logged as "waited for a submission N". Unit test: [ns2-submissions] reuse history.
