@@ -143,20 +143,29 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
-    if (should_pass_arguments && !Settings::values.program_args.GetValue().empty()) {
-        const auto arg_data{Settings::values.program_args.GetValue()};
-
-        codeset.DataSegment().size += NSO_ARGUMENT_DATA_ALLOCATION_SIZE;
-        NSOArgumentHeader args_header{NSO_ARGUMENT_DATA_ALLOCATION_SIZE, static_cast<u32_le>(arg_data.size()), {}};
-        const auto end_offset = codeset.memory.size();
-        codeset.memory.resize(u32(codeset.memory.size()) + NSO_ARGUMENT_DATA_ALLOCATION_SIZE);
-        std::memcpy(codeset.memory.data() + end_offset, &args_header, sizeof(NSOArgumentHeader));
-        std::memcpy(codeset.memory.data() + end_offset + sizeof(NSOArgumentHeader), arg_data.data(), arg_data.size());
-    }
-
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
     u32 image_size = PageAlignSize(u32(codeset.memory.size()) + nso_header.segments[2].bss_size);
     codeset.memory.resize(image_size);
+
+    // Like the HOS loader, place the arguments right after the page-aligned image (after .bss):
+    // rtld clears its .bss and hands nnosInitialize the address module_base + image size.
+    if (should_pass_arguments && !Settings::values.program_args.GetValue().empty()) {
+        const auto arg_data{Settings::values.program_args.GetValue()};
+        const size_t max_size = NSO_ARGUMENT_DATA_ALLOCATION_SIZE - sizeof(NSOArgumentHeader) - 1;
+        const size_t arg_size = (std::min)(arg_data.size(), max_size);
+
+        NSOArgumentHeader args_header{NSO_ARGUMENT_DATA_ALLOCATION_SIZE, static_cast<u32_le>(arg_size), {}};
+        const u32 args_offset = image_size;
+        image_size += NSO_ARGUMENT_DATA_ALLOCATION_SIZE;
+        codeset.memory.resize(image_size);
+        std::memcpy(codeset.memory.data() + args_offset, &args_header, sizeof(NSOArgumentHeader));
+        std::memcpy(codeset.memory.data() + args_offset + sizeof(NSOArgumentHeader), arg_data.data(), arg_size);
+        codeset.DataSegment().size = static_cast<u32>(image_size - codeset.DataSegment().offset);
+        if (load_into_process) {
+            LOG_INFO(Loader, "Passing program arguments at module offset {:#x}: {}", args_offset - module_start,
+                     arg_data.substr(0, arg_size));
+        }
+    }
 
     for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
         codeset.segments[i].size = PageAlignSize(codeset.segments[i].size);

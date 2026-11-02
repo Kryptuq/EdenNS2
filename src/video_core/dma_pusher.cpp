@@ -172,7 +172,7 @@ bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHea
         // moment later (nn::movie: record, then submit). Memory with a history of reuse gets a
         // short grace period for that submission to arrive before the change counts as completed
         // in place; reading it now ran the next frame's copy (the remaining movie flicker).
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{2};
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{10};
         while (!reused && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
             memory_manager.ReadBlockUnsafe(address, live_headers.data(), bytes);
