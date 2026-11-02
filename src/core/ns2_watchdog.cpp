@@ -67,6 +67,7 @@ void NS2Watchdog::Run(std::stop_token stop_token) {
         // GPU timing diagnostics: report native work the host GPU has not finished (hangs) and
         // slow dispatches, independent of whether frames are still presented.
         Common::NS2Watch::RunGpuPoll();
+        Common::NS2Watch::CheckCrashReport();
         const u64 presented = Common::NS2Watch::g_present_count.load();
         const u64 now = Common::NS2Watch::NowMs();
         if (snapshots < 5 && now >= next_snapshot) {
