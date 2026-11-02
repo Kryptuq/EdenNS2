@@ -6,6 +6,7 @@
 // can be validated (spirv-val) without the game or a GPU. Set NS2_PIPELINE_CACHE to a copy of the
 // cache file and NS2_SPIRV_OUT to the output directory; skipped otherwise.
 
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -138,6 +139,10 @@ public:
     bool HasHLEMacroState() const override { return false; }
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override { return std::nullopt; }
     void Dump(u64, u64) override {}
+    void SetHeader(const void* header) {
+        std::memcpy(code.data(), header, sizeof(Shader::ProgramHeader));
+        std::memcpy(&sph, header, sizeof(sph));
+    }
 
 private:
     std::vector<u64> code;
@@ -277,4 +282,54 @@ TEST_CASE("NS2 native lowering", "[video_core][ns2-lower]") {
             fmt::print("{}: translation failed: {}\n", name, e.what());
         }
     }
+}
+
+// Translates one dumped native geometry shader (native header followed by code, as logged by
+// "NS2 native dump") through the lowering and the Maxwell frontend into SPIR-V.
+TEST_CASE("NS2 native geometry shader", "[video_core][ns2-lower-gs]") {
+    const char* path = std::getenv("NS2_NATIVE_SHADER");
+    const char* out = std::getenv("NS2_SPIRV_OUT");
+    if (!path || !out) {
+        SKIP("NS2_NATIVE_SHADER/NS2_SPIRV_OUT not set");
+    }
+    std::ifstream file(path, std::ios::binary);
+    std::vector<u8> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    constexpr size_t NativeHeaderSize = 0x80;
+    REQUIRE(bytes.size() > NativeHeaderSize);
+    std::vector<Shader::Ampere::Instruction> native((bytes.size() - NativeHeaderSize) / sizeof(Shader::Ampere::Instruction));
+    std::memcpy(native.data(), bytes.data() + NativeHeaderSize, native.size() * sizeof(Shader::Ampere::Instruction));
+    // The program ends at its trailing self-branch.
+    for (size_t i = 0; i < native.size(); ++i) {
+        if ((native[i].words[0] & 0xfff) == 0x947 && native[i].words[1] == 0xfffffff0) {
+            native.resize(i + 1);
+            break;
+        }
+    }
+    const auto lowered = Shader::Ampere::LowerToMaxwell(native);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    LoweredEnvironment env{lowered, Shader::Stage::Geometry};
+    env.SetHeader(bytes.data());
+    const auto profile = MakeProfile();
+    const auto host_info = MakeHostInfo();
+    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block;
+    Shader::ObjectPool<Shader::IR::Inst> inst;
+    Shader::ObjectPool<Shader::IR::Block> block;
+    Shader::Maxwell::Flow::CFG cfg{env, flow_block, sizeof(Shader::ProgramHeader)};
+    auto program = Shader::Maxwell::TranslateProgram(inst, block, env, cfg, host_info);
+    Shader::RuntimeInfo info;
+    info.input_topology = Shader::InputTopology::Triangles;
+    // As written by the vertex shader that feeds it: position, generic 0 (xy) and 1 (x).
+    for (const auto attribute : {Shader::IR::Attribute::PositionX, Shader::IR::Attribute::PositionY,
+                                 Shader::IR::Attribute::PositionZ, Shader::IR::Attribute::PositionW,
+                                 Shader::IR::Attribute::Generic0X, Shader::IR::Attribute::Generic0Y,
+                                 Shader::IR::Attribute::Generic1X}) {
+        info.previous_stage_stores.Set(attribute);
+    }
+    Shader::Backend::Bindings binding;
+    const auto code = Shader::Backend::SPIRV::EmitSPIRV(profile, info, program, binding);
+    Write(std::filesystem::path{out} / "geometry.spv", code);
+    fmt::print("geometry shader: {} lowered instructions, {} SPIR-V words, output topology {}, max vertices {}\n",
+               lowered.instructions.size(), code.size(), static_cast<u32>(program.output_topology),
+               program.output_vertices);
 }

@@ -510,7 +510,10 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     initial_offset = sizeof(sph);
     texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
     if (maxwell3d->GetNativeMacroEngine().native_turing) {
-        if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel) {
+        // Geometry shaders are translated too (Unreal Engine renders 3D textures such as the
+        // colour grading LUT with one that routes each triangle to its slice).
+        if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Geometry &&
+            program != Maxwell::ShaderType::Pixel) {
             DumpRejectedNativeStage(*gpu_memory, program_base, static_cast<u32>(program));
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }

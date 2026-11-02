@@ -349,7 +349,9 @@ void RasterizerVulkan::TraceNativeDraw(VideoCommon::NS2Draw::Result result, bool
         const auto& rt = regs.rt[regs.rt_control.Map(index)];
         if (rt.Address() == 0) continue;
         targets += fmt::format(" rt{}={:#x}:{}x{}x{}{} fmt={:#x} layer={}", index, rt.Address(), rt.width, rt.height,
-                               rt.depth.Value(), rt.volume ? "v" : "", static_cast<u32>(rt.format), rt.base_layer);
+                               rt.depth.Value(),
+                               rt.tile_mode.dim_control == Tegra::Engines::Maxwell3D::Regs::TileMode::DimensionControl::DefineDepthSize ? "(3D)" : "",
+                               static_cast<u32>(rt.format), rt.base_layer);
     }
     if (regs.zeta_enable) {
         targets += fmt::format(" zeta={:#x}", regs.zeta.Address());

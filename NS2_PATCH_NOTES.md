@@ -449,3 +449,11 @@ Build 93 results (user): no freeze after the cutscene any more, the in-engine cu
 Logged now:
 - Every 1200 frames one whole frame: every draw with result, shader addresses per stage, render targets (address, size, depth/volume, format, layer), depth target, vertex/instance counts, and the images each drawn draw samples (address, size, layers, type, format).
 - The code of every rejected native shader stage (geometry shaders), 8 KiB once per address, for offline translation tests.
+
+## Build 95
+Build 94 frame trace (gameplay frame, 1067 draws): the scene draws run. The final colour pass (draw 1056) reads the scene (1400x788), bloom and a 32x32x32 colour grading LUT (0x8104900000, A2B10G10R10). The LUT is drawn just before (draws 1054/1055) by a vertex + geometry shader pair, and those draws were skipped (native geometry stage unsupported), so the LUT stayed empty and every pixel came out black; the UI is drawn afterwards and stayed visible. All 29 skipped draws in the frame use the same geometry shader (0x1a9d2fe400), also for three other volume textures (lighting/fog).
+- The geometry shader reads the 3 vertices of a triangle (ISBERD + ALD), copies position and one texture coordinate, sets the layer from a value the vertex shader passes (AST 0x64) and emits the triangle (OUT); its header has the Maxwell layout (triangle strip, 3 vertices).
+- Lowered now: ISBERD (0x923, field layout per Mesa NAK), OUT register form (0x324: emit/cut; OUT final dropped, the host stage ends the primitive at exit), IMAD.X RZ*RZ+Rc+Pp, S2R SR_INVOCATION_INFO (29). Dropped: 0x34e, 0x357, 0x957 (undocumented, operand-less; they set up the jump to the OUT-final epilogue via R0:R1, which are overwritten before any other use) - accepted only with all operand fields zero.
+- Native geometry shaders are no longer rejected.
+- Verified offline with the dumped shader ([ns2-lower-gs], NS2_NATIVE_SHADER=<dump with native header>): valid SPIR-V geometry shader, triangles in, triangle strip out, 3 x (position, attribute 0 xy, gl_Layer = attribute 1 x), EmitStreamVertex each. Unit tests for the new lowerings in [native-shader].
+- Frame trace now marks render targets declared as 3D ("(3D)"), to see whether the LUT is rendered as a 3D image or as a 2D array aliasing it.

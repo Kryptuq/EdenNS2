@@ -408,6 +408,16 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.Bits(64, 8)} << 20));
                 break;
             }
+            if (insn.Bits(24, 8) == 255 && insn.words[1] == 255 &&
+                (insn.words[2] & ~0x078000ffU) == 0x000e0400) {
+                // IMAD.X Rd, RZ, RZ, Rc, Pp: Rd = Rc + carry predicate (high word of a 64-bit add).
+                const u32 carry = insn.Bits(87, 3), carry_neg = insn.Bits(90, 1);
+                mov_imm(252, 1);
+                emit(0x5ca0000000000000ULL | predicate | 252 | (u64{252} << 8) | (u64{255} << 20) |
+                     (u64{carry} << 39) | (u64{carry_neg} << 42));
+                emit(base(0x5c10000000000000ULL) | (u64{insn.Bits(64, 8)} << 8) | (u64{252} << 20));
+                break;
+            }
             if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (insn.words[1] & ~0xffU))
                 return fail(index, "native integer register multiply mode");
             multiply_low(insn.Bits(24, 8), insn.Bits(32, 8), insn.Bits(64, 8), false);
@@ -1024,11 +1034,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (u64{width} << 48));
             break;
         }
-        case 0x919: case 0x9c3: { // S2R / S2UR thread and workgroup identities.
+        case 0x919: case 0x9c3: { // S2R / S2UR thread and workgroup identities, invocation info (29).
             const u32 special = insn.Bits(72, 8);
             if (insn.words[1] || insn.words[2] != (special << 8) ||
                 (special != 0 && special != 33 && special != 34 && special != 35 &&
-                 special != 37 && special != 38 && special != 39 &&
+                 special != 29 && special != 37 && special != 38 && special != 39 &&
                  special != 56 && special != 57 && special != 58 && special != 59 && special != 60))
                 return fail(index, "native special register");
             const u32 target = opcode == 0x9c3 ? uniform_register(static_cast<u32>(dest)) : static_cast<u32>(dest);
@@ -1589,6 +1599,43 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{source} << 20) | (u64{8 + insn.Bits(78, 2)} << 39) |
                  (u64{insn.Bits(80, 1)} << 44) | (u64{insn.Bits(63, 1)} << 45) |
                  (u64{insn.Bits(62, 1)} << 49));
+            break;
+        }
+        case 0x923: { // ISBERD: internal stage buffer entry read (geometry shader vertex lookup)
+            // Native: offset register 24-31, immediate 40-55, memory type 74-75 (U8, U16, B32),
+            // access 76-77 (map, patch, primitive, attribute), skew 78, output 79.
+            const u32 offset = insn.Bits(24, 8), immediate = insn.Bits(40, 16);
+            const u32 memory_type = insn.Bits(74, 2), access = insn.Bits(76, 2);
+            if (immediate > 0xff || memory_type > 2 || insn.Bits(32, 8) || insn.Bits(56, 8) ||
+                (insn.words[2] & ~0xff00U) || insn.Bits(64, 8))
+                return fail(index, "native internal stage buffer read mode");
+            emit(0xefd0000000000000ULL | predicate | dest | (u64{offset} << 8) | (u64{immediate} << 24) |
+                 (u64{insn.Bits(78, 1)} << 31) | (u64{insn.Bits(79, 1)} << 32) | (u64{access} << 33) |
+                 (u64{memory_type} << 36));
+            break;
+        }
+        case 0x324: { // OUT (register stream): emit and/or cut a geometry shader vertex
+            // Native: destination handle 16-23, handle 24-31, stream register 32-39, type 78-79
+            // (0 final, 1 emit, 2 cut, 3 emit then cut).
+            const u32 type = insn.Bits(78, 2);
+            if (insn.Bits(40, 24) || (insn.words[2] & ~0xc000U))
+                return fail(index, "native geometry output mode");
+            if (type == 0) {
+                // OUT final ends the primitive stream; the host stage does that at exit.
+                break;
+            }
+            emit(0xfbe0000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
+                 (u64{insn.Bits(32, 8)} << 20) | (u64{type & 1} << 39) | (u64{type >> 1} << 40));
+            break;
+        }
+        case 0x34e: case 0x357: case 0x957: {
+            // Undocumented geometry shader epilogue setup (not in Mesa NAK). Captured shaders read
+            // a 64-bit address into R0:R1 (0x34e), add the offset of the block that runs OUT final
+            // and 0x957, and hand it over (0x357) before overwriting R0/R1. That block only ends
+            // the primitive stream, which the host stage does at exit, so all three are dropped;
+            // only the encoding with all operand fields zero is accepted.
+            if ((insn.words[0] >> 16) || insn.words[1] || insn.words[2])
+                return fail(index, "native undocumented operation with operands");
             break;
         }
         case 0x321: // ALD
