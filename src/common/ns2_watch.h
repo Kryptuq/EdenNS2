@@ -61,6 +61,9 @@ void RunGpuPoll();
 /// a stack of return addresses) and every thread's current phase to `path` before the process
 /// dies. Eden's own log is written asynchronously and loses its last lines in a crash.
 void InstallCrashReport(const std::string& path);
+/// Installs the uncaught-exception report for the calling thread (per thread on MSVC; called by
+/// Common::SetCurrentThreadName, so every named thread has it).
+void InstallThreadTerminateHandler();
 /// Watchdog: re-installs the crash filter if another component replaced it (logged).
 void CheckCrashReport();
 

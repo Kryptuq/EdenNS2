@@ -119,7 +119,9 @@ class Exception final : public std::exception {
 public:
     /// Construct the exception with a result.
     /// @pre result != VK_SUCCESS
-    explicit Exception(VkResult result_) : result{result_} {}
+    explicit Exception(VkResult result_) : result{result_} {
+        LogCreation();
+    }
     virtual ~Exception() = default;
 
     const char* what() const noexcept override;
@@ -128,6 +130,10 @@ public:
     }
 
 private:
+    /// NS2 diagnostics: logs every Vulkan error raised as an exception (code and thread), since
+    /// one that is not caught ends the process without a trace.
+    void LogCreation() const;
+
     VkResult result;
 };
 

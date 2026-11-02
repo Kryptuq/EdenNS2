@@ -182,6 +182,37 @@ PhaseScope::~PhaseScope() {
 namespace {
 std::string g_crash_path;
 
+// Appends, unbuffered: every line is on disk at once, even if the process is killed while the
+// report is written, and a later report (abort() after std::terminate) does not erase an earlier one.
+FILE* OpenCrashFile() {
+    if (g_crash_path.empty()) {
+        return nullptr;
+    }
+    FILE* file = std::fopen(g_crash_path.c_str(), "a");
+    if (file) {
+        std::setvbuf(file, nullptr, _IONBF, 0);
+    }
+    return file;
+}
+
+// Text of the exception in flight on this thread, if any (also during std::terminate and the
+// abort() that follows it).
+std::string CurrentExceptionText() {
+    try {
+        if (const std::exception_ptr exception = std::current_exception()) {
+            try {
+                std::rethrow_exception(exception);
+            } catch (const std::exception& e) {
+                return std::string{"std::exception: "} + e.what();
+            } catch (...) {
+                return "non-standard exception";
+            }
+        }
+    } catch (...) {
+    }
+    return {};
+}
+
 #ifdef _WIN32
 void WritePhases(FILE* file) {
     std::fprintf(file, "crashing thread: %s\n", Common::GetCurrentThreadName().c_str());
@@ -216,9 +247,9 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
     if (written.exchange(true) || g_crash_path.empty()) {
         return g_previous_filter ? g_previous_filter(info) : EXCEPTION_CONTINUE_SEARCH;
     }
-    FILE* file = std::fopen(g_crash_path.c_str(), "w");
+    FILE* file = OpenCrashFile();
     if (!file) {
-        return EXCEPTION_CONTINUE_SEARCH;
+        return g_previous_filter ? g_previous_filter(info) : EXCEPTION_CONTINUE_SEARCH;
     }
     const EXCEPTION_RECORD* record = info->ExceptionRecord;
     std::fprintf(file, "exception %#lx at:\n", static_cast<unsigned long>(record->ExceptionCode));
@@ -296,9 +327,15 @@ LONG CALLBACK FirstChanceHandler(EXCEPTION_POINTERS* info) {
 
 void WriteCrashNote(const char* what) {
     const std::string thread = Common::GetCurrentThreadName();
-    if (!g_crash_path.empty()) {
-        if (FILE* file = std::fopen(g_crash_path.c_str(), "w")) {
-            std::fprintf(file, "%s in thread '%s'\nstack:\n", what, thread.c_str());
+    const std::string exception = CurrentExceptionText();
+    {
+        if (FILE* file = OpenCrashFile()) {
+            std::fprintf(file, "%s in thread '%s' (id %lu)\n", what, thread.c_str(),
+                         static_cast<unsigned long>(GetCurrentThreadId()));
+            if (!exception.empty()) {
+                std::fprintf(file, "exception in flight: %s\n", exception.c_str());
+            }
+            std::fprintf(file, "stack:\n");
             void* frames[64]{};
             const USHORT count = RtlCaptureStackBackTrace(1, 64, frames, nullptr);
             for (USHORT i = 0; i < count; ++i) {
@@ -308,7 +345,8 @@ void WriteCrashNote(const char* what) {
             std::fclose(file);
         }
     }
-    LOG_CRITICAL(Common, "NS2: {} in thread '{}' (stack in ns2_crash.txt)", what, thread);
+    LOG_CRITICAL(Common, "NS2: {} in thread '{}'{}{} (stack in ns2_crash.txt)", what, thread,
+                 exception.empty() ? "" : ", exception in flight: ", exception);
 }
 
 void AbortSignalHandler(int) {
@@ -371,29 +409,21 @@ namespace {
 // An uncaught C++ exception (for example a Vulkan call failing with VK_ERROR_DEVICE_LOST) ends the
 // process through std::terminate, which the crash filter above does not see.
 [[noreturn]] void TerminateHandler() {
-    std::string message = "std::terminate without an active exception";
-    if (const std::exception_ptr exception = std::current_exception()) {
-        try {
-            std::rethrow_exception(exception);
-        } catch (const std::exception& e) {
-            message = e.what();
-        } catch (...) {
-            message = "non-standard exception";
-        }
+    std::string message = CurrentExceptionText();
+    if (message.empty()) {
+        message = "std::terminate without an active exception";
     }
     const std::string thread = Common::GetCurrentThreadName();
+    if (FILE* file = OpenCrashFile()) {
+        std::fprintf(file, "uncaught C++ exception in thread '%s': %s\n", thread.c_str(),
+                     message.c_str());
+#ifdef _WIN32
+        WritePhases(file);
+#endif
+        std::fclose(file);
+    }
     // Critical messages are flushed to the log file immediately.
     LOG_CRITICAL(Common, "NS2: uncaught exception in thread '{}': {}", thread, message);
-    if (!g_crash_path.empty()) {
-        if (FILE* file = std::fopen(g_crash_path.c_str(), "w")) {
-            std::fprintf(file, "uncaught C++ exception in thread '%s': %s\n", thread.c_str(),
-                         message.c_str());
-#ifdef _WIN32
-            WritePhases(file);
-#endif
-            std::fclose(file);
-        }
-    }
     std::abort();
 }
 } // namespace
@@ -419,12 +449,19 @@ void CheckCrashReport() {
 #endif
 }
 
+void InstallThreadTerminateHandler() {
+    // MSVC keeps the terminate handler per thread: every thread has to install it.
+    std::set_terminate(TerminateHandler);
+}
+
 void InstallCrashReport(const std::string& path) {
     static std::atomic<bool> installed{false};
-    g_crash_path = path;
     if (installed.exchange(true)) {
+        g_crash_path = path;
         return;
     }
+    std::remove(path.c_str()); // reports are appended; start empty for this session
+    g_crash_path = path;
     std::set_terminate(TerminateHandler);
     std::atexit(ExitNote);
     std::at_quick_exit(ExitNote);
