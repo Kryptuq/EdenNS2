@@ -640,3 +640,10 @@ Root cause:
 Changed:
 - FP16 texture results are packed with the lower component in the low half (both lowering sites). New unit test checks the packing order.
 Verified: all 988 saved native programs still lower and translate; all tests pass except the 8 memory_tracker tests that fail on stock Eden too.
+
+## Build 113 (diagnostics only, no behaviour change)
+Build 112 results (user):
+- Colours in the upscaled area are correct with DLSS on. The user played a new game from the start (shader cache deleted) through the whole first section, including the upscaled area.
+- On the way into the next area the game froze again: compute pipeline bc1435f72b042b2c (shader 0x1b36ed4a00) was dispatched from QMD 0x1a9adf2800 with the grid 3207018886x45674x62575. Its grid words 12-14 read bf273986, bee0b26a, bf1df46f: three negative floats (about -0.65, -0.44, -0.62), while all other words are valid (QMD version, block 256x1x1, constant buffers including one right after the QMD, code address, dependent QMD). The same QMD address had been read 2510 times before with a normal grid (125x1x1); its previous read, 1 us earlier when it was scheduled, already held the garbage, and the memory was not written by the host GPU. So the garbage was in guest memory when the game scheduled the QMD. Who wrote it (the guest CPU, or a copy, inline upload or semaphore that Eden performed differently) is not known yet.
+Logged now:
+- Every QMD read and every copy-engine copy, inline upload and semaphore/report write that touches the grid words of a known QMD is kept in a per-QMD timeline (last 24 events, with the grid words in guest memory after each write and whether the copy source held data the host GPU wrote and Eden had not downloaded). For a QMD with an implausible grid the timeline is logged ("NS2: timeline of native QMD ..."). The first 16 engine writes over QMD grids and the first 16 grid changes without an engine write in between ("written by the guest CPU") are logged as information.

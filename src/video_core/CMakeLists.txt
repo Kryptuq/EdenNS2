@@ -255,6 +255,8 @@ add_library(video_core STATIC
     texture_cache/image_view_info.cpp
     ns2_draw_stats.cpp
     ns2_draw_stats.h
+    ns2_qmd_watch.cpp
+    ns2_qmd_watch.h
     texture_cache/image_view_info.h
     texture_cache/render_targets.h
     texture_cache/samples_helper.h

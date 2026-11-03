@@ -19,6 +19,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_query_trace.h"
+#include "video_core/ns2_qmd_watch.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
 #include "video_core/native_strict.h"
@@ -162,6 +163,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                 memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
                 native_qmd_read_address = address;
                 NoteNativeQmdRead(address, descriptor);
+                VideoCommon::NS2QmdWatch::NoteRead(address, {descriptor[12], descriptor[13], descriptor[14]}, false);
                 for (u32 slot = 0; slot < 2; ++slot) {
                     const u32 flags = descriptor[25 + slot * 4];
                     if (!(flags & (1U << 23))) continue;
@@ -368,6 +370,13 @@ void KeplerCompute::LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd) {
         LOG_WARNING(HW_GPU, "NS2: native QMD {:#x} had the same grid at its previous read ({} us earlier, {} reads so far)",
                     native_qmd_read_address, history.current.time_us - history.previous.time_us,
                     history.reads);
+    }
+    if (implausible) {
+        const std::string timeline = VideoCommon::NS2QmdWatch::History(native_qmd_read_address);
+        if (!timeline.empty()) {
+            LOG_ERROR(HW_GPU, "NS2: timeline of native QMD {:#x} (reads and GPU engine writes over its grid):{}",
+                      native_qmd_read_address, timeline);
+        }
     }
     if (implausible && implausible_logged.fetch_add(1) < 16) {
         LOG_ERROR(HW_GPU,
