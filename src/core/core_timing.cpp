@@ -96,6 +96,9 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
                     }
                     wait_set = false;
                 }
+                if (stop_token.stop_requested()) {
+                    break;
+                }
                 paused_set = true;
                 pause_event.Wait();
             }
@@ -304,11 +307,17 @@ std::optional<s64> CoreTiming::Advance() {
 
 void CoreTiming::Reset() {
     paused = true;
-    pause_event.Set();
-    event.Set();
     if (timer_thread.joinable()) {
+        // Request the stop before waking the thread. The events are consumed by the wake-up, so if
+        // the thread woke first it saw no stop request, consumed the signal, waited again and
+        // join() never returned (loading hung in Initialize -> Reset).
         timer_thread.request_stop();
+        pause_event.Set();
+        event.Set();
         timer_thread.join();
+    } else {
+        pause_event.Set();
+        event.Set();
     }
     has_started = false;
 }
