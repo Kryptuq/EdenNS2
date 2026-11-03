@@ -10,7 +10,9 @@
 #include <chrono>
 #include <mutex>
 #include <unordered_map>
+#include <thread>
 #include <unordered_set>
+#include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "shader_recompiler/exception.h"
@@ -19,6 +21,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_query_trace.h"
+#include "video_core/ns2_command_trace.h"
 #include "video_core/ns2_qmd_watch.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
@@ -76,6 +79,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                 static u32 diagnostic_writes{};
                 if (diagnostic_writes++ < 4096) LOG_DEBUG(HW_GPU, "Native compute MME emit method={:#x}, value={:#x}", address, value);
                 if (address >= 0xe00) return false;
+                VideoCommon::NS2CommandTrace::NoteMacroEmit(address, value);
                 CallMethod(system, address, value, true);
                 return true;
             });
@@ -377,6 +381,10 @@ void KeplerCompute::LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd) {
             LOG_ERROR(HW_GPU, "NS2: timeline of native QMD {:#x} (reads and GPU engine writes over its grid):{}",
                       native_qmd_read_address, timeline);
         }
+        static std::atomic<u32> trace_logged{0};
+        if (trace_logged.fetch_add(1) < 4) {
+            LogImplausibleGridSource();
+        }
     }
     if (implausible && implausible_logged.fetch_add(1) < 16) {
         LOG_ERROR(HW_GPU,
@@ -389,6 +397,69 @@ void KeplerCompute::LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd) {
                     "NS2: native QMD {:#x} (grid {}x{}x{}, code {:#x}) is in memory the host GPU "
                     "wrote and that was not downloaded: {:08x}",
                     native_qmd_read_address, x, y, z, code, fmt::join(qmd, ","));
+    }
+}
+
+// Where the grid words of an implausible QMD came from: the recent commands of the channel, and
+// for each inline QMD grid word the guest address its argument was read from, compared with what
+// that memory holds now and during the next 500 ms (does the guest fill it in later?).
+void KeplerCompute::LogImplausibleGridSource() {
+    namespace Trace = VideoCommon::NS2CommandTrace;
+    LOG_ERROR(HW_GPU, "NS2: recent commands of channel {} (oldest first; inline QMD words are m0x0c8.. "
+              "m0x107, grid m0x0d4..m0x0d6):{}", Trace::CurrentChannel(), Trace::Dump(400));
+    std::array<u64, 3> sources{};
+    std::array<u32, 3> executed{};
+    bool any_source = false;
+    for (u32 i = 0; i < 3; ++i) {
+        if (!Trace::LastWriteBefore(0x107, 0xc8 + 12 + i, &sources[i], &executed[i])) {
+            LOG_ERROR(HW_GPU, "NS2: inline QMD grid word {} was not written in the recent commands", i);
+            continue;
+        }
+        if (sources[i] == 0) {
+            LOG_ERROR(HW_GPU, "NS2: inline QMD grid word {} = {:08x} came from a compute macro", i, executed[i]);
+            continue;
+        }
+        if (!memory_manager.IsFullyMappedRange(sources[i], sizeof(u32))) {
+            sources[i] = 0;
+            continue;
+        }
+        any_source = true;
+    }
+    if (!any_source) {
+        return;
+    }
+    const auto read_now = [&] {
+        std::array<u32, 3> now{};
+        for (u32 i = 0; i < 3; ++i) {
+            if (sources[i] != 0) now[i] = memory_manager.Read<u32>(sources[i]);
+        }
+        return now;
+    };
+    std::array<u32, 3> last = read_now();
+    bool gpu_written = false;
+    if (const auto device = memory_manager.GpuToCpuAddress(sources[0] ? sources[0] : sources[1])) {
+        gpu_written = rasterizer->MustFlushRegion(*device, sizeof(u32));
+    }
+    LOG_ERROR(HW_GPU, "NS2: inline QMD grid words were read from {:#x},{:#x},{:#x}: executed {:08x}, "
+              "guest memory holds {:08x} now{}",
+              sources[0], sources[1], sources[2], fmt::join(executed, ","), fmt::join(last, ","),
+              gpu_written ? " (host GPU wrote that memory)" : "");
+    const auto start = std::chrono::steady_clock::now();
+    u32 changes = 0;
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds{500}) {
+        std::this_thread::sleep_for(std::chrono::microseconds{200});
+        const std::array<u32, 3> now = read_now();
+        if (now != last) {
+            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            LOG_ERROR(HW_GPU, "NS2: inline QMD grid source memory changed {} us after the read: {:08x}",
+                      us, fmt::join(now, ","));
+            last = now;
+            if (++changes >= 8) break;
+        }
+    }
+    if (changes == 0) {
+        LOG_ERROR(HW_GPU, "NS2: inline QMD grid source memory did not change within 500 ms");
     }
 }
 

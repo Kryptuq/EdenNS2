@@ -120,6 +120,7 @@ struct CommandList final {
     std::vector<CommandHeader> captured_words;
     std::vector<u32> captured_offsets;
     std::vector<u64> captured_sequences; ///< NativeSubmissions::Record sequence of each entry
+    u64 captured_time_us{}; ///< Steady-clock time of the capture (NS2 diagnostics)
 
     [[nodiscard]] std::span<const CommandHeader> Captured(size_t index) const {
         if (index >= captured_offsets.size() || captured_offsets[index] == ~0U) {
@@ -176,6 +177,8 @@ private:
     size_t command_resume_offset{};
     bool resume_from_capture{};
     u64 reused_lists{};
+    u32 last_list_source{}; ///< NS2CommandTrace::ListSource of the last UseCapturedCommands
+    GPUVAddr trace_inline_source{}; ///< Address of the current immediate-mode header (NS2 trace)
     u64 completed_lists{};
     u64 waited_lists{};
     Common::ScratchBuffer<CommandHeader> live_headers;

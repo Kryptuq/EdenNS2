@@ -556,3 +556,32 @@ TEST_CASE("Raw surface accesses wider than a texel are split into texel-sized ac
         REQUIRE(module.writes == 4);
     }
 }
+
+#include "video_core/ns2_command_trace.h"
+
+TEST_CASE("NS2 command trace finds where inline QMD grid words came from", "[ns2-trace]") {
+    namespace Trace = VideoCommon::NS2CommandTrace;
+    Trace::NoteList(7, 0x1000, 8, Trace::ListSource::Completed, 42);
+    Trace::NoteMethod(1, 0xd4, 0x11, 0x2000);       // compute subchannel, grid x
+    Trace::NoteMethod(0, 0xd5, 0x99, 0x2ff0);       // other engine with the same method number
+    Trace::NoteMethod(1, 0xd5, 0x22, 0x2004);
+    Trace::NoteMacroEmit(0xd6, 0x33);
+    Trace::NoteMethod(1, 0x107, 0, 0x2008);
+    Trace::NoteMethod(1, 0xd4, 0x44, 0x3000);       // after the launch: must not be picked
+    u64 source{};
+    u32 argument{};
+    REQUIRE(Trace::LastWriteBefore(0x107, 0xd4, &source, &argument));
+    CHECK(source == 0x2000);
+    CHECK(argument == 0x11);
+    REQUIRE(Trace::LastWriteBefore(0x107, 0xd5, &source, &argument));
+    CHECK(source == 0x2004);
+    CHECK(argument == 0x22);
+    REQUIRE(Trace::LastWriteBefore(0x107, 0xd6, &source, &argument));
+    CHECK(source == 0);
+    CHECK(argument == 0x33);
+    CHECK(Trace::CurrentChannel() == 7);
+    const std::string dump = Trace::Dump(16);
+    CHECK(dump.find("list 0x1000 (8 words, changed, ran current contents, 42 us after submission)") != std::string::npos);
+    CHECK(dump.find("sub1 m0x0d4 = 00000011 @ 0x2000") != std::string::npos);
+    CHECK(dump.find("macro m0x0d6 = 00000033") != std::string::npos);
+}

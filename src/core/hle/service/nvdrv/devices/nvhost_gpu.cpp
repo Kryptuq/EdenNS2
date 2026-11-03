@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <cstring>
@@ -52,6 +53,8 @@ void CaptureCommandLists(Tegra::MemoryManager& memory, s32 channel, Tegra::Comma
     }
     entries.captured_offsets.assign(entries.command_lists.size(), ~0U);
     entries.captured_sequences.assign(entries.command_lists.size(), 0);
+    entries.captured_time_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     entries.captured_words.resize(total);
     size_t offset = 0;
     for (size_t i = 0; i < entries.command_lists.size(); ++i) {

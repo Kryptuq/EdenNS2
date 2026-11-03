@@ -667,3 +667,17 @@ Changed:
 - CoreTiming::Reset requests the stop before it signals the events. The thread loop checks the stop request before it waits on pause_event again. The events latch until a waiter consumes them, so the thread now always sees the stop.
 - The same Reset runs when CoreTiming is destroyed (when emulation stops), so that path can no longer hang on this race either.
 - Test "CoreTiming[ReinitializeStopsTimerThread]" (20000 re-initializations) passes in about 2 s, 5 of 5 runs.
+
+## Build 116 (diagnostics only, no behaviour change)
+Build 115 results (user):
+- The loading hang is gone (confirmed).
+- The in-game freeze happened again: QMD 0x1a9ab86200 (shader 0x1aebb5a900, normally grids such as 8000, 824, 48 x1x1) ran with grid ffffffff,ffffffff,ffffffff, and the host GPU never finished it.
+- The build 113 QMD timeline answers who wrote it: the inline QMD upload itself, 5 us before the launch. That upload is the QMD the game writes through the compute class's inline QMD methods (0xc8..0x107) in the command stream. Earlier uploads of the same QMD (about one per second) carried normal grids. No other engine wrote the grid.
+- So the bad grid came from the command stream Eden executed. Possible explanations, ranked:
+  1. The game writes placeholders into the command list and fills in the grid after submitting it. Channel 1 is already known to do this with small lists (see builds 91-93). Eden then ran the list before it was filled in, or ran a captured copy taken before it was filled in. The earlier freeze had float-like garbage in the same words, which fits uninitialized placeholder memory.
+  2. A compute macro was meant to overwrite the grid words, with values from a buffer the GPU writes (an indirect dispatch), and got stale or no data.
+  3. The game really asked for this grid. This is unlikely: on hardware it would hang too.
+Logged now (only when an implausible grid is seen, at most 4 times):
+- The last 400 command-list starts and methods of the channel. Each list shows how it was read (live, captured unchanged, changed and run as submitted, changed and run with current contents, GPU-written) and how long after submission. Each method shows its subchannel, method number, argument and the guest address of the argument. Macro-emitted methods are marked.
+- For the three inline QMD grid words: where their arguments were read from, what that guest memory holds now, and every change to it during the next 500 ms. If the game fills in the grid later, this shows it. A grid word written by a macro is reported as such.
+- Test "[ns2-trace]".
