@@ -1419,6 +1419,18 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
 void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_index) {
     images.reserve(info.image_descriptors.size());
     for (const ImageDescriptor& desc : info.image_descriptors) {
+        switch (desc.format) {
+        case ImageFormat::R8_UINT:
+        case ImageFormat::R8_SINT:
+        case ImageFormat::R16_UINT:
+        case ImageFormat::R16_SINT:
+        case ImageFormat::R32G32_UINT:
+            // Not in the base storage image format set.
+            AddCapability(spv::Capability::StorageImageExtendedFormats);
+            break;
+        default:
+            break;
+        }
         const Id sampled_type{desc.is_integer ? U32[1] : F32[1]};
         const Id image_type{ImageType(*this, desc, sampled_type)};
         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
