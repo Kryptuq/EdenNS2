@@ -579,3 +579,17 @@ Build 105 results (user, two runs):
 Logged now:
 - With VK_NVX_image_view_handle (NVIDIA), every image in "NS2 dispatch resources" also shows the GPU address range of its view (" host=<address>+<size>"), so a device fault address can be matched to an image.
 - QMDs with an implausible grid (more than 2^24 workgroups): address, grid, code address, whether the host GPU wrote that memory, and the raw words ("NS2: native QMD ... implausible grid"). The first QMD addresses whose memory the host GPU modified and that was not downloaded are logged as warnings.
+The first CI run of these diagnostics (run 106) failed to compile on MSVC (a local variable hid a member, warning C4458 as error); the fixed build was released as build-107.
+
+## Build 108 (fix: raw surface accesses wider than a texel)
+Build 107 results (user, upscaled area):
+- The driver's fault report: invalid write at GPU address 0x4aa8be000. The storage images of the failing compute shader a7e217052ec1940b, with their GPU address ranges: 960x544 R16G16B16A16_FLOAT 0x4a9e00000+0x4b0000, 1920x1088 R16_FLOAT 0x4aa400000+0x438000, 256x160 R16G16B16A16_FLOAT 0x4bbf50000+0x80000, 1920x1080 R16G16B16A16_FLOAT 0x4aaa00000+0x10e0000. The faulting address is 0x4be000 bytes after the start of the R16_FLOAT image: past its end (1.12 times its size), outside every image.
+Root cause:
+- The native shader writes that R16_FLOAT image (descriptor 0x264) with SUST.B.32 in byte-address mode (four stores): each store writes 32 bits at a byte offset, i.e. two neighbouring 16-bit texels.
+- The lowering turns the byte offset into a 32-bit element index and emits a Maxwell SUST.D.B32, which the frontend translated into a typed R32_UINT image store. Eden then bound an R32_UINT view of the R16_FLOAT image. A view whose texel size differs from the image's is invalid in Vulkan; the GPU addressed the image with 4-byte texels, i.e. twice its real row pitch, and the stores to the lower part of the image went past its memory. Where that memory was unmapped the GPU faulted (device lost, then Eden ended); where something else was mapped it was overwritten silently, which explains why the result varied between runs.
+- The SPIR-V was also invalid for this image (R32ui format with a float sampled type).
+- Earlier changes did not address it: the shared memory clamp (build 102) covered a different kind of memory, and the DLSS network output is numerically sane (build 103).
+Changed:
+- A raw (SULD.D/SUST.D) image access of more bytes than one texel of the bound image is split into texel-sized accesses of the same-sized unsigned format (R8/R16/R32/R32G32 UINT) at consecutive X coordinates (X times the number of texels plus the index), with the data split and joined little-endian. This is what the hardware writes: the same bytes at the same place. Accesses no wider than a texel are unchanged. Such images are declared with an unsigned sampled type.
+- SPIR-V modules using R8, R16 or RG32 typed storage images now declare the StorageImageExtendedFormats capability.
+Verified offline with the user's pipeline cache: all 131 cached compute pipelines still translate; only a7e217052ec1940b changed (its 0x264 image is now an R16ui view written by 8 texel stores instead of 4 R32 stores), and it now passes spirv-val; the validation results of all other modules are unchanged. New unit test "[ns2-surface]".
