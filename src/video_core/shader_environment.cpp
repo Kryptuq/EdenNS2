@@ -365,6 +365,41 @@ u64 SaveNativeProgram(const std::vector<Shader::Ampere::Instruction>& native) {
 
 // Logs a rejected native shader once per program so missing lowerings can be added
 // from an ordinary log. Bounded to keep logs readable.
+// Diagnostics: a program whose end could not be recognised is saved with the memory that
+// follows it (up to 64 KiB, until unmapped memory) to <log dir>/ns2_native/<key>.mapped.bin, once
+// per program, so the rest of the code can be decoded offline.
+void SaveRejectedNativeMemory(Tegra::MemoryManager& gpu_memory,
+                              const std::vector<Shader::Ampere::Instruction>& native, GPUVAddr start) {
+    static std::mutex mutex;
+    static std::unordered_set<u64> saved;
+    const u64 key = Shader::Ampere::NativeProgramKey(native);
+    {
+        std::scoped_lock lock{mutex};
+        if (saved.size() >= 64 || !saved.insert(key).second) return;
+    }
+    constexpr u32 Block = 0x1000;
+    constexpr u32 MaxBytes = 0x10000;
+    std::vector<u8> bytes;
+    std::array<u8, Block> block{};
+    // Up to the next page boundary first, then whole pages.
+    GPUVAddr address = start;
+    while (bytes.size() < MaxBytes) {
+        const u32 size = static_cast<u32>(Block - (address % Block));
+        if (!gpu_memory.IsFullyMappedRange(address, size)) break;
+        gpu_memory.ReadBlock(address, block.data(), size);
+        bytes.insert(bytes.end(), block.begin(), block.begin() + size);
+        address += size;
+    }
+    std::error_code ec;
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_native";
+    std::filesystem::create_directories(dir, ec);
+    const auto path = dir / fmt::format("{:016x}.mapped.bin", key);
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    LOG_ERROR(Shader, "Native shader {:016x}: saved {:#x} bytes of program memory from {:#x} to {}", key,
+              bytes.size(), start, path.string());
+}
+
 void LogRejectedNativeShader(const std::vector<Shader::Ampere::Instruction>& native, GPUVAddr base,
                              u32 error_offset, std::string_view error) {
     static std::mutex mutex;
@@ -422,6 +457,7 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
             LogRejectedNativeShader(native, program_base, index * sizeof(Instruction),
                                     "branch outside capture bounds");
+            SaveRejectedNativeMemory(*gpu_memory, native, program_base + native_header_size);
             throw Shader::RuntimeError("Native shader branch outside capture bounds");
         }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;

@@ -238,6 +238,7 @@ private:
     /// NS2 diagnostics: address of the QMD read last (the one DispatchNativeCompute runs).
     GPUVAddr native_qmd_read_address{};
     void LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd);
+    void NoteNativeQmdRead(GPUVAddr address, const NativeQmdScheduler::Descriptor& qmd);
     bool native_mode{};
     NativeMacroContext* native_context{};
     bool native_compute_uploaded{};
