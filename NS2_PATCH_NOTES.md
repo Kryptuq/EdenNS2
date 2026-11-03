@@ -619,3 +619,11 @@ Changed:
 - A call's link move may be earlier in the same straight-line code if nothing in between writes the link register and no branch enters in between.
 - A return's linkage moves may have other instructions between them and the return, as long as these write neither register of the pair and no branch enters in between; IMAD.MOV Rd, RZ, RZ, 0 counts as clearing the high word.
 Verified offline: the saved program captures to +0x5c0, lowers (182 Maxwell instructions), translates and passes spirv-val; all 988 native programs saved earlier still lower and translate; the 131 cached compute pipelines translate to identical SPIR-V. New unit test for the three patterns; the existing return-linkage test now also checks that writing the return pair is rejected.
+
+## Build 111 (diagnostics only, no behaviour change)
+Build 110 results (user, upscaled area):
+- Native shader 480dd6467223fa62 now lowers and runs (pipeline 7a3d13f09ab8c2f2, three dispatches per frame with 1013, 2 and 1 workgroups: a reduction, probably an average); no native shader is rejected any more, no GPU fault, no hang.
+- The colours in the area did not change: still washed out with a cyan/purple tint and ghost copies of earlier frames. So that shader was not the cause.
+- Remaining explanations, ranked: (1) the DLSS network's results (the weights that decide how much of the history is kept) are numerically wrong because of the emulated matrix instructions; (2) the reconstruction shader a7e217052ec1940b still mistranslates part of its arithmetic (for example FP16); (3) the 960x540 input frame or the exposure value is already wrong before DLSS.
+Logged now:
+- One frame capture per session: on the 300th run of compute pipeline a7e217052ec1940b (the DLSS reconstruction), all images it reads and writes are saved before the dispatch, and the images it writes again after it, to <log dir>/ns2_capture/ (".ns2img": a 40-byte header with size, layers, Eden pixel format and layout, then level 0 as the host stores it). This shows at which stage the colours go wrong. EDEN_NS2_CAPTURE_PIPELINE=<hash> (0 = off) and EDEN_NS2_CAPTURE_RUN=<n> choose another pipeline or run.

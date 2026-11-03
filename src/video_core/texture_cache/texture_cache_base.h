@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -168,6 +169,11 @@ public:
 
     /// Diagnostics: GPU address, size, layers and format of the image behind a view.
     [[nodiscard]] std::string DescribeImageView(ImageViewId id);
+
+    /// NS2 diagnostics: downloads mip level 0 of the image behind a view (host data, all layers)
+    /// and writes it with a small header to `path`. Waits for the host GPU. Returns false when
+    /// there is no image.
+    bool NS2CaptureImageView(ImageViewId id, const std::filesystem::path& path);
 
     /// Mark an image as modified from the GPU
     void MarkModification(ImageId id) noexcept;

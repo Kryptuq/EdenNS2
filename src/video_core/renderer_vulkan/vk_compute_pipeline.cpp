@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <filesystem>
+#include <cctype>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -29,6 +31,7 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
 
@@ -217,6 +220,20 @@ void LogSmallStorageBuffer(Tegra::MemoryManager& gpu_memory, BufferCache& buffer
 }
 } // Anonymous namespace
 
+void ComputePipeline::NS2CaptureAfterDispatch(TextureCache& texture_cache) {
+    if (ns2_capture_after.empty()) {
+        return;
+    }
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_capture";
+    u32 saved = 0;
+    for (const auto& [id, file_name] : ns2_capture_after) {
+        saved += texture_cache.NS2CaptureImageView(id, dir / file_name) ? 1 : 0;
+    }
+    LOG_WARNING(Render_Vulkan, "NS2 capture: pipeline {:016x}: saved {} written images after the dispatch",
+                shader_hash, saved);
+    ns2_capture_after.clear();
+}
+
 bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                 Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
                                 BufferCache& buffer_cache, TextureCache& texture_cache) {
@@ -342,6 +359,55 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                 LogSmallStorageBuffer(gpu_memory, buffer_cache, shader_hash, gpu_memory.Read<u64>(descriptor),
                                       gpu_memory.Read<u32>(descriptor + 8));
             }
+        }
+    }
+
+    // NS2 diagnostics: one frame capture per session of the images a chosen native compute
+    // pipeline reads and writes, before (and, for written images, after) one of its runs.
+    // EDEN_NS2_CAPTURE_PIPELINE=<hash> (default: the DLSS reconstruction a7e217052ec1940b, 0 = off)
+    // and EDEN_NS2_CAPTURE_RUN=<n> (default 300). Files go to <log dir>/ns2_capture/.
+    if (kepler_compute.IsNativeMode()) {
+        static const u64 capture_pipeline = [] {
+            const char* value = std::getenv("EDEN_NS2_CAPTURE_PIPELINE");
+            return value ? std::strtoull(value, nullptr, 16) : 0xa7e217052ec1940bULL;
+        }();
+        static const u32 capture_run = [] {
+            const char* value = std::getenv("EDEN_NS2_CAPTURE_RUN");
+            const u32 run = value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 300U;
+            return run ? run : 1U;
+        }();
+        static std::atomic<bool> captured{false};
+        if (capture_pipeline != 0 && shader_hash == capture_pipeline && ++ns2_capture_runs == capture_run &&
+            !captured.exchange(true)) {
+            std::error_code ec;
+            const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_capture";
+            std::filesystem::create_directories(dir, ec);
+            size_t view_index = 0;
+            u32 saved = 0;
+            const auto capture = [&](size_t count, const char* kind, bool written) {
+                for (size_t i = 0; i < count && view_index < views.size(); ++i, ++view_index) {
+                    const auto id = views[view_index].id;
+                    const std::string name =
+                        fmt::format("{:016x}_run{}_{}{}_{}", shader_hash, capture_run, kind, view_index,
+                                    texture_cache.DescribeImageView(id));
+                    std::string file_name;
+                    for (const char c : name) {
+                        file_name += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '-';
+                    }
+                    if (texture_cache.NS2CaptureImageView(id, dir / (file_name + "_before.ns2img"))) {
+                        ++saved;
+                    }
+                    if (written) {
+                        ns2_capture_after.emplace_back(id, file_name + "_after.ns2img");
+                    }
+                }
+            };
+            for (const auto& desc : info.texture_buffer_descriptors) capture(desc.count, "tb", false);
+            for (const auto& desc : info.image_buffer_descriptors) capture(desc.count, "ib", desc.is_written);
+            for (const auto& desc : info.texture_descriptors) capture(desc.count, "t", false);
+            for (const auto& desc : info.image_descriptors) capture(desc.count, "i", desc.is_written);
+            LOG_WARNING(Render_Vulkan, "NS2 capture: pipeline {:016x} run {}: saved {} images before the dispatch to {}",
+                        shader_hash, capture_run, saved, dir.string());
         }
     }
 
