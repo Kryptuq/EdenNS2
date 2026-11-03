@@ -7,7 +7,9 @@
 #include <atomic>
 #include <bitset>
 #include <fstream>
+#include <chrono>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include "common/assert.h"
 #include "common/logging.h"
@@ -159,6 +161,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(descriptor))) return false;
                 memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
                 native_qmd_read_address = address;
+                NoteNativeQmdRead(address, descriptor);
                 for (u32 slot = 0; slot < 2; ++slot) {
                     const u32 flags = descriptor[25 + slot * 4];
                     if (!(flags & (1U << 23))) continue;
@@ -283,6 +286,44 @@ void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32*
 // launch parameters) and the data was not downloaded yet, the guest copy is stale. Logged: QMDs
 // with an implausible grid (raw words, address, shader), and the first QMD addresses whose memory
 // the host GPU has modified.
+namespace {
+// NS2 diagnostics: the last two reads of every QMD address (the scheduler reads a QMD when it is
+// scheduled and again when it runs), to see whether its grid changed while it waited.
+struct QmdRead {
+    std::array<u32, 3> grid{};
+    u64 time_us{};
+    u64 serial{};
+};
+struct QmdHistory {
+    QmdRead previous{};
+    QmdRead current{};
+    u32 reads{};
+};
+std::mutex g_qmd_history_mutex;
+std::unordered_map<GPUVAddr, QmdHistory> g_qmd_history;
+u64 g_qmd_serial{};
+
+u64 NowMicroseconds() {
+    using namespace std::chrono;
+    return static_cast<u64>(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+}
+} // Anonymous namespace
+
+void KeplerCompute::NoteNativeQmdRead(GPUVAddr address, const NativeQmdScheduler::Descriptor& qmd) {
+    std::scoped_lock lock{g_qmd_history_mutex};
+    if (g_qmd_history.size() >= 16384 && !g_qmd_history.contains(address)) {
+        g_qmd_history.clear();
+    }
+    auto& history = g_qmd_history[address];
+    history.previous = history.current;
+    history.current = QmdRead{
+        .grid = {qmd[12], qmd[13] & 0xffff, qmd[14] & 0xffff},
+        .time_us = NowMicroseconds(),
+        .serial = ++g_qmd_serial,
+    };
+    ++history.reads;
+}
+
 void KeplerCompute::LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd) {
     const u64 x = qmd[12], y = qmd[13] & 0xffff, z = qmd[14] & 0xffff;
     const bool implausible = x * y * z > (u64{1} << 24);
@@ -305,6 +346,29 @@ void KeplerCompute::LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd) {
         gpu_written = rasterizer->MustFlushRegion(*device_address, sizeof(qmd));
     }
     const GPUVAddr code = (GPUVAddr{qmd[49] & 0x1ffff} << 32) | qmd[48];
+    QmdHistory history{};
+    {
+        std::scoped_lock lock{g_qmd_history_mutex};
+        if (const auto it = g_qmd_history.find(native_qmd_read_address); it != g_qmd_history.end()) {
+            history = it->second;
+        }
+    }
+    const bool changed = history.reads >= 2 && history.previous.grid != history.current.grid;
+    static std::atomic<u32> changed_logged{0};
+    if (changed && (implausible || changed_logged.fetch_add(1) < 32)) {
+        const u64 waited_us = history.current.time_us - history.previous.time_us;
+        const u64 reads_between = history.current.serial - history.previous.serial - 1;
+        LOG_WARNING(HW_GPU,
+                    "NS2: native QMD {:#x} grid changed between its last two reads: {}x{}x{} -> "
+                    "{}x{}x{} ({} us apart, {} other QMD reads in between, {} reads of it so far)",
+                    native_qmd_read_address, history.previous.grid[0], history.previous.grid[1],
+                    history.previous.grid[2], history.current.grid[0], history.current.grid[1],
+                    history.current.grid[2], waited_us, reads_between, history.reads);
+    } else if (implausible && history.reads >= 2) {
+        LOG_WARNING(HW_GPU, "NS2: native QMD {:#x} had the same grid at its previous read ({} us earlier, {} reads so far)",
+                    native_qmd_read_address, history.current.time_us - history.previous.time_us,
+                    history.reads);
+    }
     if (implausible && implausible_logged.fetch_add(1) < 16) {
         LOG_ERROR(HW_GPU,
                   "NS2: native QMD {:#x} has an implausible grid {}x{}x{} (code {:#x}, memory "
