@@ -115,8 +115,35 @@ bool DmaPusher::Step() {
             resume_from_capture = false;
             last_list_source = static_cast<u32>(VideoCommon::NS2CommandTrace::ListSource::HostGpuWritten);
         }
-        const auto captured = host_gpu_written ? std::span<const CommandHeader>{}
-                                               : command_list.Captured(dma_pushbuffer_subindex);
+        // A list that starts inside a pending method holds that method's arguments, not commands:
+        // an indirect dispatch's group counts, produced by earlier GPU work after the list was
+        // submitted. The copy captured at submission predates that work (running it as submitted
+        // launched garbage grids), so such a list always runs from memory.
+        const bool argument_list = command_resume_offset == 0 && dma_state.method_count != 0 &&
+                                   channel_state.native_abi;
+        if (argument_list && !host_gpu_written) {
+            const auto submitted = command_list.Captured(dma_pushbuffer_subindex);
+            static std::atomic<u32> argument_logs{0};
+            if (!submitted.empty() && header.size <= 8 && argument_logs.load(std::memory_order_relaxed) < 32) {
+                std::array<u32, 8> live{};
+                memory_manager.ReadBlockUnsafe(header.addr, live.data(), header.size * sizeof(u32));
+                if (std::memcmp(live.data(), submitted.data(), header.size * sizeof(u32)) != 0) {
+                    argument_logs.fetch_add(1, std::memory_order_relaxed);
+                    std::array<u32, 8> words{};
+                    for (size_t i = 0; i < header.size; ++i) words[i] = submitted[i].argument;
+                    LOG_INFO(HW_GPU, "NS2: ch={} argument list {:#x} ({} words) changed since "
+                             "submission: running {:08x} from memory instead of the captured {:08x}",
+                             channel_state.bind_id, u64{header.addr}, u64{header.size},
+                             fmt::join(std::span{live}.first(header.size), ","),
+                             fmt::join(std::span{words}.first(header.size), ","));
+                }
+            }
+            resume_from_capture = false;
+            last_list_source = static_cast<u32>(VideoCommon::NS2CommandTrace::ListSource::Arguments);
+        }
+        const auto captured = host_gpu_written || argument_list
+                                  ? std::span<const CommandHeader>{}
+                                  : command_list.Captured(dma_pushbuffer_subindex);
         if (!captured.empty() && command_resume_offset == 0) {
             const u64 sequence = dma_pushbuffer_subindex < command_list.captured_sequences.size()
                 ? command_list.captured_sequences[dma_pushbuffer_subindex] : 0;
@@ -132,7 +159,7 @@ bool DmaPusher::Step() {
             }
             VideoCommon::NS2CommandTrace::NoteList(channel_state.bind_id, header.addr,
                 static_cast<u32>(header.size),
-                captured.empty() && !host_gpu_written ? ListSource::Live : static_cast<ListSource>(last_list_source), age_us);
+                captured.empty() && !host_gpu_written && !argument_list ? ListSource::Live : static_cast<ListSource>(last_list_source), age_us);
         }
         const bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
         if (!captured.empty() && resume_from_capture) {

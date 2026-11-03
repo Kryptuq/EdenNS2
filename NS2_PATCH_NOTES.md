@@ -716,3 +716,12 @@ Changed:
 - CreateLibraryApplet / CreateLibraryAppletEx map 0x1020011 to SoftwareKeyboard. No other ids are remapped.
 - The keyboard accepts library version 0x140010 with the 0x530-byte configuration: the common part as before, and the start of the tail as the 8.0.0+ layout. The extra 0x68 bytes are unknown and ignored. The parsed values are logged ("NS2: Switch 2 keyboard configuration").
 - Tests "[applet]".
+
+## Build 120 (fix: indirect dispatch counts could still run from the stale submission copy)
+Build 119 results (user): full version of the game (title 0400245021D2C000), new game. It froze after about 9.5 minutes. The keyboard was not reached in this run.
+- 3 implausible grids at 583 s (47x64x8225 twice, then ffffffff x3, which never finished). In all three, the group counts again came from compute macro 0xe74 with a 3-word argument list (0x1b814ddc00, 0x1b624e2200).
+- This time the host GPU did not hold newer data for those lists, so the build 117 download did not apply. The trace shows them as "changed, ran as submitted": guest memory had changed since submission, a later submission had captured the new contents, and the reuse rule from build 93 (written for nn::movie's reused copy lists) ran the copy captured at submission. That copy predates the GPU work that produces the counts.
+Root cause: a list that starts inside a pending method holds only that method's arguments. For an indirect dispatch they are written by earlier GPU work after submission, so the submission copy is always too old for them.
+Changed:
+- On native channels, a list that starts while a method is still waiting for arguments always runs from memory: the host GPU's data when it has newer data (build 117), otherwise guest memory. Lists that start with commands (nn::movie) keep the capture rules.
+- The first 32 such lists whose memory changed since submission are logged ("argument list ... running ... from memory instead of the captured ...").

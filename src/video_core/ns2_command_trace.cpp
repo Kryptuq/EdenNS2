@@ -41,6 +41,7 @@ const char* SourceName(u32 source) {
     case ListSource::Completed: return "changed, ran current contents";
     case ListSource::GpuWritten: return "GPU-written, ran from memory";
     case ListSource::HostGpuWritten: return "written by the host GPU, downloaded";
+    case ListSource::Arguments: return "method arguments, ran from memory";
     }
     return "?";
 }
