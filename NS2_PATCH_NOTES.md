@@ -603,3 +603,19 @@ Build 108 results (user):
 Logged now:
 - A native program rejected while capturing (its end not recognised) is saved with the memory that follows it, up to 64 KiB, to <log dir>/ns2_native/<key>.mapped.bin, once per program ("Native shader ...: saved ... bytes of program memory ...").
 - The last two reads of every QMD address are remembered; when a QMD runs with a grid that differs from its previous read, both grids, the time between the reads and the number of other QMD reads in between are logged (always for implausible grids, otherwise the first 32).
+
+## Build 110 (fix: the DLSS input shader 480dd6467223fa62 is lowered)
+Build 109 results (user, upscaled area, colours still wrong as expected):
+- The rejected shader's program memory was saved (8 KiB). The program is 93 instructions long and ends at +0x5c0 (RET, then a self-branch). It runs three times per frame right before the DLSS network: a loop that reads a buffer, combines values across the warp with shuffles and writes the result the network reads. Because it was rejected, that result was never written.
+- No QMD changed its grid between being scheduled and being run during the whole normal session, so the garbage grid of the freeze is not ordinary QMD reuse.
+Root cause (why it was rejected):
+1. Capture: the instruction at +0x3f0 is a warp-convergence branch (opcode 0x947 with a register in bits 24-31 and bit 91 set). The two lowest bits of its offset field are flags, not part of the offset; read as an offset they gave an unaligned target (+0x443). The real target is +0x440.
+2. That branch chooses between two equivalent implementations of a warp shuffle: the target shuffles directly, the fall-through calls a subroutine that re-synchronises the warp (WARPSYNC with a register mask) and then shuffles; both produce the same value.
+3. The first call (+0x350) gets its return PC from a move several instructions earlier (+0x260); the lowering only accepted the move directly before the call.
+4. Both returns prepare the return register pair with other instructions in between, and clear the high word with IMAD.MOV; the lowering only accepted consecutive plain moves.
+Changed:
+- Capture and lowering read the offset of a warp-convergence branch without its two flag bits. The branch is lowered as never taken (the fall-through re-synchronises first and is correct in every case).
+- WARPSYNC with a register mask is lowered like the full-mask form (no-op for the per-invocation translation).
+- A call's link move may be earlier in the same straight-line code if nothing in between writes the link register and no branch enters in between.
+- A return's linkage moves may have other instructions between them and the return, as long as these write neither register of the pair and no branch enters in between; IMAD.MOV Rd, RZ, RZ, 0 counts as clearing the high word.
+Verified offline: the saved program captures to +0x5c0, lowers (182 Maxwell instructions), translates and passes spirv-val; all 988 native programs saved earlier still lower and translate; the 131 cached compute pipelines translate to identical SPIR-V. New unit test for the three patterns; the existing return-linkage test now also checks that writing the return pair is rejected.

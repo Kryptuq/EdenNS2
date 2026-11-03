@@ -3861,9 +3861,14 @@ TEST_CASE("Native returns accept return-value moves and returns through the link
         {{0x08007950, 0xffffff60, 0x03c3ffff, 0}},
     };
     REQUIRE(Shader::Ampere::LowerToMaxwell(input));
+    // Other instructions may sit between the linkage moves and the return (since build 110),
+    // but none may write the return register pair.
     auto not_a_move = input;
     not_a_move[8] = Native{{0x00047421, 0x40400000, 0x00010000, 0}};
-    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(not_a_move));
+    REQUIRE(Shader::Ampere::LowerToMaxwell(not_a_move));
+    auto writes_pair = input;
+    writes_pair[8] = Native{{0x00097421, 0x40400000, 0x00010000, 0}};
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(writes_pair));
     auto through_link = input;
     through_link[6] = Native{{0x00047202, 0x00000003, 0x00000f00, 0}};
     through_link[7] = Native{{0x00387802, 0x00000000, 0x00000f00, 0}};
@@ -4361,3 +4366,73 @@ TEST_CASE("Native surface stores, bindless fetches and shuffles map their fields
     }
 }
 
+
+TEST_CASE("Native warp-convergence branch, early call link and padded return linkage lower", "[native-shader]") {
+    // Warp intrinsic codegen: a convergence branch (bit 91, flag bits in the offset field) picks
+    // between two equivalent paths, a call whose return PC was moved into the link register a
+    // few instructions earlier, and a callee that clears the high return word with IMAD.MOV and
+    // re-synchronises the warp (register-mask WARPSYNC) before returning.
+    std::array<Native, 12> input{{
+        {{0x06007947, 0x00000013, 0x0b800000, 0}}, // convergence branch to +0x20 (flags 3)
+        {{0x00007802, 0x40000000, 0x00000f00, 0}}, // argument 2.0
+        {{0x00377802, 0x00000050, 0x00000f00, 0}}, // native return PC, two instructions early
+        {{0x00027802, 0x3f800000, 0x00000f00, 0}}, // unrelated move in between
+        {{0x00007944, 0x00000020, 0x03c00000, 0}}, // call +0x70
+        {{0xff007322, 0x00007003, 0x000000ff, 0}},
+        VertexTransform.back(),
+        {{0x00037421, 0x40400000, 0x00010000, 0}}, // callee: add 3.0
+        {{0x00087202, 0x00000037, 0x00000f00, 0}}, // low return word = link
+        {{0xff097424, 0x00000000, 0x078e00ff, 0}}, // IMAD.MOV high return word = 0
+        {{0x00007348, 0x00000007, 0x03800000, 0}}, // WARPSYNC R7
+        {{0x08007950, 0xffffff40, 0x03c3ffff, 0}}, // RET R8
+    }};
+    Shader::Ampere::ProgramCaptureState capture;
+    Shader::Ampere::ProgramCaptureState::Result status{};
+    u32 captured = 0;
+    for (; captured < input.size(); ++captured) {
+        status = capture.Observe(input[captured], captured);
+        if (status != Shader::Ampere::ProgramCaptureState::Result::Continue) break;
+    }
+    REQUIRE(status == Shader::Ampere::ProgramCaptureState::Result::Complete);
+    REQUIRE(captured == input.size() - 1);
+
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    INFO("offset=" << lowered.error_offset << " error=" << lowered.error);
+    REQUIRE(lowered);
+    auto broken = input;
+    broken[3].words[0] = 0x00377802; // the link register is overwritten before the call
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(broken));
+    broken = input;
+    broken[10] = Native{{0x00097802, 0x00000001, 0x00000f00, 0}}; // high return word overwritten
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(broken));
+
+    std::vector<u64> code(0x50 / 8);
+    for (const auto word : lowered.instructions) {
+        if ((code.size() * 8) % 32 == 0) code.push_back(0);
+        code.push_back(word);
+    }
+    class CallEnvironment final : public EmptyEnvironment {
+    public:
+        explicit CallEnvironment(const std::vector<u64>& code_) : code{code_} { stage = Shader::Stage::VertexB; }
+        u64 ReadInstruction(u32 address) override { return code.at(address / 8); }
+        const std::vector<u64>& code;
+    } env{code};
+    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_pool;
+    Shader::ObjectPool<IR::Inst> inst_pool;
+    Shader::ObjectPool<IR::Block> block_pool;
+    Shader::Maxwell::Flow::CFG cfg{env, flow_pool, 0x50};
+    REQUIRE(cfg.Functions().size() == 2);
+    Shader::HostTranslateInfo host;
+    const auto program = Shader::Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host);
+    u32 stores = 0;
+    for (const auto* block : program.blocks) {
+        for (const auto& inst : block->Instructions()) {
+            if (inst.GetOpcode() != IR::Opcode::SetAttribute) continue;
+            ++stores;
+            // The fall-through path ran: the argument move was not skipped.
+            REQUIRE(inst.Arg(1).IsImmediate());
+            REQUIRE(inst.Arg(1).F32() == 5.0f);
+        }
+    }
+    REQUIRE(stores == 1);
+}
