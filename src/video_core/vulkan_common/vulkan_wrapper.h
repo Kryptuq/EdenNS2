@@ -257,6 +257,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdResetQueryPool vkCmdResetQueryPool{};
     PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp{};
     PFN_vkGetDeviceFaultInfoEXT vkGetDeviceFaultInfoEXT{};
+    PFN_vkGetImageViewAddressNVX vkGetImageViewAddressNVX{};
     PFN_vkCmdResolveImage vkCmdResolveImage{};
     PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants{};
     PFN_vkCmdSetCullModeEXT vkCmdSetCullModeEXT{};
@@ -1174,6 +1175,14 @@ public:
 
     void ResetQueryPool(VkQueryPool query_pool, u32 first, u32 count) const noexcept {
         dld->vkResetQueryPool(handle, query_pool, first, count);
+    }
+
+    /// VK_NVX_image_view_handle; returns VK_ERROR_EXTENSION_NOT_PRESENT when it was not loaded.
+    VkResult GetImageViewAddress(VkImageView view, VkImageViewAddressPropertiesNVX& properties) const noexcept {
+        if (!dld->vkGetImageViewAddressNVX) {
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        }
+        return dld->vkGetImageViewAddressNVX(handle, view, &properties);
     }
 
     /// VK_EXT_device_fault; returns VK_ERROR_EXTENSION_NOT_PRESENT when it was not loaded.

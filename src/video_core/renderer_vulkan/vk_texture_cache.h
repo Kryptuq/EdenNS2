@@ -468,6 +468,9 @@ public:
         return buffer_size;
     }
 
+    /// NS2 diagnostics: " host=<GPU address>+<size>" of this view's memory, empty if unknown.
+    [[nodiscard]] std::string DescribeHostAddress() const;
+
 private:
     struct StorageViews {
         std::array<vk::ImageView, Shader::NUM_TEXTURE_TYPES> signeds;

@@ -300,8 +300,10 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         size_t view_index = 0;
         const auto describe = [&](size_t count, const char* kind, bool written) {
             for (size_t i = 0; i < count && view_index < views.size(); ++i, ++view_index) {
-                described += fmt::format(" {}{}:{}", kind, written ? "w" : "",
-                                         texture_cache.DescribeImageView(views[view_index].id));
+                const auto id = views[view_index].id;
+                described += fmt::format(" {}{}:{}{}", kind, written ? "w" : "",
+                                         texture_cache.DescribeImageView(id),
+                                         id ? texture_cache.GetImageView(id).DescribeHostAddress() : std::string{});
             }
         };
         for (const auto& desc : info.texture_buffer_descriptors) describe(desc.count, "tb", false);

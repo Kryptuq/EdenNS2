@@ -7,6 +7,8 @@
 #include <atomic>
 #include <bitset>
 #include <fstream>
+#include <mutex>
+#include <unordered_set>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "shader_recompiler/exception.h"
@@ -156,6 +158,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             [&](u64 address, NativeQmdScheduler::Descriptor& descriptor) {
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(descriptor))) return false;
                 memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
+                native_qmd_read_address = address;
                 for (u32 slot = 0; slot < 2; ++slot) {
                     const u32 flags = descriptor[25 + slot * 4];
                     if (!(flags & (1U << 23))) continue;
@@ -276,7 +279,48 @@ void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32*
     }
 }
 
+// NS2 diagnostics. A QMD is read from guest memory; if the host GPU wrote that memory (GPU-built
+// launch parameters) and the data was not downloaded yet, the guest copy is stale. Logged: QMDs
+// with an implausible grid (raw words, address, shader), and the first QMD addresses whose memory
+// the host GPU has modified.
+void KeplerCompute::LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd) {
+    const u64 x = qmd[12], y = qmd[13] & 0xffff, z = qmd[14] & 0xffff;
+    const bool implausible = x * y * z > (u64{1} << 24);
+    static std::atomic<u32> implausible_logged{0};
+    static std::atomic<u32> gpu_written_logged{0};
+    static std::mutex seen_mutex;
+    static std::unordered_set<GPUVAddr> seen;
+    bool first_time = false;
+    {
+        std::scoped_lock lock{seen_mutex};
+        if (seen.size() < 8192) {
+            first_time = seen.insert(native_qmd_read_address).second;
+        }
+    }
+    if (!implausible && !first_time) {
+        return;
+    }
+    bool gpu_written = false;
+    if (const auto device_address = memory_manager.GpuToCpuAddress(native_qmd_read_address)) {
+        gpu_written = rasterizer->MustFlushRegion(*device_address, sizeof(qmd));
+    }
+    const GPUVAddr code = (GPUVAddr{qmd[49] & 0x1ffff} << 32) | qmd[48];
+    if (implausible && implausible_logged.fetch_add(1) < 16) {
+        LOG_ERROR(HW_GPU,
+                  "NS2: native QMD {:#x} has an implausible grid {}x{}x{} (code {:#x}, memory "
+                  "{}written by the host GPU): {:08x}",
+                  native_qmd_read_address, x, y, z, code, gpu_written ? "" : "not ",
+                  fmt::join(qmd, ","));
+    } else if (gpu_written && gpu_written_logged.fetch_add(1) < 32) {
+        LOG_WARNING(HW_GPU,
+                    "NS2: native QMD {:#x} (grid {}x{}x{}, code {:#x}) is in memory the host GPU "
+                    "wrote and that was not downloaded: {:08x}",
+                    native_qmd_read_address, x, y, z, code, fmt::join(qmd, ","));
+    }
+}
+
 bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& qmd) {
+    LogNativeQmd(qmd);
     launch_description = {};
     launch_description.grid_dim_x.Assign(qmd[12]);
     launch_description.grid_dim_y.Assign(qmd[13] & 0xffff);
