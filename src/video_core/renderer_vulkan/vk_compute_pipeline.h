@@ -60,6 +60,10 @@ public:
         return shader_hash;
     }
 
+    /// NS2 diagnostics: after the dispatch Configure prepared was recorded, saves the images it
+    /// wrote when this run was selected for a frame capture (see Configure).
+    void NS2CaptureAfterDispatch(TextureCache& texture_cache);
+
 private:
     const Device& device;
     vk::PipelineCache& pipeline_cache;
@@ -68,6 +72,9 @@ private:
     Shader::Info info;
     u64 shader_hash{};
     u32 ns2_traced_runs{}; ///< NS2 diagnostics: resources are logged for the first runs.
+    u32 ns2_capture_runs{}; ///< NS2 diagnostics: runs counted for the frame capture.
+    /// Written images of the captured run, saved again after the dispatch.
+    std::vector<std::pair<VideoCommon::ImageViewId, std::string>> ns2_capture_after;
     u32 num_descriptor_entries{};
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};

@@ -822,6 +822,7 @@ void RasterizerVulkan::DispatchCompute() {
         if (timeline) {
             timeline->End(timing_id);
         }
+        pipeline->NS2CaptureAfterDispatch(texture_cache);
         return;
     }
     if (kepler_compute->IsNativeMode()) {
@@ -857,6 +858,7 @@ void RasterizerVulkan::DispatchCompute() {
     if (timeline) {
         timeline->End(timing_id);
     }
+    pipeline->NS2CaptureAfterDispatch(texture_cache);
 
     // Log compute dispatch
     if (GPU::Logging::IsActive() &&
