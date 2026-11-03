@@ -186,6 +186,7 @@ private:
     void SetState(const CommandHeader& command_header);
 
     void CallMethod(u32 argument);
+    bool DownloadHostGpuWrittenList(GPUVAddr address, u32 words, std::span<const CommandHeader> captured);
     void CallMultiMethod(const u32* base_start, u32 num_methods);
 
 public:

@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
+#include <algorithm>
 #include <cstring>
 #include <thread>
 #include <chrono>
@@ -11,6 +14,7 @@
 #include <string>
 #include <unordered_map>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 #include "common/cityhash.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -105,7 +109,14 @@ bool DmaPusher::Step() {
                 subchannels[dma_state.subchannel]->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
             }
         }
-        const auto captured = command_list.Captured(dma_pushbuffer_subindex);
+        const bool host_gpu_written = command_resume_offset == 0 && DownloadHostGpuWrittenList(
+            header.addr, static_cast<u32>(header.size), command_list.Captured(dma_pushbuffer_subindex));
+        if (host_gpu_written) {
+            resume_from_capture = false;
+            last_list_source = static_cast<u32>(VideoCommon::NS2CommandTrace::ListSource::HostGpuWritten);
+        }
+        const auto captured = host_gpu_written ? std::span<const CommandHeader>{}
+                                               : command_list.Captured(dma_pushbuffer_subindex);
         if (!captured.empty() && command_resume_offset == 0) {
             const u64 sequence = dma_pushbuffer_subindex < command_list.captured_sequences.size()
                 ? command_list.captured_sequences[dma_pushbuffer_subindex] : 0;
@@ -121,7 +132,7 @@ bool DmaPusher::Step() {
             }
             VideoCommon::NS2CommandTrace::NoteList(channel_state.bind_id, header.addr,
                 static_cast<u32>(header.size),
-                captured.empty() ? ListSource::Live : static_cast<ListSource>(last_list_source), age_us);
+                captured.empty() && !host_gpu_written ? ListSource::Live : static_cast<ListSource>(last_list_source), age_us);
         }
         const bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
         if (!captured.empty() && resume_from_capture) {
@@ -154,6 +165,44 @@ bool DmaPusher::Step() {
         });
     }
 
+    return true;
+}
+
+// The GPU can write commands or command data for itself: an indirect dispatch fetches its three
+// group counts as the arguments of a compute macro straight from a buffer that an earlier compute
+// shader filled. Eden runs that shader on the host GPU, so guest memory (and the copy captured at
+// submission) still holds old data; running it launched garbage grids that never finished. The
+// hardware reads the list only when it gets there, after the earlier work, so download what the
+// host GPU wrote before running it. Returns whether the list was downloaded.
+bool DmaPusher::DownloadHostGpuWrittenList(GPUVAddr address, u32 words,
+                                           std::span<const CommandHeader> captured) {
+    if (!channel_state.native_abi || rasterizer == nullptr || words == 0) {
+        return false;
+    }
+    const u64 bytes = u64{words} * sizeof(u32);
+    const auto device_address = memory_manager.GpuToCpuAddress(address);
+    if (!device_address || !memory_manager.IsContinuousRange(address, bytes) ||
+        !rasterizer->MustFlushRegion(*device_address, bytes)) {
+        return false;
+    }
+    static std::atomic<u32> logged{0};
+    const bool log = logged.fetch_add(1, std::memory_order_relaxed) < 32;
+    std::array<u32, 8> before{};
+    const u32 shown = std::min<u32>(words, static_cast<u32>(before.size()));
+    if (log) memory_manager.ReadBlockUnsafe(address, before.data(), shown * sizeof(u32));
+    rasterizer->FlushRegion(*device_address, bytes);
+    if (log) {
+        std::array<u32, 8> after{};
+        memory_manager.ReadBlockUnsafe(address, after.data(), shown * sizeof(u32));
+        std::array<u32, 8> submitted{};
+        for (u32 i = 0; i < shown && i < captured.size(); ++i) submitted[i] = captured[i].argument;
+        LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) was written by the host GPU: "
+                 "downloaded it before running it (first words: captured {:08x}, guest memory "
+                 "{:08x}, host GPU {:08x})", channel_state.bind_id, address, words,
+                 fmt::join(std::span{submitted}.first(captured.empty() ? 0 : shown), ","),
+                 fmt::join(std::span{before}.first(shown), ","),
+                 fmt::join(std::span{after}.first(shown), ","));
+    }
     return true;
 }
 
