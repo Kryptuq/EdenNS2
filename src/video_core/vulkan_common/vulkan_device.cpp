@@ -915,16 +915,16 @@ std::optional<std::pair<u64, u64>> Device::ImageViewAddress(VkImageView view) co
     if (!extensions.image_view_handle || view == VK_NULL_HANDLE) {
         return std::nullopt;
     }
-    VkImageViewAddressPropertiesNVX properties{
+    VkImageViewAddressPropertiesNVX view_address{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_ADDRESS_PROPERTIES_NVX,
         .pNext = nullptr,
         .deviceAddress = 0,
         .size = 0,
     };
-    if (logical.GetImageViewAddress(view, properties) != VK_SUCCESS) {
+    if (logical.GetImageViewAddress(view, view_address) != VK_SUCCESS) {
         return std::nullopt;
     }
-    return std::make_pair(static_cast<u64>(properties.deviceAddress), static_cast<u64>(properties.size));
+    return std::make_pair(static_cast<u64>(view_address.deviceAddress), static_cast<u64>(view_address.size));
 }
 
 bool Device::LogDeviceFault(const char* context) const {
