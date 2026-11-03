@@ -706,3 +706,13 @@ Logged now:
 - The stub applet's common arguments (version, size, library version = keyboard protocol version, theme, startup sound).
 - Only the first 8 interactive calls of a stub applet are logged; the endless repeat filled the log.
 Next: with the id and the library version, route it to the software keyboard and add the Switch 2 configuration layout.
+
+## Build 119 (fix: name entry opens Eden's software keyboard)
+Build 118 results (user): the name entry still hangs (expected: diagnostics only). The log gives:
+- CreateLibraryAppletEx applet_id=0x1020011, mode 0 (all foreground). library_version=0x140010, configuration 0x530 bytes, work buffer 0x1000 bytes.
+Root cause: Eden knows the software keyboard only as id 0x11. The Switch 2 SDK opens it as 0x1020011, so Eden used the stub applet, which never shows a keyboard and answers with zeroed data (an empty name). The game rejects that ("That name cannot be used.") and asks again, forever.
+Why the existing keyboard fits: the common part of the 0x530 configuration lines up with Switch 1's SwkbdConfigCommon at every field that holds a value: type 4 at 0, prediction at 0x1a, cursor 1 at 0x20, header text "Please enter a name for one of these creatures." at 0x24, maximum length 10 at 0x3ac. The game's replies are 0x7D8-byte SwkbdTextCheck, the same as on Switch 1.
+Changed:
+- CreateLibraryApplet / CreateLibraryAppletEx map 0x1020011 to SoftwareKeyboard. No other ids are remapped.
+- The keyboard accepts library version 0x140010 with the 0x530-byte configuration: the common part as before, and the start of the tail as the 8.0.0+ layout. The extra 0x68 bytes are unknown and ignored. The parsed values are logged ("NS2: Switch 2 keyboard configuration").
+- Tests "[applet]".

@@ -12,6 +12,9 @@
 
 namespace Service::AM {
 
+/// Maps library applet ids of newer SDKs onto the applets Eden implements.
+AppletId NormalizeLibraryAppletId(u32 raw_id);
+
 struct Applet;
 class ILibraryAppletAccessor;
 class IStorage;
