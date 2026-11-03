@@ -20,6 +20,7 @@ enum class ListSource : u32 {
     Completed,     ///< Changed, nobody claimed the new contents: ran the current contents.
     GpuWritten,    ///< A GPU engine wrote the list memory: ran from memory.
     HostGpuWritten, ///< Host GPU (shader) data in the list memory: downloaded, ran it.
+    Arguments,     ///< Arguments of a method begun in the previous list: ran from memory.
 };
 
 /// The GPU thread starts a command list of `words` words at `address` of `channel`.
