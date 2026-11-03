@@ -627,3 +627,16 @@ Build 110 results (user, upscaled area):
 - Remaining explanations, ranked: (1) the DLSS network's results (the weights that decide how much of the history is kept) are numerically wrong because of the emulated matrix instructions; (2) the reconstruction shader a7e217052ec1940b still mistranslates part of its arithmetic (for example FP16); (3) the 960x540 input frame or the exposure value is already wrong before DLSS.
 Logged now:
 - One frame capture per session: on the 300th run of compute pipeline a7e217052ec1940b (the DLSS reconstruction), all images it reads and writes are saved before the dispatch, and the images it writes again after it, to <log dir>/ns2_capture/ (".ns2img": a 40-byte header with size, layers, Eden pixel format and layout, then level 0 as the host stores it). This shows at which stage the colours go wrong. EDEN_NS2_CAPTURE_PIPELINE=<hash> (0 = off) and EDEN_NS2_CAPTURE_RUN=<n> choose another pipeline or run.
+
+## Build 112 (fix: FP16 texel fetch results had their two halves swapped)
+Build 111 results (user, standing still in the upscaled area; frame capture of run 300 of a7e217052ec1940b):
+- The 960x540 input colour (B10G11R11_FLOAT) is correct: yellow ground, green Yoshi. The faint handwriting patterns and the fog on the left are already in the input, so they are part of the scene, not ghosting.
+- The 1920x1080 output of the reconstruction has the wrong colours seen on screen. A least-squares fit over 4000 matching pixels gives output R = 0.95 * input G, output G = 0.95 * input R, output B = 1.03 (constant): red and green are exchanged and blue is lost.
+- Depth, motion vectors (+-0.0004), exposure (0.515) and the history image (Y/Co/Cg-like values) contain no NaN or Inf.
+Root cause:
+- The shader reads the input colour with 20 texel fetches (TLD.SCR.LZ, bound texture 0x220) with FP16 results (bit 79): the hardware returns (c0, c1) packed in the first destination register and (c2, c3) in the second, the lower component in the low half.
+- The lowering packed each pair with ISCADD (R246 << 16) + R247, where R246 holds the lower component: c0 ended up in the high half and c1 in the low half, and c2 in the high half of the second register with 0 in its low half. The shader therefore saw (G, R, 0, B) instead of (R, G, B, 1), which is exactly the swap in the capture. The same mistake was in the bindless texture form.
+- Of the 988 native programs saved from the user's runs, only this shader uses FP16 texture results, which is why no other picture showed it.
+Changed:
+- FP16 texture results are packed with the lower component in the low half (both lowering sites). New unit test checks the packing order.
+Verified: all 988 saved native programs still lower and translate; all tests pass except the 8 memory_tracker tests that fail on stock Eden too.

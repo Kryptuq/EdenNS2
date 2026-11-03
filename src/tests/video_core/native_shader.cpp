@@ -4436,3 +4436,32 @@ TEST_CASE("Native warp-convergence branch, early call link and padded return lin
     }
     REQUIRE(stores == 1);
 }
+
+TEST_CASE("Native FP16 texel fetch results keep the lower component in the low half", "[native-shader]") {
+    // TLD.SCR.LZ RGB with FP16 results (bit 79): (c0, c1) in R0, (c2, -) in R2. Each pair is
+    // built as F2F c_low -> R246, F2F c_high -> R247, ISCADD dest = (R247 << 16) + R246.
+    std::array<Native, 3> input{{
+        {{0x00027305, 0x00000004, 0x0021f100, 0x001ff000}},
+        {{0x02007b66, 0x30800a05, 0x049e8702, 0x101fc200}},
+        VertexTransform.back(),
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    INFO("offset=" << lowered.error_offset << " error=" << lowered.error);
+    REQUIRE(lowered);
+    std::vector<std::array<u32, 4>> packs; // dest, shifted (high) source, added (low) source, low half's component register
+    u32 last_f2f_246_source = ~0U;
+    for (const u64 word : lowered.instructions) {
+        const auto op = Shader::Maxwell::Decode(word);
+        if (op == Shader::Maxwell::Opcode::F2F_reg && (word & 0xff) == 246) {
+            last_f2f_246_source = static_cast<u32>((word >> 20) & 0xff);
+        }
+        if (op == Shader::Maxwell::Opcode::ISCADD_reg && ((word >> 39) & 0x1f) == 16) {
+            packs.push_back({static_cast<u32>(word & 0xff), static_cast<u32>((word >> 8) & 0xff),
+                             static_cast<u32>((word >> 20) & 0xff), last_f2f_246_source});
+        }
+    }
+    REQUIRE(packs.size() == 2);
+    // R0 = {c1 : c0}, R2 = {- : c2}; the fetch wrote c0..c2 to R250..R252.
+    REQUIRE(packs[0] == std::array<u32, 4>{0, 247, 246, 250});
+    REQUIRE(packs[1] == std::array<u32, 4>{2, 247, 246, 252});
+}

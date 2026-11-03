@@ -1715,7 +1715,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             } else {
                 for (u32 i = 0; i < rg_masks.size(); ++i) if (rg_masks[i] == mask) swizzle = i;
             }
-            // Bit 79: FP16 results, (c0, c1) packed into the first destination, (c2, c3) into the second.
+            // Bit 79: FP16 results, (c0, c1) packed into the first destination, (c2, c3) into the
+            // second, the lower component in the low half (ISCADD: (high << 16) + low).
             const bool half_results = insn.Bits(79, 1) != 0;
             if (!insn.Bits(60, 1) || (dimension != 0 && dimension != 1 && !array && !volume) ||
                 swizzle == ~0U || (insn.Bits(76, 5) & ~8U) ||
@@ -1746,7 +1747,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 const auto pack = [&](u32 target, u32 low, u32 high) {
                     emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
                     emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
-                    emit(0x5c18000000000000ULL | predicate | target | (u64{246} << 8) | (u64{247} << 20) | (u64{16} << 39));
+                    emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39));
                 };
                 pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
                 if (components > 2) pack(second_dest, 252, components > 3 ? 253U : 255U);
@@ -1890,12 +1891,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 const u32 components = static_cast<u32>(std::popcount(mask));
                 if (insn.Bits(79, 1)) {
                     // FP16 results: (c0, c1) packed into the first destination, (c2, c3) into
-                    // the second (F2F writes the half in the low 16 bits; ISCADD merges).
+                    // the second, the lower component in the low half (F2F writes the half in
+                    // the low 16 bits; ISCADD computes (high << 16) + low).
                     const auto pack = [&](u32 target, u32 low, u32 high) {
                         if (target == 255) return;
                         emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
                         emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
-                        emit(0x5c18000000000000ULL | predicate | target | (u64{246} << 8) | (u64{247} << 20) | (u64{16} << 39));
+                        emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39));
                     };
                     pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
                     if (components > 2) {
