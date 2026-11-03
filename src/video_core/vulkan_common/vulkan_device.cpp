@@ -769,11 +769,20 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     owns_static_pipeline_cache = surface != VkSurfaceKHR{};
     LoadStaticPipelineCache();
 
+    if (owns_static_pipeline_cache) {
+        // The rendering device: report the driver's fault description when a Vulkan call fails
+        // with VK_ERROR_DEVICE_LOST (those calls throw instead of reaching ReportLoss).
+        vk::SetDeviceLostHandler([this] { LogDeviceFault("VK_ERROR_DEVICE_LOST raised"); });
+    }
+
     // Initialize GPU logging if enabled
     InitializeGPULogging();
 }
 
 Device::~Device() {
+    if (owns_static_pipeline_cache) {
+        vk::SetDeviceLostHandler({});
+    }
     SaveStaticPipelineCache();
     ShutdownGPULogging();
     vmaDestroyAllocator(allocator);

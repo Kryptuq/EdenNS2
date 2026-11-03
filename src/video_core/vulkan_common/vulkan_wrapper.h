@@ -9,6 +9,7 @@
 #include <array>
 #include <exception>
 #include <limits>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -136,6 +137,11 @@ private:
 
     VkResult result;
 };
+
+/// NS2 diagnostics: called once, on the first VK_ERROR_DEVICE_LOST raised as an exception, before
+/// the exception propagates (the driver's fault report is only available after the loss). Other
+/// threads raising it at the same time wait until the handler returned. Empty to remove.
+void SetDeviceLostHandler(std::function<void()> handler);
 
 /// Throws a Vulkan exception if result is not success.
 inline void Check(VkResult result) {

@@ -561,3 +561,13 @@ Logged now:
 - ns2_crash.txt is written unbuffered and appended to (emptied at game start), so a partly written report survives, and the abort() report also names the exception in flight.
 Experiment (off unless set):
 - EDEN_NS2_SKIP_PIPELINE=<hash>[,<hash>...] skips all dispatches of those compute pipelines (hashes as in "NS2 dispatch resources"); their outputs keep their old contents. Used with a7e217052ec1940b to see whether the frame continues without that shader and whether another shader fails after it.
+
+## Build 105 (diagnostics only, no behaviour change)
+Build 104 results (user):
+- Test A (normal): compute shader a7e217052ec1940b hung on its first run; 1.7 s later VK_ERROR_DEVICE_LOST was raised as an exception in the threads "GPU" and "GPUFencingThread" at the same moment, neither caught it, and the process ended through abort() (Windows application log: ucrtbase.dll, c0000409). This is the complete chain from the GPU error to Eden closing. ns2_crash.txt was readable but interleaved, because both threads wrote at once.
+- Test B (EDEN_NS2_SKIP_PIPELINE=a7e217052ec1940b): no hang and no crash; about 30 s in the upscaled area, then a normal exit. The scene textures are missing there (the skipped shader writes the final upscaled image). So this shader is the only work that fails at the area entry.
+- The driver's fault report was not logged: the failing Vulkan calls throw an exception instead of going through the device-loss report, and the report is only available after the loss.
+- Separate, rare: a crash at boot in the GPU thread (access violation reading address 0) while uploading a texture whose descriptor says 65536x65536, format 52, size 0. Not part of this build.
+Logged now:
+- On the first VK_ERROR_DEVICE_LOST raised as an exception, the driver's fault report (description, faulting GPU addresses and their kind, vendor codes) is logged before the exception continues ("Device fault report (VK_ERROR_DEVICE_LOST raised) ..."). A second thread losing the device at the same moment waits until the report is written.
+- Crash reports of several threads are written one after the other.
