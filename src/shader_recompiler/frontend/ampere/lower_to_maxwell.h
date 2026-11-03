@@ -95,6 +95,40 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         return result;
     };
     if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
+    // Every instruction some branch, call or reconvergence scope can transfer control to, for
+    // checks that a register set up a few instructions earlier still holds on arrival.
+    std::vector<bool> transfer_target(code.size() + 1, false);
+    for (u32 i = 0; i < code.size(); ++i) {
+        const u32 op = code[i].Bits(0, 12);
+        if (op != 0x947 && op != 0x944 && op != 0x945) continue;
+        u64 raw = code[i].words[1] | (u64{code[i].words[2] & 0x3ffff} << 32);
+        if (op == 0x947 && code[i].Bits(91, 1)) raw &= ~u64{3};
+        const s64 relative = op == 0x945 ? static_cast<s32>(code[i].words[1])
+                                         : static_cast<s64>(raw << 14) >> 14;
+        const s64 target = s64{i} * 16 + 16 + relative;
+        if (target >= 0 && target % 16 == 0 && target / 16 <= static_cast<s64>(code.size()))
+            transfer_target[static_cast<size_t>(target / 16)] = true;
+    }
+    // Destination register of an instruction for those checks; wide results cover up to four
+    // registers from it. RZ (255) and instructions without a register result return ~0U.
+    const auto writes_register = [&](const Instruction& other, u32 reg) {
+        const u32 op = other.Bits(0, 12);
+        if (op == 0x947 || op == 0x944 || op == 0x945 || op == 0x941 || op == 0x942 ||
+            op == 0x94d || op == 0x950 || op == 0xb1d || op == 0x918 || op == 0x948 || op == 0x348 ||
+            op == 0x986 || op == 0x388)
+            return false; // control flow, barriers, NOP, warp sync and stores write no register
+        const u32 dest = other.Bits(16, 8);
+        if (dest == 255) return false;
+        // Results wider than one register: IMAD.WIDE (two) and loads (by their size field).
+        u32 count = 1;
+        if (op == 0x625 || op == 0xa25 || op == 0x225 || op == 0x825) count = 2;
+        if (op == 0x981 || op == 0x381 || op == 0x984 || op == 0xb82 || op == 0x983 || op == 0x9b9) {
+            const u32 size = other.Bits(73, 3);
+            count = size == 6 ? 4U : size == 5 ? 2U : 1U;
+        }
+        if (op == 0x9b9 || op == 0xb82) count = std::max(count, 2U); // conservative for constant loads
+        return dest <= reg && reg < dest + count;
+    };
     for (u32 index = 0; index < code.size(); ++index) {
         auto insn = code[index];
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
@@ -1400,6 +1434,14 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(base(0x5c08000000000000ULL) | (u64{source} << 20) | (u64{insn.Bits(63, 1)} << 40));
             break;
         }
+        case 0x348: // WARPSYNC with a register mask (bits 32-39).
+            // Same reasoning as the immediate form: the warp intrinsics that follow are
+            // translated over the active invocations, so the sync itself has nothing to do.
+            if ((insn.words[0] & 0xffffU) != 0x7348 || (insn.words[1] & ~0xffU) ||
+                insn.words[2] != 0x03800000U)
+                return fail(index, "native register-mask warp synchronization");
+            emit(0x50b0000000000f00ULL | predicate);
+            break;
         case 0x948: // WARPSYNC with a full mask: no-op for per-thread translation.
             if (insn.words[1] != 0xffffffffU || insn.words[2] != 0x03800000U)
                 return fail(index, "native partial warp synchronization");
@@ -2694,18 +2736,35 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                     break;
                 }
             }
-            if (main_exited || index == 0 || insn.words[0] != 0x7944 ||
-                (insn.words[2] & ~0x3ffffU) != 0x03c00000 ||
-                (code[index - 1].words[0] & ~0x00ff0000U) != 0x00007802 ||
-                code[index - 1].Bits(16, 8) >= 250 ||
-                code[index - 1].words[1] != (index + 1) * 16 ||
-                code[index - 1].words[2] != 0xf00)
+            // The return PC is moved into the link register before the call: directly before it,
+            // or earlier in the same straight-line code when nothing in between writes the link
+            // register and no branch enters between the move and the call.
+            u32 link_move = ~0U;
+            if (!main_exited && index > 0 && insn.words[0] == 0x7944 &&
+                (insn.words[2] & ~0x3ffffU) == 0x03c00000) {
+                for (u32 back = 1; back <= 32 && back <= index; ++back) {
+                    const auto& prior = code[index - back];
+                    if (transfer_target[index - back + 1]) break;
+                    if ((prior.words[0] & ~0x00ff0000U) == 0x00007802 && prior.Bits(16, 8) < 250 &&
+                        prior.words[1] == (index + 1) * 16 && prior.words[2] == 0xf00) {
+                        const u32 candidate = prior.Bits(16, 8);
+                        bool overwritten = false;
+                        for (u32 k = index - back + 1; k < index; ++k)
+                            overwritten |= writes_register(code[k], candidate);
+                        if (!overwritten) link_move = index - back;
+                        break;
+                    }
+                    const u32 op = prior.Bits(0, 12);
+                    if (op == 0x947 || op == 0x944 || op == 0x94d || op == 0x950) break;
+                }
+            }
+            if (link_move == ~0U)
                 return fail(index, "native call linkage mode");
             const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native call destination alignment");
-            const u32 link = code[index - 1].Bits(16, 8);
+            const u32 link = code[link_move].Bits(16, 8);
             for (size_t call = 0; call < call_targets.size(); ++call) {
                 if (call_targets[call] == target / 16 && call_links[call] != link)
                     return fail(index, "native inconsistent call linkage");
@@ -2724,20 +2783,32 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             // Returning through the link register itself needs no low move (callees never write it).
             bool low_set = active_link && return_reg == *active_link, high_set = false;
             if (main_exited && active_link && return_reg < 249) {
-                for (u32 back = 1; back <= 6 && back <= index && !(low_set && high_set); ++back) {
+                // Other instructions (return values, warp operations) may sit between the moves
+                // and the return, as long as they write neither register of the pair and no
+                // branch enters in between.
+                for (u32 back = 1; back <= 16 && back <= index && !(low_set && high_set); ++back) {
+                    if (transfer_target[index - back + 1]) break;
                     const auto& prior = code[index - back];
                     const u32 prior_dest = prior.Bits(16, 8);
-                    const bool plain_move = (prior.words[0] & 0xff00ffffU) == 0x00007202U ||
-                                            (prior.words[0] & 0xff00ffffU) == 0x00007802U;
-                    if (!plain_move || prior.words[2] != 0xf00 ||
-                        ((prior.words[0] & 0xfff) == 0x202 && (prior.words[1] & ~0xffU)))
-                        break;
-                    if (prior_dest == return_reg) {
+                    const bool plain_move = ((prior.words[0] & 0xff00ffffU) == 0x00007202U ||
+                                             (prior.words[0] & 0xff00ffffU) == 0x00007802U) &&
+                                            prior.words[2] == 0xf00 &&
+                                            !((prior.words[0] & 0xfff) == 0x202 && (prior.words[1] & ~0xffU));
+                    // IMAD.MOV.U32 Rd, RZ, RZ, 0: another way to clear the high word.
+                    const bool zero_move = (prior.words[0] & 0xff00ffffU) == 0xff007424U &&
+                                           prior.words[1] == 0 && prior.words[2] == 0x078e00ffU;
+                    if (plain_move && prior_dest == return_reg) {
                         if (low_set || (prior.words[0] & 0xfff) != 0x202 || prior.words[1] != *active_link) break;
                         low_set = true;
-                    } else if (prior_dest == return_reg + 1) {
-                        if (high_set || (prior.words[0] & 0xfff) != 0x802 || prior.words[1]) break;
+                    } else if ((plain_move || zero_move) && prior_dest == return_reg + 1) {
+                        if (high_set || (plain_move && ((prior.words[0] & 0xfff) != 0x802 || prior.words[1]))) break;
                         high_set = true;
+                    } else if (writes_register(prior, return_reg) || writes_register(prior, return_reg + 1)) {
+                        break;
+                    } else {
+                        const u32 op = prior.Bits(0, 12);
+                        if (op == 0x947 || op == 0x944 || op == 0x94d || op == 0x950) break;
+                        continue;
                     }
                     linkage_start = index - back;
                 }
@@ -2766,6 +2837,20 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             // independently, so all three are no-ops (from Eglantine).
             break;
         case 0x947: { // BRA
+            if (insn.Bits(91, 1)) {
+                // Warp-convergence branch (register in bits 24-31, bit 91; the two lowest bits
+                // of the offset field are flags). The compiler emits it to choose between two
+                // equivalent implementations of a warp intrinsic: the target runs the shuffle
+                // directly, the fall-through re-synchronises the warp (WARPSYNC) first. The
+                // fall-through is correct in every case, so the branch is never taken here.
+                const u64 raw = (insn.words[1] & ~3U) | (u64{insn.words[2] & 0x3ffff} << 32);
+                const s64 relative = static_cast<s64>(raw << 14) >> 14;
+                const s64 target = s64{index} * 16 + 16 + relative;
+                if (insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x3ffffU) != 0x0b800000 ||
+                    relative <= 0 || target % 16 || target / 16 >= static_cast<s64>(code.size()))
+                    return fail(index, "native warp convergence branch mode");
+                break;
+            }
             u64 branch_predicate = predicate;
             if (insn.Bits(87, 4) != 7) {
                 if (insn.Bits(12, 4) != 7) {
