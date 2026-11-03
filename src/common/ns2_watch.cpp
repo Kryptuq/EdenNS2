@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <exception>
 #include <mutex>
 #include <string>
@@ -20,6 +21,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <tlhelp32.h>
 #endif
 
 #include "common/logging.h"
@@ -434,6 +436,88 @@ namespace {
     std::abort();
 }
 } // namespace
+
+u64 CurrentThreadId() {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#else
+    return 0;
+#endif
+}
+
+std::string DescribeThreadStack(u64 thread_id) {
+#if defined(_WIN32) && defined(_M_X64)
+    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                               FALSE, static_cast<DWORD>(thread_id));
+    if (!thread) {
+        return "(thread not accessible)";
+    }
+    // Nothing may allocate while the thread is suspended (it may hold the heap lock).
+    std::array<DWORD64, 48> frames{};
+    size_t count = 0;
+    if (SuspendThread(thread) != static_cast<DWORD>(-1)) {
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_FULL;
+        if (GetThreadContext(thread, &context)) {
+            for (; count < frames.size() && context.Rip != 0; ++count) {
+                frames[count] = context.Rip;
+                DWORD64 image_base{};
+                PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+                if (!function) {
+                    // Leaf function: the return address is on top of the stack.
+                    if (!context.Rsp) break;
+                    context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
+                    context.Rsp += 8;
+                } else {
+                    PVOID handler_data{};
+                    DWORD64 establisher_frame{};
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
+                                     &handler_data, &establisher_frame, nullptr);
+                }
+            }
+        }
+        ResumeThread(thread);
+    }
+    CloseHandle(thread);
+    std::string text;
+    for (size_t i = 0; i < count; ++i) {
+        uintptr_t offset{};
+        const std::string module = ModuleOf(reinterpret_cast<const void*>(frames[i]), &offset);
+        text += fmt::format(" {}+{:#x}", module.empty() ? std::string{"?"} : module,
+                            static_cast<unsigned long long>(offset));
+    }
+    return text.empty() ? std::string{"(no frames)"} : text;
+#else
+    (void)thread_id;
+    return {};
+#endif
+}
+
+std::string OtherInstancesOfThisProgram() {
+#ifdef _WIN32
+    wchar_t path[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    const wchar_t* base = std::wcsrchr(path, L'\\');
+    const wchar_t* name = base ? base + 1 : path;
+    std::string text;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return text;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    const DWORD self = GetCurrentProcessId();
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID != self && _wcsicmp(entry.szExeFile, name) == 0) {
+                text += fmt::format("{}pid {}", text.empty() ? "" : ", ", entry.th32ProcessID);
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return text;
+#else
+    return {};
+#endif
+}
 
 void CheckCrashReport() {
 #ifdef _WIN32

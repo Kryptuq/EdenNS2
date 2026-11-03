@@ -61,6 +61,14 @@ void RunGpuPoll();
 /// a stack of return addresses) and every thread's current phase to `path` before the process
 /// dies. Eden's own log is written asynchronously and loses its last lines in a crash.
 void InstallCrashReport(const std::string& path);
+/// Operating-system id of the calling thread.
+u64 CurrentThreadId();
+/// Return addresses of another thread's stack ("module+offset" each), taken by suspending it
+/// briefly (Windows x64, unwind data only, no symbols). Empty elsewhere or on failure.
+std::string DescribeThreadStack(u64 thread_id);
+/// Other running processes with the same executable name as this one ("pid 123, pid 456").
+std::string OtherInstancesOfThisProgram();
+
 /// Installs the uncaught-exception report for the calling thread (per thread on MSVC; called by
 /// Common::SetCurrentThreadName, so every named thread has it).
 void InstallThreadTerminateHandler();

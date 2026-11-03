@@ -4,12 +4,16 @@
 #include <array>
 #include <cstdlib>
 #include <atomic>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 #include <memory>
 #include <utility>
 
 #include "game_settings.h"
 #include "common/cpu_features.h"
 #include "common/ns2_watch.h"
+#include "common/thread.h"
 #include "common/fs/path_util.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
@@ -298,6 +302,44 @@ struct System::Impl {
     }
 
     SystemResultStatus Load(System& system, Frontend::EmuWindow& emu_window, const std::string& filepath, Service::AM::FrontendAppletParameters& params) {
+        // NS2 diagnostics: a load that does not finish (the window stops responding) logs where
+        // the loading thread is, every 15 s. Another running instance of Eden is reported first:
+        // one that is still shutting down can hold files and memory.
+        if (const std::string others = Common::NS2Watch::OtherInstancesOfThisProgram(); !others.empty()) {
+            LOG_WARNING(Core, "NS2: other instances of this program are still running: {}", others);
+        }
+        struct LoadWatch {
+            std::mutex mutex;
+            std::condition_variable done_cv;
+            bool done = false;
+            std::thread thread;
+            ~LoadWatch() {
+                {
+                    std::scoped_lock lock{mutex};
+                    done = true;
+                }
+                done_cv.notify_all();
+                if (thread.joinable()) thread.join();
+            }
+        } load_watch;
+        load_watch.thread = std::thread([&load_watch, loader_thread = Common::NS2Watch::CurrentThreadId()] {
+            Common::SetCurrentThreadName("NS2LoadWatch");
+            std::unique_lock lock{load_watch.mutex};
+            for (u32 seconds = 15; !load_watch.done; seconds += 15) {
+                if (load_watch.done_cv.wait_for(lock, std::chrono::seconds{15}, [&] { return load_watch.done; })) break;
+                std::string phases;
+                for (const auto& phase : Common::NS2Watch::CollectPhases(0)) {
+                    phases += fmt::format(" [{}: {} {} for {} ms]", phase.thread, phase.label, phase.detail, phase.age_ms);
+                }
+                LOG_CRITICAL(Core, "NS2: loading has not finished after {} s; phases:{}; loading thread stack:{}",
+                             seconds, phases.empty() ? std::string{" none"} : phases,
+                             Common::NS2Watch::DescribeThreadStack(loader_thread));
+                if (const std::string others = Common::NS2Watch::OtherInstancesOfThisProgram(); !others.empty()) {
+                    LOG_CRITICAL(Core, "NS2: other instances of this program are running: {}", others);
+                }
+            }
+        });
+        Common::NS2Watch::PhaseScope load_phase{"loading", "start"};
         if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {
             fs_controller.InitTempStorage();
         }
@@ -330,7 +372,9 @@ struct System::Impl {
             LOG_INFO(Core, "Guest counter frequency: {} Hz (program {:016X})", cntfrq, early_program_id);
         }
 
+        Common::NS2Watch::SetPhase("loading", "kernel initialization");
         InitializeKernel(system);
+        Common::NS2Watch::SetPhase("loading", "application process");
 
         if (params.applet_type == Service::AM::AppletType::Application) {
             current_application_filepath = filepath;
@@ -380,6 +424,7 @@ struct System::Impl {
         kernel.SetApplicationProcess(process->GetHandle());
 
         // Set up the rest of the system.
+        Common::NS2Watch::SetPhase("loading", "GPU, audio and services");
         SystemResultStatus init_result{SetupForApplicationProcess(system, emu_window)};
         if (init_result != SystemResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to initialize system (Error {})!", int(init_result));
@@ -387,7 +432,9 @@ struct System::Impl {
             return init_result;
         }
         // Waiting for GPU before initializing CPU
+        Common::NS2Watch::SetPhase("loading", "CPU cores");
         cpu_manager.Initialize();
+        Common::NS2Watch::SetPhase("loading", "applet manager");
 
         // Initialize cheat engine
         if (cheat_engine) {
