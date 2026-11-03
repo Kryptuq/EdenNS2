@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -138,4 +139,21 @@ TEST_CASE("CoreTiming[BasicOrderNoPausing]", "[core]") {
     printf("HostTimer No Pausing Scheduling Time: %.3f %.6f\n", micro, mili);
     printf("HostTimer No Pausing Timer Time: %.3f %.6f\n", timer_time / 1000.f,
            timer_time / 1000000.f);
+}
+
+// Re-initializing a multicore CoreTiming (as System::Load does when a per-game setting such as the
+// memory layout differs from the global one) must stop the previous timer thread. The thread used to
+// be able to consume the wake-up before the stop request was visible and then wait forever, so
+// Reset() hung in join() and the loading thread (the GUI thread) stopped responding.
+TEST_CASE("CoreTiming[ReinitializeStopsTimerThread]", "[core]") {
+    Core::Timing::CoreTiming core_timing;
+    core_timing.SetMulticore(true);
+    for (int i = 0; i < 20000; ++i) {
+        core_timing.Initialize([]() {});
+        if (i % 4 == 0) {
+            // Let the new thread reach its paused wait, which is where the hang happened.
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    }
+    SUCCEED();
 }

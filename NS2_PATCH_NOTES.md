@@ -654,3 +654,16 @@ Build 113 results (user):
 Logged now:
 - At the start of loading, other running instances of Eden are listed ("NS2: other instances of this program are still running: pid ..."): a force-closed instance that is still shutting down can hold files and memory.
 - If loading has not finished after 15 s (and every 15 s after that), the current phase of every reporting thread and the loading thread's stack (module+offset, taken by briefly suspending it) are logged ("NS2: loading has not finished after ... s ..."). The loading thread reports its step: kernel initialization, application process, GPU/audio/services, CPU cores, applet manager.
+
+## Build 115 (fix: loading could hang forever while restarting the core timer thread)
+Build 114 results (user):
+- Loading hung on the first try: "Not responding", only one eden.exe running, no other instance reported. So the leftover-process hypothesis is ruled out.
+- The load watchdog reported "kernel initialization" for 15 s, 30 s, ... 105 s, always with the same loading thread stack. The loading thread is the GUI thread, which is why Windows showed "Not responding".
+Root cause (stack mapped against the build 114 eden.exe through its unwind table and string references):
+- Load -> InitializeKernel -> ReinitializeIfNecessary -> Initialize -> CoreTiming::Initialize -> CoreTiming::Reset -> std::thread::join (the innermost frame copies a thread handle and calls _Thrd_join). Loading re-initializes the system when the multicore or memory-layout setting differs from the one used at startup.
+- CoreTiming::Reset woke the timer thread (pause_event.Set, event.Set) before it requested the stop. These events reset when a waiter consumes them. If the timer thread (VeryHigh priority) woke before request_stop, it saw no stop request, consumed the signal, went back into pause_event.Wait() and never woke again, so join() never returned. This is stock Eden code, and it is a timing race, which is why the hang is intermittent.
+- Reproduced locally: a unit test re-initializing a multicore CoreTiming hung every time (3 of 3 runs, killed after 120 s; gdb showed the main thread in Reset -> join and HostTiming in its wait).
+Changed:
+- CoreTiming::Reset requests the stop before it signals the events. The thread loop checks the stop request before it waits on pause_event again. The events latch until a waiter consumes them, so the thread now always sees the stop.
+- The same Reset runs when CoreTiming is destroyed (when emulation stops), so that path can no longer hang on this race either.
+- Test "CoreTiming[ReinitializeStopsTimerThread]" (20000 re-initializations) passes in about 2 s, 5 of 5 runs.
