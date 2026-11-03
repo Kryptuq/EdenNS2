@@ -571,3 +571,11 @@ Build 104 results (user):
 Logged now:
 - On the first VK_ERROR_DEVICE_LOST raised as an exception, the driver's fault report (description, faulting GPU addresses and their kind, vendor codes) is logged before the exception continues ("Device fault report (VK_ERROR_DEVICE_LOST raised) ..."). A second thread losing the device at the same moment waits until the report is written.
 - Crash reports of several threads are written one after the other.
+
+## Build 106 (diagnostics only, no behaviour change)
+Build 105 results (user, two runs):
+- Upscaled area: at the device loss the driver reported the fault for the first time: an invalid write to GPU address 0x4682b2000 (page precision) and the faulting instruction at 0x200a1fae0. The failing compute shader a7e217052ec1940b writes only to shared memory (clamped since build 102), one private counter and its four storage images (17 image stores). Image robustness is enabled, so a store outside an image's extent is discarded and cannot fault; the fault points at an image whose memory or descriptor is invalid (freed or reused memory, or a view of the wrong type or format). Not decided yet.
+- Separate freeze after loading the save: compute shader bc1435f72b042b2c (the gameplay-freeze shader of build 99) was started with a grid of 1134007260x19633x56989 workgroups and never finished; its earlier runs had 125x1x1. The grid comes from a QMD read from guest memory; another pipeline (9853bcba55b9e307) writes a storage buffer at the shader's own address. Leading explanation: launch parameters in memory the host GPU wrote, read from the stale guest copy. Not proven.
+Logged now:
+- With VK_NVX_image_view_handle (NVIDIA), every image in "NS2 dispatch resources" also shows the GPU address range of its view (" host=<address>+<size>"), so a device fault address can be matched to an image.
+- QMDs with an implausible grid (more than 2^24 workgroups): address, grid, code address, whether the host GPU wrote that memory, and the raw words ("NS2: native QMD ... implausible grid"). The first QMD addresses whose memory the host GPU modified and that was not downloaded are logged as warnings.

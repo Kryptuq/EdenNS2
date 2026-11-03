@@ -911,6 +911,22 @@ void Device::ReportLoss() const {
     std::this_thread::sleep_for(std::chrono::seconds{15});
 }
 
+std::optional<std::pair<u64, u64>> Device::ImageViewAddress(VkImageView view) const {
+    if (!extensions.image_view_handle || view == VK_NULL_HANDLE) {
+        return std::nullopt;
+    }
+    VkImageViewAddressPropertiesNVX properties{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_ADDRESS_PROPERTIES_NVX,
+        .pNext = nullptr,
+        .deviceAddress = 0,
+        .size = 0,
+    };
+    if (logical.GetImageViewAddress(view, properties) != VK_SUCCESS) {
+        return std::nullopt;
+    }
+    return std::make_pair(static_cast<u64>(properties.deviceAddress), static_cast<u64>(properties.size));
+}
+
 bool Device::LogDeviceFault(const char* context) const {
     if (!SupportsDeviceFaultReports()) {
         LOG_ERROR(Render_Vulkan, "Device fault report ({}): not supported by the driver", context);
@@ -1116,6 +1132,11 @@ bool Device::GetSuitability(bool requires_swapchain) {
     if (supported_extensions.contains(VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
         loaded_extensions.insert(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         extensions.device_fault = true;
+    }
+    // NVIDIA image view GPU addresses, to map a faulting GPU address to an image (diagnostics).
+    if (supported_extensions.contains(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME)) {
+        loaded_extensions.insert(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
+        extensions.image_view_handle = true;
     }
 
     extensions.depth_stencil_resolve =

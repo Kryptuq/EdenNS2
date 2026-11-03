@@ -171,6 +171,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdResetQueryPool);
     X(vkCmdWriteTimestamp);
     X(vkGetDeviceFaultInfoEXT);
+    X(vkGetImageViewAddressNVX);
     X(vkCmdResolveImage);
     X(vkCreateBuffer);
     X(vkCreateBufferView);

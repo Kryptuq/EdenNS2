@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <optional>
+#include <utility>
 #include <set>
 #include <span>
 #include <string>
@@ -707,6 +708,10 @@ FN_MAX_LIMIT_LIST
     /// true when the driver reported anything.
     bool LogDeviceFault(const char* context) const;
 
+    /// GPU address and size of an image view's memory (VK_NVX_image_view_handle), for matching
+    /// device fault addresses to images. Empty when unsupported.
+    std::optional<std::pair<u64, u64>> ImageViewAddress(VkImageView view) const;
+
     /// Nanoseconds per timestamp tick (NS2 GPU timing diagnostics).
     float GetTimestampPeriod() const {
         return properties.properties.limits.timestampPeriod;
@@ -1192,6 +1197,8 @@ private:
 #undef FEATURE
         // VK_EXT_device_fault (its feature struct name does not follow the FEATURE macro pattern).
         bool device_fault{};
+        // VK_NVX_image_view_handle (diagnostics: GPU addresses of image views).
+        bool image_view_handle{};
     };
 
     struct Features {

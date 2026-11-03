@@ -2645,6 +2645,30 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::NullImageV
 
 ImageView::~ImageView() = default;
 
+std::string ImageView::DescribeHostAddress() const {
+    if (!device) {
+        return {};
+    }
+    VkImageView view = render_target;
+    for (const auto& candidate : image_views) {
+        if (view != VK_NULL_HANDLE) {
+            break;
+        }
+        view = *candidate;
+    }
+    if (view == VK_NULL_HANDLE) {
+        view = *color_view;
+    }
+    if (view == VK_NULL_HANDLE) {
+        view = *typeless_storage_view;
+    }
+    const auto address = device->ImageViewAddress(view);
+    if (!address) {
+        return {};
+    }
+    return fmt::format(" host={:#x}+{:#x}", address->first, address->second);
+}
+
 VkImageView ImageView::DepthView() {
     if (!image_handle) {
         return VK_NULL_HANDLE;

@@ -235,6 +235,9 @@ private:
     bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& descriptor);
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;
+    /// NS2 diagnostics: address of the QMD read last (the one DispatchNativeCompute runs).
+    GPUVAddr native_qmd_read_address{};
+    void LogNativeQmd(const NativeQmdScheduler::Descriptor& qmd);
     bool native_mode{};
     NativeMacroContext* native_context{};
     bool native_compute_uploaded{};
