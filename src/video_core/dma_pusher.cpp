@@ -14,6 +14,7 @@
 #include "common/cityhash.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "video_core/ns2_command_trace.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/control/channel_state.h"
@@ -110,6 +111,18 @@ bool DmaPusher::Step() {
                 ? command_list.captured_sequences[dma_pushbuffer_subindex] : 0;
             resume_from_capture = UseCapturedCommands(header.addr, captured, sequence);
         }
+        if (command_resume_offset == 0) {
+            using VideoCommon::NS2CommandTrace::ListSource;
+            u64 age_us = 0;
+            if (command_list.captured_time_us != 0) {
+                const u64 now_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                age_us = now_us - command_list.captured_time_us;
+            }
+            VideoCommon::NS2CommandTrace::NoteList(channel_state.bind_id, header.addr,
+                static_cast<u32>(header.size),
+                captured.empty() ? ListSource::Live : static_cast<ListSource>(last_list_source), age_us);
+        }
         const bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
         if (!captured.empty() && resume_from_capture) {
             command_resume_offset += ProcessCommands(captured.subspan(command_resume_offset), command_resume_offset);
@@ -156,13 +169,16 @@ bool DmaPusher::Step() {
 // The current contents belong to a later submission when that submission captured exactly them.
 // Lists the GPU itself wrote since (GPU-generated commands) always run from memory.
 bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHeader> captured, u64 sequence) {
+    using VideoCommon::NS2CommandTrace::ListSource;
     const size_t bytes = captured.size_bytes();
     if (memory_manager.IsMemoryDirty(address, bytes)) {
+        last_list_source = static_cast<u32>(ListSource::GpuWritten);
         return false;
     }
     live_headers.resize_destructive(captured.size());
     memory_manager.ReadBlockUnsafe(address, live_headers.data(), bytes);
     if (std::memcmp(live_headers.data(), captured.data(), bytes) == 0) {
+        last_list_source = static_cast<u32>(ListSource::Captured);
         return true;
     }
     u64 live_hash = Common::CityHash64(reinterpret_cast<const char*>(live_headers.data()), bytes);
@@ -182,6 +198,7 @@ bool DmaPusher::UseCapturedCommands(GPUVAddr address, std::span<const CommandHea
         ++waited_lists;
     }
     NativeSubmissions::NoteOutcome(channel_state.bind_id, address, reused);
+    last_list_source = static_cast<u32>(reused ? ListSource::Reused : ListSource::Completed);
     const u64 count = reused ? ++reused_lists : ++completed_lists;
     if (count <= 16 || count % 1000 == 0) {
         LOG_INFO(HW_GPU, "NS2: ch={} command list {:#x} ({} words) changed after submission: {} (#{}; reused {}, completed in place {}, waited for a submission {})",
@@ -281,7 +298,9 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                 dma_state.method = command_header.method;
                 dma_state.subchannel = command_header.subchannel;
                 dma_state.dma_word_offset = u64(-s64(dma_state.dma_get)); // negate to set address as 0
+                trace_inline_source = dma_state.dma_get + u64(word_offset + index) * sizeof(u32);
                 CallMethod(command_header.arg_count);
+                trace_inline_source = 0;
                 dma_state.non_incrementing = true;
                 dma_increment_once = false;
                 break;
@@ -307,6 +326,8 @@ void DmaPusher::SetState(const CommandHeader& command_header) {
 }
 
 void DmaPusher::CallMethod(u32 argument) {
+    VideoCommon::NS2CommandTrace::NoteMethod(dma_state.subchannel, dma_state.method, argument,
+        trace_inline_source != 0 ? trace_inline_source : dma_state.dma_get + dma_state.dma_word_offset);
     if (dma_state.method < non_puller_methods) {
         puller.CallPullerMethod(*this, Engines::Puller::MethodCall{
             dma_state.method,
@@ -327,6 +348,11 @@ void DmaPusher::CallMethod(u32 argument) {
 }
 
 void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+    // Every argument of a non-incrementing method goes to the same method; record up to 64.
+    for (u32 i = 0; i < std::min<u32>(num_methods, 64); ++i) {
+        VideoCommon::NS2CommandTrace::NoteMethod(dma_state.subchannel, dma_state.method, base_start[i],
+            dma_state.dma_get + dma_state.dma_word_offset + u64{i} * sizeof(u32));
+    }
     if (dma_state.method < non_puller_methods) {
         puller.CallMultiMethod(*this, dma_state.method, dma_state.subchannel, base_start, num_methods, dma_state.method_count);
     } else {
