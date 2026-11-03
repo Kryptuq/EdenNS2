@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <atomic>
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -14,6 +15,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/guest_memory.h"
+#include "video_core/ns2_qmd_watch.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_query_trace.h"
 #include "video_core/renderer_base.h"
@@ -83,6 +85,27 @@ void MaxwellDMA::Launch() {
         }
     }
 
+    // NS2 diagnostics: copies over the grid words of a known QMD (see ns2_qmd_watch.h).
+    const bool ns2_watch = memory_manager.UsesNativeTiling();
+    bool ns2_source_gpu_modified = false;
+    const u64 ns2_lines = regs.launch_dma.multi_line_enable ? std::max<u64>(regs.line_count, 1) : 1;
+    const u64 ns2_size = (ns2_lines - 1) * static_cast<u64>(std::abs(static_cast<s64>(regs.pitch_out))) +
+                         regs.line_length_in;
+    if (ns2_watch) {
+        if (const auto source = memory_manager.GpuToCpuAddress(regs.offset_in)) {
+            ns2_source_gpu_modified = rasterizer->MustFlushRegion(*source, regs.line_length_in);
+        }
+    }
+    const auto ns2_note = [&] {
+        if (!ns2_watch) return;
+        VideoCommon::NS2QmdWatch::NoteWrite("copy engine", regs.offset_out, ns2_size, regs.offset_in,
+                                            ns2_source_gpu_modified, [&](u64 qmd) {
+            std::array<u32, 3> grid{};
+            memory_manager.ReadBlockUnsafe(qmd + 0x30, grid.data(), sizeof(grid));
+            return grid;
+        });
+    };
+
     // TODO(Subv): Perform more research and implement all features of this engine.
     const LaunchDMA& launch = regs.launch_dma;
     ASSERT(launch.interrupt_type == LaunchDMA::InterruptType::NONE);
@@ -94,6 +117,7 @@ void MaxwellDMA::Launch() {
         if (!is_src_pitch && !is_dst_pitch) {
             // If both the source and the destination are in block layout, assert.
             CopyBlockLinearToBlockLinear();
+            ns2_note();
             ReleaseSemaphore();
             return;
         }
@@ -173,6 +197,7 @@ void MaxwellDMA::Launch() {
         }
     }
 
+    ns2_note();
     ReleaseSemaphore();
 }
 

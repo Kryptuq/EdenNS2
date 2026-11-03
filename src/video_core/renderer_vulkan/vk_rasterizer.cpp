@@ -40,6 +40,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/ns2_qmd_watch.h"
 #include "common/ns2_watch.h"
 #include "video_core/ns2_draw_stats.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -886,6 +887,13 @@ void RasterizerVulkan::ResetCounter(VideoCommon::QueryType type) {
 
 void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                              VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    if (gpu_memory->UsesNativeTiling()) {
+        VideoCommon::NS2QmdWatch::NoteWrite("semaphore/report", gpu_addr, 16, payload, false, [&](u64 qmd) {
+            std::array<u32, 3> grid{};
+            gpu_memory->ReadBlockUnsafe(qmd + 0x30, grid.data(), sizeof(grid));
+            return grid;
+        });
+    }
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 
@@ -1202,6 +1210,15 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
         return;
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+    if (gpu_memory->UsesNativeTiling()) {
+        u32 first_word{};
+        if (memory.size() >= sizeof(first_word)) std::memcpy(&first_word, memory.data(), sizeof(first_word));
+        VideoCommon::NS2QmdWatch::NoteWrite("inline upload", address, copy_size, first_word, false, [&](u64 qmd) {
+            std::array<u32, 3> grid{};
+            gpu_memory->ReadBlockUnsafe(qmd + 0x30, grid.data(), sizeof(grid));
+            return grid;
+        });
+    }
     {
         std::unique_lock<std::recursive_mutex> lock{buffer_cache.mutex};
         if (!buffer_cache.InlineMemory(*cpu_addr, copy_size, memory)) {
