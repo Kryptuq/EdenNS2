@@ -18,7 +18,8 @@ enum class ListSource : u32 {
     Captured,      ///< Captured at submission and unchanged since.
     Reused,        ///< Changed, a later submission claimed the new contents: ran as submitted.
     Completed,     ///< Changed, nobody claimed the new contents: ran the current contents.
-    GpuWritten,    ///< The host GPU wrote the list memory: ran from memory.
+    GpuWritten,    ///< A GPU engine wrote the list memory: ran from memory.
+    HostGpuWritten, ///< Host GPU (shader) data in the list memory: downloaded, ran it.
 };
 
 /// The GPU thread starts a command list of `words` words at `address` of `channel`.

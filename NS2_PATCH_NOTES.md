@@ -681,3 +681,15 @@ Logged now (only when an implausible grid is seen, at most 4 times):
 - The last 400 command-list starts and methods of the channel. Each list shows how it was read (live, captured unchanged, changed and run as submitted, changed and run with current contents, GPU-written) and how long after submission. Each method shows its subchannel, method number, argument and the guest address of the argument. Macro-emitted methods are marked.
 - For the three inline QMD grid words: where their arguments were read from, what that guest memory holds now, and every change to it during the next 500 ms. If the game fills in the grid later, this shows it. A grid word written by a macro is reported as such.
 - Test "[ns2-trace]".
+
+## Build 117 (fix: indirect compute dispatches ran with stale group counts)
+Build 116 results (user):
+- About 12 minutes of play. One texture glitch mid-game: black blocks along the left edge of the book screen (not analysed yet). The game got stuck when the name-entry box should have appeared.
+- The log has 4 implausible grids at 560 s and 730 s. The one at 730 s (65794x259x258, shader 0x1b3ec54200) never finished on the host GPU, which is the hang at the name entry.
+Root cause (from the build 116 command trace, the same in all 4 cases):
+- In every case, a compute macro (method 0xe74/0xe75) wrote the grid words. Its three arguments did not come from the main command buffer. The previous list ends with the macro header ("increase once, 3 words"), and the next GPFIFO entry is a separate 3-word "list" in a data buffer (0x1b8fe0e400, 0x1b8e884000, 0x1ba3f6bb00). That is how this GPU does an indirect dispatch: it fetches the group counts as macro arguments straight from a buffer that earlier GPU work filled. Direct dispatches write 0xe74/0xe75 in the main command buffer instead.
+- The earlier compute shader runs on the host GPU in Eden, so guest memory does not hold its results. Eden ran these 3-word lists from the copy captured at submission or from guest memory: values like 00010102,00010103,00020102 or 0141b800,1,1, which are leftover data. The same applies to the ffffffff grid of build 115 and the float-like grid of build 112.
+Changed:
+- Before the GPU thread runs a command list on a native channel, it checks whether the host GPU holds newer data for that memory. If so, it downloads that data first (waiting for the earlier GPU work) and runs it, instead of the captured copy or the stale guest memory. The hardware also reads such a list only when it reaches it, after the earlier work. The first 32 such lists are logged ("was written by the host GPU: downloaded it before running it", with the captured, guest-memory and host-GPU words).
+- The command trace marks such lists "written by the host GPU, downloaded".
+- Cost: each indirect dispatch now waits for the host GPU once, which can cost some frame time in scenes that use them.
