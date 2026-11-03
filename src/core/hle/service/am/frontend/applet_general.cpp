@@ -218,6 +218,11 @@ StubApplet::~StubApplet() = default;
 void StubApplet::Initialize() {
     LOG_WARNING(Service_AM, "called (STUBBED)");
     FrontendApplet::Initialize();
+    LOG_INFO(Service_AM, "NS2: stub applet {:#x} common arguments: version={:#x} size={:#x} "
+             "library_version={:#x} theme_color={:#x} play_startup_sound={}",
+             static_cast<u32>(id), static_cast<u32>(common_args.arguments_version),
+             static_cast<u32>(common_args.size), common_args.library_version,
+             static_cast<u32>(common_args.theme_color), common_args.play_startup_sound);
 
     LogCurrentStorage(system.Kernel(), applet.lock(), "Initialize");
 }
@@ -228,8 +233,16 @@ Result StubApplet::GetStatus() const {
 }
 
 void StubApplet::ExecuteInteractive() {
-    LOG_WARNING(Service_AM, "called (STUBBED)");
-    LogCurrentStorage(system.Kernel(), applet.lock(), "ExecuteInteractive");
+    // A game can answer the zeroed reply with new interactive data forever (a keyboard's text
+    // check); log only the first calls.
+    if (interactive_calls++ < 8) {
+        LOG_WARNING(Service_AM, "called (STUBBED), call {}", interactive_calls);
+        LogCurrentStorage(system.Kernel(), applet.lock(), "ExecuteInteractive");
+    } else {
+        std::shared_ptr<IStorage> storage;
+        while (R_SUCCEEDED(applet.lock()->caller_applet_broker->GetInteractiveInData().Pop(system.Kernel(), &storage))) {
+        }
+    }
 
     PushOutData(std::make_shared<IStorage>(system, std::vector<u8>(0x1000)));
     PushInteractiveOutData(std::make_shared<IStorage>(system, std::vector<u8>(0x1000)));

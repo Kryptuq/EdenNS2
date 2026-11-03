@@ -693,3 +693,16 @@ Changed:
 - Before the GPU thread runs a command list on a native channel, it checks whether the host GPU holds newer data for that memory. If so, it downloads that data first (waiting for the earlier GPU work) and runs it, instead of the captured copy or the stale guest memory. The hardware also reads such a list only when it reaches it, after the earlier work. The first 32 such lists are logged ("was written by the host GPU: downloaded it before running it", with the captured, guest-memory and host-GPU words).
 - The command trace marks such lists "written by the host GPU, downloaded".
 - Cost: each indirect dispatch now waits for the host GPU once, which can cost some frame time in scenes that use them.
+
+## Build 118 (diagnostics only, no behaviour change)
+Build 117 results (user):
+- No garbage-grid freeze in this log. No implausible grid at all; the first 32 indirect-dispatch lists were downloaded from the host GPU (captured copy, for example 0000002c,00000019,00000001, versus the host GPU's data).
+- Choosing your own name for a creature hangs reproducibly. This is not a GPU problem:
+  - The game opens a library applet whose id has 0x11 (SoftwareKeyboard) in its low byte. Eden's switch does not match it, so it falls back to the stub applet ("No frontend implementation exists for applet_id=11").
+  - The game sends a 0x530-byte keyboard configuration ("Please enter a name for one of these creatures."). That is larger than any Switch 1 layout (largest 0x4C8), and its text sits at a different offset.
+  - The stub answers every call with zeroed data. The game takes that as an empty name and sends a 0x7D8-byte text-check reply ("That name cannot be used."), the size of the Switch 1 SwkbdTextCheck. This repeated 43450 times: the hang.
+Logged now:
+- The full 32-bit applet id and mode in CreateLibraryApplet / CreateLibraryAppletEx. The old message printed only the low byte.
+- The stub applet's common arguments (version, size, library version = keyboard protocol version, theme, startup sound).
+- Only the first 8 interactive calls of a stub applet are logged; the endless repeat filled the log.
+Next: with the id and the library version, route it to the software keyboard and add the Switch 2 configuration layout.

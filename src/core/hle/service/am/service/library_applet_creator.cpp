@@ -181,8 +181,8 @@ ILibraryAppletCreator::~ILibraryAppletCreator() = default;
 Result ILibraryAppletCreator::CreateLibraryApplet(
     Out<SharedPointer<ILibraryAppletAccessor>> out_library_applet_accessor, AppletId applet_id,
     LibraryAppletMode library_applet_mode) {
-    LOG_DEBUG(Service_AM, "called with applet_id={} applet_mode={}", applet_id,
-              library_applet_mode);
+    LOG_INFO(Service_AM, "NS2: CreateLibraryApplet applet_id={:#x} applet_mode={:#x}",
+             static_cast<u32>(applet_id), static_cast<u32>(library_applet_mode));
 
     std::shared_ptr<ILibraryAppletAccessor> library_applet;
     if (ShouldCreateGuestApplet(applet_id)) {
@@ -207,8 +207,8 @@ Result ILibraryAppletCreator::CreateLibraryApplet(
 Result ILibraryAppletCreator::CreateLibraryAppletEx(
     Out<SharedPointer<ILibraryAppletAccessor>> out_library_applet_accessor, AppletId applet_id,
     LibraryAppletMode library_applet_mode, u64 thread_id) {
-    LOG_DEBUG(Service_AM, "called with applet_id={} applet_mode={} thread_id={}", applet_id,
-              library_applet_mode, thread_id);
+    LOG_INFO(Service_AM, "NS2: CreateLibraryAppletEx applet_id={:#x} applet_mode={:#x} thread_id={:#x}",
+             static_cast<u32>(applet_id), static_cast<u32>(library_applet_mode), thread_id);
 
     std::shared_ptr<ILibraryAppletAccessor> library_applet;
     if (ShouldCreateGuestApplet(applet_id)) {

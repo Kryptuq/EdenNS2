@@ -87,6 +87,7 @@ public:
 
 private:
     AppletId id;
+    u32 interactive_calls{};
 };
 
 } // namespace Service::AM::Frontend
