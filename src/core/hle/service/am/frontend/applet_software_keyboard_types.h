@@ -30,6 +30,7 @@ enum class SwkbdAppletVersion : u32_le {
     Version327689 = 0x50009, // 5.0.0 - 5.1.0
     Version393227 = 0x6000B, // 6.0.0 - 7.0.1
     Version524301 = 0x8000D, // 8.0.0+
+    Version1310736 = 0x140010, // Switch 2 SDK (0x530-byte config)
 };
 
 enum class SwkbdType : u32 {
@@ -183,6 +184,11 @@ struct SwkbdConfigNew {
 };
 static_assert(sizeof(SwkbdConfigNew) == 0x4C8 - sizeof(SwkbdConfigCommon),
               "SwkbdConfigNew has incorrect size.");
+
+// Switch 2 SDK (library version 0x140010): 0x530 bytes. The common part matches the layout above
+// (type, prediction, cursor, header text at 0x24, maximum length at 0x3AC all agree with a real
+// configuration); the new tail starts like SwkbdConfigNew and adds 0x68 bytes of unknown use.
+constexpr size_t SwkbdConfigSwitch2Size = 0x530;
 #pragma pack(pop)
 
 struct SwkbdTextCheck {

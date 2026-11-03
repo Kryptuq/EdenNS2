@@ -22,6 +22,16 @@
 
 namespace Service::AM {
 
+AppletId NormalizeLibraryAppletId(u32 raw_id) {
+    // The Switch 2 SDK opens its software keyboard as 0x1020011: the old id 0x11 in the low bits
+    // with flags above. Its in/out data follows the Switch 1 keyboard protocol (text check replies
+    // are SwkbdTextCheck), so it is served by the same applet. Other ids stay as they are.
+    if (raw_id == 0x1020011) {
+        return AppletId::SoftwareKeyboard;
+    }
+    return static_cast<AppletId>(raw_id);
+}
+
 namespace {
 
 bool ShouldCreateGuestApplet(AppletId applet_id) {
@@ -183,6 +193,7 @@ Result ILibraryAppletCreator::CreateLibraryApplet(
     LibraryAppletMode library_applet_mode) {
     LOG_INFO(Service_AM, "NS2: CreateLibraryApplet applet_id={:#x} applet_mode={:#x}",
              static_cast<u32>(applet_id), static_cast<u32>(library_applet_mode));
+    applet_id = NormalizeLibraryAppletId(static_cast<u32>(applet_id));
 
     std::shared_ptr<ILibraryAppletAccessor> library_applet;
     if (ShouldCreateGuestApplet(applet_id)) {
@@ -209,6 +220,7 @@ Result ILibraryAppletCreator::CreateLibraryAppletEx(
     LibraryAppletMode library_applet_mode, u64 thread_id) {
     LOG_INFO(Service_AM, "NS2: CreateLibraryAppletEx applet_id={:#x} applet_mode={:#x} thread_id={:#x}",
              static_cast<u32>(applet_id), static_cast<u32>(library_applet_mode), thread_id);
+    applet_id = NormalizeLibraryAppletId(static_cast<u32>(applet_id));
 
     std::shared_ptr<ILibraryAppletAccessor> library_applet;
     if (ShouldCreateGuestApplet(applet_id)) {

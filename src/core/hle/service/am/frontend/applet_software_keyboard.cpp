@@ -207,6 +207,16 @@ void SoftwareKeyboard::InitializeForeground() {
         std::memcpy(&swkbd_config_old2, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
                     sizeof(SwkbdConfigOld2));
         break;
+    case SwkbdAppletVersion::Version1310736:
+        ASSERT(swkbd_config_data.size() >= SwkbdConfigSwitch2Size);
+        std::memcpy(&swkbd_config_new, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
+                    sizeof(SwkbdConfigNew));
+        LOG_INFO(Service_AM, "NS2: Switch 2 keyboard configuration: type={} max_length={} "
+                 "min_length={} text_check={} initial_string_length={}",
+                 static_cast<u32>(swkbd_config_common.type), swkbd_config_common.max_text_length,
+                 swkbd_config_common.min_text_length, swkbd_config_common.use_text_check,
+                 swkbd_config_common.initial_string_length);
+        break;
     case SwkbdAppletVersion::Version393227:
     case SwkbdAppletVersion::Version524301:
         ASSERT(swkbd_config_data.size() == sizeof(SwkbdConfigCommon) + sizeof(SwkbdConfigNew));
