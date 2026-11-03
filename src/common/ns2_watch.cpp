@@ -181,6 +181,8 @@ PhaseScope::~PhaseScope() {
 
 namespace {
 std::string g_crash_path;
+// Serializes crash reports of threads failing at the same time (one report after the other).
+std::recursive_mutex g_crash_mutex;
 
 // Appends, unbuffered: every line is on disk at once, even if the process is killed while the
 // report is written, and a later report (abort() after std::terminate) does not erase an earlier one.
@@ -247,6 +249,7 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
     if (written.exchange(true) || g_crash_path.empty()) {
         return g_previous_filter ? g_previous_filter(info) : EXCEPTION_CONTINUE_SEARCH;
     }
+    std::scoped_lock crash_lock{g_crash_mutex};
     FILE* file = OpenCrashFile();
     if (!file) {
         return g_previous_filter ? g_previous_filter(info) : EXCEPTION_CONTINUE_SEARCH;
@@ -326,6 +329,7 @@ LONG CALLBACK FirstChanceHandler(EXCEPTION_POINTERS* info) {
 }
 
 void WriteCrashNote(const char* what) {
+    std::scoped_lock crash_lock{g_crash_mutex};
     const std::string thread = Common::GetCurrentThreadName();
     const std::string exception = CurrentExceptionText();
     {
@@ -414,6 +418,9 @@ namespace {
         message = "std::terminate without an active exception";
     }
     const std::string thread = Common::GetCurrentThreadName();
+    // Held through abort(): its SIGABRT report (same thread) follows this one, and other threads
+    // failing at the same moment wait instead of interleaving their text.
+    g_crash_mutex.lock();
     if (FILE* file = OpenCrashFile()) {
         std::fprintf(file, "uncaught C++ exception in thread '%s': %s\n", thread.c_str(),
                      message.c_str());

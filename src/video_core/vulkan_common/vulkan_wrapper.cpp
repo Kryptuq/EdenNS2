@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -335,11 +336,34 @@ bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {
 #undef X
 }
 
+namespace {
+std::mutex g_device_lost_mutex;
+std::function<void()> g_device_lost_handler;
+bool g_device_lost_handled = false;
+} // Anonymous namespace
+
+void SetDeviceLostHandler(std::function<void()> handler) {
+    std::scoped_lock lock{g_device_lost_mutex};
+    g_device_lost_handler = std::move(handler);
+}
+
 void Exception::LogCreation() const {
     static std::atomic<u32> logged{0};
     if (logged.fetch_add(1) < 64) {
         LOG_CRITICAL(Render_Vulkan, "NS2: Vulkan error {} ({}) raised as an exception in thread '{}'",
                      static_cast<int>(result), string_VkResult(result), Common::GetCurrentThreadName());
+    }
+    if (result == VK_ERROR_DEVICE_LOST) {
+        // Held while the handler runs, so a second thread losing the device at the same moment
+        // cannot end the process before the report is written.
+        std::scoped_lock lock{g_device_lost_mutex};
+        if (!g_device_lost_handled && g_device_lost_handler) {
+            g_device_lost_handled = true;
+            try {
+                g_device_lost_handler();
+            } catch (...) {
+            }
+        }
     }
 }
 
