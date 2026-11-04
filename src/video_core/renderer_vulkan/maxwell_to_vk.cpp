@@ -15,6 +15,42 @@
 #include "video_core/surface.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <string>
+#include <fmt/format.h>
+
+namespace {
+// The caller chain as module+offset (symbolised offline from the release executable's unwind
+// table, as for EdenNS2's crash reports).
+void LogInvalidFormatCaller(VideoCore::Surface::PixelFormat pixel_format,
+                            Vulkan::FormatType format_type) {
+    std::string chain;
+#ifdef _WIN32
+    void* frames[32]{};
+    const USHORT count = RtlCaptureStackBackTrace(0, 32, frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        HMODULE module{};
+        char name[MAX_PATH]{};
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(frames[i]), &module) &&
+            GetModuleFileNameA(module, name, MAX_PATH)) {
+            std::string file{name};
+            const size_t slash = file.find_last_of("\\/");
+            chain += fmt::format(" {}+{:#x}", slash == std::string::npos ? file : file.substr(slash + 1),
+                                 reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(module));
+        } else {
+            chain += fmt::format(" {}", frames[i]);
+        }
+    }
+#endif
+    LOG_CRITICAL(Render_Vulkan, "NS2: Vulkan format requested for an invalid surface format {} "
+                 "(type {}); caller chain:{}", static_cast<int>(pixel_format),
+                 static_cast<int>(format_type), chain);
+}
+} // namespace
 
 namespace Vulkan::MaxwellToVK {
 
@@ -239,7 +275,10 @@ FormatInfo SurfaceFormat(const Device& device, FormatType format_type, bool with
     SURFACE_FORMAT_ELEM(VK_FORMAT_D32_SFLOAT_S8_UINT, usage_attachable, D32_FLOAT_S8_UINT)
 #define SURFACE_FORMAT_ELEM(res, usage, pixel) case PixelFormat::pixel: tuple = {res, usage}; break;
     SURFACE_FORMAT_LIST
-    default: UNREACHABLE_MSG("unknown format {}", pixel_format);
+    default:
+        // NS2 diagnostics (Yoshi): who asks for a Vulkan format of an invalid surface.
+        LogInvalidFormatCaller(pixel_format, format_type);
+        UNREACHABLE_MSG("unknown format {}", pixel_format);
 #undef SURFACE_FORMAT_ELEM
 #undef SURFACE_FORMAT_LIST
     }

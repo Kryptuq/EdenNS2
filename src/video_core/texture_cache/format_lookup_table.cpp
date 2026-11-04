@@ -158,6 +158,10 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, 
         return PixelFormat::S8_UINT_D24_UNORM;
     case Hash(TextureFormat::G24R8, UINT, UNORM, UNORM, UNORM, LINEAR):
         return PixelFormat::S8_UINT_D24_UNORM;
+    case Hash(TextureFormat::G8R24, UNORM, UINT, UNORM, UNORM, LINEAR):
+    case Hash(TextureFormat::G8R24, UNORM, UINT, UINT, UINT, LINEAR):
+        // Depth (24-bit UNORM in R) with stencil (8-bit UINT in G), as the Switch 2 samples its
+        // depth-stencil buffers (EdenNS2; Yoshi logs "texture format=13 components {2 4 2 2}").
     case Hash(TextureFormat::S8Z24, UNORM, UINT, UNORM, UNORM, LINEAR):
     case Hash(TextureFormat::S8Z24, UNORM, UINT, UINT, UINT, LINEAR):
         return PixelFormat::D24_UNORM_S8_UINT;
