@@ -23,6 +23,7 @@
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "common/ns2_frame_trace.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
@@ -1312,6 +1313,15 @@ bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
 }
 
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
+    if (const u64 table = Common::NS2FrameTrace::HeaderTable().load(std::memory_order_relaxed);
+        table != 0 && dest_address < table + 256 * 32 && dest_address + amount > table) {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 100) {
+            LOG_INFO(Render_Vulkan, "NS2 compare: copy engine {:#x} -> {:#x}+{:#x} into texture header {} of table {:#x}",
+                     src_address, dest_address, amount,
+                     dest_address >= table ? (dest_address - table) / 32 : 0, table);
+        }
+    }
     std::scoped_lock lock{buffer_cache.mutex};
     return buffer_cache.DMACopy(src_address, dest_address, amount);
 }

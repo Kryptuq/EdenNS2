@@ -738,3 +738,15 @@ Logged (no behaviour change):
   every fragment texture of draws into 1920x1080 targets (first 60, then every 100th): the raw
   handle words and their constant buffer, the texture header index, the first 8 bytes of that
   header and the image it resolves to.
+
+## Build 122 (diagnostics only: texture headers 32/44 on this build)
+Results of build 121 (user log, title movie shows correctly here): the movie conversion draw
+(ps 0x1aa14f3e00 into 0x8112dd0000) reads the same handle layout as on the Eglantine branch
+(c3[0] | c3[0x10] = 0x10200000 sampler part, c3[8] | c3[0x18] = 0x10100000), but the texture
+numbers change every frame and point at the movie's planes (e.g. 1903 -> 0x1b33880000 1920x1080
+R8, 1849 -> 0x1b0a520000 960x540 RG8). On the Eglantine branch the game writes 44 and 32 there,
+constant, and those headers were never written.
+Logged (no behaviour change), to see what headers 32/44 and 0-255 hold on this build:
+- "NS2 compare: GPU frame N: texture header table ...: header 32 starts ..., header 44 starts ...;
+  headers 0-255 with data: ...": on every change and every 1200 frames.
+- "NS2 compare: GPU-side write ... into texture header N" / "copy engine ... into texture header".

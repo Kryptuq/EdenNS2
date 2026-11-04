@@ -13,6 +13,7 @@
 #include <limits>
 #include <optional>
 #include <bit>
+#include "common/ns2_frame_trace.h"
 #include "common/container/unordered_map.h"
 #include <boost/container/small_vector.hpp>
 
@@ -175,6 +176,39 @@ void TextureCache<P>::RunGarbageCollector() {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    if (channel_state != nullptr && channel_state->graphics_image_table.current_gpu_addr != 0) {
+        // Diagnostics (comparison with the Eglantine integration branch): texture headers 32 and
+        // 44 of the bound table, which the title movie draw uses there, and headers 0-255.
+        static GPUVAddr last_table{};
+        static std::array<u64, 2> last{};
+        static u32 logged{};
+        static u64 ticks{};
+        ++ticks;
+        const GPUVAddr table = channel_state->graphics_image_table.current_gpu_addr;
+        Common::NS2FrameTrace::HeaderTable().store(table, std::memory_order_relaxed);
+        Common::NS2FrameTrace::Frame().store(ticks, std::memory_order_relaxed);
+        std::array<u64, 2> now{};
+        gpu_memory->ReadBlockUnsafe(table + 32 * sizeof(TICEntry), &now[0], sizeof(u64));
+        gpu_memory->ReadBlockUnsafe(table + 44 * sizeof(TICEntry), &now[1], sizeof(u64));
+        if ((table != last_table || now != last || ticks % 1200 == 0) && logged++ < 80) {
+            std::array<TICEntry, 256> entries{};
+            gpu_memory->ReadBlockUnsafe(table, entries.data(), sizeof(entries));
+            std::string written;
+            u32 count = 0;
+            for (u32 i = 0; i < entries.size(); ++i) {
+                if (entries[i].raw[0] != 0x5a5a5a5a5a5a5a5aULL || entries[i].raw[1] != 0x5a5a5a5a5a5a5a5aULL) {
+                    if (++count <= 24) {
+                        written += fmt::format(" {}:{}x{}@{:#x}", i, entries[i].Width(), entries[i].Height(),
+                                               entries[i].Address());
+                    }
+                }
+            }
+            LOG_INFO(HW_GPU, "NS2 compare: GPU frame {}: texture header table {:#x}: header 32 starts {:016x}, header 44 starts {:016x}; headers 0-255 with data: {}{}",
+                     ticks, table, now[0], now[1], count, written);
+        }
+        last_table = table;
+        last = now;
+    }
     // If we can obtain the memory info, use it instead of the estimate.
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
