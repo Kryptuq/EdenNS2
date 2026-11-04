@@ -102,6 +102,7 @@ struct MultiRangeSegment {
 
 struct TextureBufferBinding : Binding {
     PixelFormat format;
+    GPUVAddr gpu_addr{}; ///< As the guest bound it (NS2 diagnostics)
 };
 
 static constexpr Binding NULL_BINDING{

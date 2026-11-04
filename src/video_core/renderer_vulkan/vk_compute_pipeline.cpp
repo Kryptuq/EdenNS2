@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
@@ -248,6 +249,23 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             }
             ImageView& image_view = texture_cache.GetImageView(views[index].id);
             PixelFormat format{image_view.format};
+            if (image_view.GpuAddr() == 0 || image_view.BufferSize() == 0) {
+                // NS2 diagnostics (Yoshi): why a compute texture/image buffer resolved to nothing.
+                static std::atomic<u32> null_view_logs{0};
+                if (null_view_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    LOG_WARNING(Render_Vulkan,
+                                "NS2: compute {} buffer {} of program {:#x} resolved to a null view: "
+                                "TIC index {:#x}, handle program {}, cbuf {} offset {:#x}, view {} "
+                                "format {} GPU address {:#x} size {}",
+                                is_image ? "image" : "texture", i,
+                                kepler_compute.regs.code_loc.Address() +
+                                    kepler_compute.launch_description.program_start,
+                                views[index].index, desc.handle_program != ~0U ? "yes" : "no",
+                                desc.cbuf_index, desc.cbuf_offset, views[index].id.index,
+                                static_cast<int>(image_view.format), image_view.GpuAddr(),
+                                image_view.BufferSize());
+                }
+            }
             if constexpr (is_image) {
                 if (const auto explicit_format{PixelFormatFromImageFormat(desc.format)}) {
                     format = *explicit_format;

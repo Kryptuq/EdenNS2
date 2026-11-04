@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -1287,7 +1288,18 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
         }
 
         const u32 offset = buffer.Offset(binding.device_addr);
-        const PixelFormat format = binding.format;
+        PixelFormat format = binding.format;
+        if (format == PixelFormat::Invalid) {
+            // The guest's texture buffer descriptor points at unmapped memory or has no size (a
+            // null descriptor: the console reads zeros). Bind a null view with a valid format
+            // instead of asking Vulkan for the format of an invalid surface (which aborted).
+            format = PixelFormat::R32_UINT;
+            static std::atomic<u32> null_logs{0};
+            if (null_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "NS2: texture buffer {} is unmapped or empty (GPU address {:#x}): "
+                            "bound as a null buffer view", index, binding.gpu_addr);
+            }
+        }
         buffer.MarkUsage(offset, size);
         if constexpr (SEPARATE_IMAGE_BUFFERS_BINDINGS) {
             if (((channel_state->image_texture_buffers[stage] >> index) & 1) != 0) {
@@ -1435,7 +1447,18 @@ void BufferCache<P>::BindHostComputeTextureBuffers() {
         }
 
         const u32 offset = buffer.Offset(binding.device_addr);
-        const PixelFormat format = binding.format;
+        PixelFormat format = binding.format;
+        if (format == PixelFormat::Invalid) {
+            // The guest's texture buffer descriptor points at unmapped memory or has no size (a
+            // null descriptor: the console reads zeros). Bind a null view with a valid format
+            // instead of asking Vulkan for the format of an invalid surface (which aborted).
+            format = PixelFormat::R32_UINT;
+            static std::atomic<u32> null_logs{0};
+            if (null_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "NS2: texture buffer {} is unmapped or empty (GPU address {:#x}): "
+                            "bound as a null buffer view", index, binding.gpu_addr);
+            }
+        }
         buffer.MarkUsage(offset, size);
         if constexpr (SEPARATE_IMAGE_BUFFERS_BINDINGS) {
             if (((channel_state->image_compute_texture_buffers >> index) & 1) != 0) {
@@ -2532,6 +2555,7 @@ TextureBufferBinding BufferCache<P>::GetTextureBufferBinding(GPUVAddr gpu_addr, 
                                                              PixelFormat format) {
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     TextureBufferBinding binding;
+    binding.gpu_addr = gpu_addr;
     if (!device_addr || size == 0) {
         binding.device_addr = 0;
         binding.size = 0;
