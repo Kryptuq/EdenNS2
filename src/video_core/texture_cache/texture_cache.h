@@ -493,6 +493,24 @@ void TextureCache<P>::TickFrame() {
                      frame_tick + 1, since);
         }
     }
+    if (channel_state != nullptr && channel_state->graphics_image_table.current_gpu_addr != 0) {
+        // Yoshi movie diagnostics: when (if ever) headers 32 and 44 of the bound table get data,
+        // and when the table itself moves.
+        static GPUVAddr last_table{};
+        static std::array<u64, 2> last{};
+        static u32 logged{};
+        const GPUVAddr table = channel_state->graphics_image_table.current_gpu_addr;
+        std::array<u64, 2> now{};
+        gpu_memory->ReadBlockUnsafe(table + 32 * sizeof(TICEntry), &now[0], sizeof(u64));
+        gpu_memory->ReadBlockUnsafe(table + 44 * sizeof(TICEntry), &now[1], sizeof(u64));
+        if ((table != last_table || now != last) && logged++ < 60) {
+            LOG_INFO(HW_GPU, "NS2 movie: GPU frame {}: texture header table {:#x} (device {:#x}, limit {}): header 32 starts {:016x}, header 44 starts {:016x}",
+                     frame_tick, table, gpu_memory->GpuToCpuAddress(table).value_or(0),
+                     channel_state->graphics_image_table.current_limit, now[0], now[1]);
+        }
+        last_table = table;
+        last = now;
+    }
     if (!plane_bind_log.empty()) {
         // Which movie plane images this frame sampled: address, frame of the last upload, write
         // notifications and untracked changes so far.
@@ -1757,6 +1775,25 @@ std::string TextureCache<P>::DescribeImageIndex(u32 raw_index, bool compute) {
         }
     }
     text += fmt::format("; movie-sized headers in the table:{}", found.empty() ? " none" : found);
+    // The first 256 headers: which hold data at all, and where their pages are in memory.
+    std::string written;
+    u32 written_count = 0;
+    for (u32 i = 0; i < (std::min)(scan, 256U); ++i) {
+        const TICEntry& e = entries[i];
+        if (e.raw[0] != 0x5a5a5a5a5a5a5a5aULL || e.raw[1] != 0x5a5a5a5a5a5a5a5aULL) {
+            ++written_count;
+            if (written_count <= 24) {
+                written += fmt::format(" {}:{}x{}@{:#x}", i, e.Width(), e.Height(), e.Address());
+            }
+        }
+    }
+    text += fmt::format("; headers 0-255 with data: {}{}", written_count, written);
+    std::string pages;
+    for (u32 page = 0; page < 4; ++page) {
+        const GPUVAddr va = table.current_gpu_addr + page * 0x1000;
+        pages += fmt::format(" {:#x}->{:#x}", va, gpu_memory->GpuToCpuAddress(va).value_or(0));
+    }
+    text += fmt::format("; table pages:{}", pages);
     return text;
 }
 

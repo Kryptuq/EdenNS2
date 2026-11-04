@@ -116,3 +116,13 @@ movie draw and the 1408x788 R8_UINT draw use as the first draws of a frame, hold
 yoshi-int-build-17 watches those blocks: their contents at the end of each of the next six GPU
 frames, and every CPU write, inline upload or copy-engine write into them with its GPU frame, to
 tell "handles written after the GPU read the block" from "block overwritten before the GPU read it".
+
+yoshi-int-build-17 (user log): the movie draw's handle block now holds 0x2c / 0x20 at +0 / +8 and
+0x10200000 / 0x10100000 at +0x10 / +0x18; the game's CPU rewrites the first 8 bytes every frame
+with the same value, and the block keeps it at the end of every following frame. The program
+(ps e6896e2921f2338b in the offline corpus) builds each handle as c3[0] | c3[0x10] (ULDC + ULOP3),
+so the handles are 0x1020002c and 0x10100020: header 44 and 32 with samplers 0x102 and 0x101. Both
+frontends agree. So the handles are right and stable; the texture headers 44 and 32 of the bound
+table (0x1aa0030000) have never been written (kernel heap fill 0x5a). The slot 4 buffer holds the
+YUV->RGB matrix (1.164, 1.793, ...). yoshi-int-build-18 logs when (if ever) headers 32/44 of the
+bound table get data, which of the headers 0-255 hold data, and where the table's pages map.
