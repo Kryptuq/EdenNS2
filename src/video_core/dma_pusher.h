@@ -128,6 +128,8 @@ struct CommandList final {
     u64 snapshot_suspensions = 0;
     /// NativeSubmissions::Record sequence of each entry's snapshot (EdenNS2's reuse rule).
     std::vector<u64> submitted_sequences;
+    /// Steady-clock time of the snapshot in microseconds (NS2 diagnostics).
+    u64 submit_time_us = 0;
 };
 
 /// Snapshots of command lists by address, to tell a list the game reused for a later submission

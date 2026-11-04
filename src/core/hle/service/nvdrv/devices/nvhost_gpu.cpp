@@ -5,6 +5,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -454,6 +455,8 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                 words += entry.size;
             }
             entries.submitted_words.resize(words);
+            entries.submit_time_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
             entries.submitted_offsets.reserve(entries.command_lists.size());
             size_t offset = 0;
             for (const auto& entry : entries.command_lists) {

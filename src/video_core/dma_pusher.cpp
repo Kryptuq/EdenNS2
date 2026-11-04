@@ -184,54 +184,52 @@ bool DmaPusher::Step() {
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
-        // An entry with a snapshot that the rules above send to memory because of a suspension:
-        // memory may hold commands the game completed in place before it released the acquire
-        // (run them), or the next frame's commands in reused memory (run the snapshot). As in
-        // EdenNS2: the memory belongs to a later submission when that submission captured exactly
-        // it; with a history of reuse, wait briefly for that submission. A list that starts
-        // inside a pending method holds arguments the GPU writes (indirect dispatch) and runs
-        // from memory.
-        bool snapshot_after_suspension = false;
-        if (!submitted && command_resume_offset == 0 && dma_state.method_count == 0 &&
-            dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
-            dma_pushbuffer_subindex < command_list.submitted_sequences.size() &&
-            !IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32)) &&
-            !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get, header.size * sizeof(u32)))) {
+        // NS2 diagnostics (Yoshi), no behaviour change: an entry whose memory no longer holds the
+        // words it was submitted with. Log both versions in full, where the entry sits in its
+        // submission, how long after submission and after how many suspensions it runs, and
+        // which path runs it, to tell "completed in place" from "memory reused" with evidence.
+        if (command_resume_offset == 0 && dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
+            const size_t bytes = size_t{header.size} * sizeof(u32);
             const CommandHeader* snap = command_list.submitted_words.data() +
                                         command_list.submitted_offsets[dma_pushbuffer_subindex];
-            const size_t bytes = size_t{header.size} * sizeof(u32);
             ns2_live_words.resize(header.size);
             memory_manager.ReadBlockUnsafe(dma_state.dma_get, ns2_live_words.data(), bytes);
-            if (std::memcmp(ns2_live_words.data(), snap, bytes) == 0) {
-                snapshot_after_suspension = true;
-            } else {
-                const u64 sequence = command_list.submitted_sequences[dma_pushbuffer_subindex];
-                const auto hash_live = [&] {
-                    return Common::CityHash64(reinterpret_cast<const char*>(ns2_live_words.data()), bytes);
-                };
-                bool reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, header.addr,
-                                                              sequence, hash_live());
-                if (!reused && NativeSubmissions::UsuallyReused(channel_state.bind_id, header.addr)) {
-                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{10};
-                    while (!reused && std::chrono::steady_clock::now() < deadline) {
-                        std::this_thread::yield();
-                        memory_manager.ReadBlockUnsafe(dma_state.dma_get, ns2_live_words.data(), bytes);
-                        reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, header.addr,
-                                                                 sequence, hash_live());
-                    }
+            static std::atomic<u32> ns2_logs{0};
+            if (std::memcmp(ns2_live_words.data(), snap, bytes) != 0 &&
+                ns2_logs.fetch_add(1, std::memory_order_relaxed) < 12) {
+                const auto now_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                const size_t shown = std::min<size_t>(header.size, 64);
+                std::string snap_text, live_text;
+                for (size_t w = 0; w < shown; ++w) {
+                    snap_text += fmt::format(" {:08x}", snap[w].argument);
+                    live_text += fmt::format(" {:08x}", ns2_live_words[w]);
                 }
-                NativeSubmissions::NoteOutcome(channel_state.bind_id, header.addr, reused);
-                snapshot_after_suspension = reused;
-                static std::atomic<u32> ns2_logs{0};
-                if (ns2_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
-                    LOG_INFO(HW_GPU, "NS2: ch {} entry {:#x} ({} words) changed after submission: {}",
-                             channel_state.bind_id, u64{header.addr}, u64{header.size},
-                             reused ? "reused for a later submission, running it as submitted"
-                                    : "completed in place, running the current contents");
+                std::string previous{"none"};
+                if (dma_pushbuffer_subindex > 0) {
+                    const auto& prev = command_list.command_lists[dma_pushbuffer_subindex - 1];
+                    const CommandHeader* prev_snap = command_list.submitted_words.data() +
+                                                     command_list.submitted_offsets[dma_pushbuffer_subindex - 1];
+                    std::vector<u32> prev_live(prev.size);
+                    memory_manager.ReadBlockUnsafe(prev.addr, prev_live.data(), prev_live.size() * sizeof(u32));
+                    const bool prev_changed = std::memcmp(prev_live.data(), prev_snap, prev_live.size() * sizeof(u32)) != 0;
+                    previous = fmt::format("{:#x}+{} words ({}, last word submitted {:08x} now {:08x})",
+                                           u64{prev.addr}, u64{prev.size}, prev_changed ? "changed" : "unchanged",
+                                           prev.size ? prev_snap[prev.size - 1].argument : 0U,
+                                           prev.size ? prev_live[prev.size - 1] : 0U);
                 }
+                LOG_INFO(HW_GPU, "NS2: ch {} entry {} of {} at {:#x} ({} words) changed since submission "
+                         "({} us ago; suspensions at submit {}, now {}; method pending at entry start {:#x} x{}; "
+                         "runs from {}); previous entry {}\n  submitted:{}\n  memory:   {}",
+                         channel_state.bind_id, dma_pushbuffer_subindex, command_list.command_lists.size(),
+                         u64{header.addr}, u64{header.size},
+                         command_list.submit_time_us ? now_us - command_list.submit_time_us : 0,
+                         command_list.snapshot_suspensions, suspensions.load(std::memory_order_acquire),
+                         dma_state.method, dma_state.method_count, submitted ? "the snapshot" : "memory",
+                         previous, snap_text, live_text);
             }
         }
-        if (submitted || snapshot_after_suspension) {
+        if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
