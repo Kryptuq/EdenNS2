@@ -389,6 +389,11 @@ private:
     u64 PlaneHash(const ImageBase& image, u64* mean) const;
     void NotePlaneUpload(Image& image, ImageId image_id);
     void TracePlaneUse(Image& image, ImageId image_id);
+    /// Yoshi movie diagnostics: whole-frame trace (every draw, dispatch, blit and DMA copy with
+    /// the images it reads and writes) for a few frames while the title movie plays.
+    void FrameTraceBegin(const char* kind);
+    void FrameTraceNote(const ImageBase& image, bool write);
+    void FrameTraceFlush();
 
     /// Upload data from guest to an image
     template <typename StagingBuffer>
@@ -635,6 +640,11 @@ private:
         u32 untracked{};        ///< Memory changed without a write notification
     };
     std::unordered_map<u32, PlaneState> plane_states;
+    bool frame_trace{};
+    u64 frame_trace_first_movie_frame{~0ULL};
+    u32 frame_trace_ops{};
+    std::string frame_trace_line;
+    std::vector<std::pair<GPUVAddr, bool>> frame_trace_items;
     std::vector<u32> plane_binds;
     std::string plane_bind_log;
     u64 plane_uploads_total{};

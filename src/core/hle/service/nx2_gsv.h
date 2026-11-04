@@ -17,6 +17,7 @@
 #include <initializer_list>
 #include <limits>
 #include <atomic>
+#include "common/ns2_frame_trace.h"
 #include <deque>
 #include <map>
 #include <optional>
@@ -1707,9 +1708,11 @@ private:
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
         Core::g_nx2_present_count.fetch_add(1, std::memory_order_relaxed);
-        if (m_presents <= 4 || (m_presents % 600) == 0) {
-            LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
-                     u64{w[2]} | (u64{w[3]} << 32), w[4], w[5]);
+        if (m_presents <= 4 || (m_presents % 600) == 0 ||
+            Common::NS2FrameTrace::Active().load(std::memory_order_relaxed)) {
+            LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={} (GPU frame {})",
+                     m_presents, u64{w[2]} | (u64{w[3]} << 32), w[4], w[5],
+                     Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed));
         }
         // Wait for this frame's fence, so the game doesn't write the next frame's data (constant
         // buffers holding texture handles, vertex data, Pokopia's glyph atlas) while the GPU
@@ -2578,6 +2581,10 @@ private:
         const auto* w = ctx.CommandBuffer();
         Log(ctx, "release output");
         m_outputs_released.fetch_add(1, std::memory_order_relaxed);
+        if (Common::NS2FrameTrace::Active().load(std::memory_order_relaxed)) {
+            LOG_INFO(Service, "NS2 frame trace: decoder image {} given back (GPU frame {})", w[2],
+                     Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed));
+        }
         const auto handle = HandOut(w[2], Fence{~w[4], w[6]});
         TipcReplyWords(ctx, {handle[0], handle[1], handle[2], handle[3]});
     }
@@ -2671,6 +2678,11 @@ private:
             }
         }
         (output ? m_outputs_taken : m_outputs_empty).fetch_add(1, std::memory_order_relaxed);
+        if (Common::NS2FrameTrace::Active().load(std::memory_order_relaxed)) {
+            LOG_INFO(Service, "NS2 frame trace: decoder output {} taken (GPU frame {})",
+                     output ? static_cast<s64>(output->image) : -1,
+                     Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed));
+        }
         if (!output) {
             // Nothing finished: the code the client's own Acquire uses for an empty ring.
             IPC::ResponseBuilder rb{ctx, 2};
@@ -3671,6 +3683,10 @@ private:
             }
         }
         Nx2CpuImageDescriptorReads().fetch_add(1, std::memory_order_relaxed);
+        if (Common::NS2FrameTrace::Active().load(std::memory_order_relaxed)) {
+            LOG_INFO(Service, "NS2 frame trace: decoder image {} read out (961, GPU frame {})", id,
+                     Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed));
+        }
         if (Nx2FirstVideoCommand("nx2:gsv", 961) || words[0] == 0) {
             LOG_INFO(Service, "nx2:gsv 961 image {} -> kind {:#x} offset {:#x} pitch {:#x}", id,
                      words[0], words[2], words[4]);

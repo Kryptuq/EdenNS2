@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <numeric>
 #include <cstdlib>
+#include "common/ns2_frame_trace.h"
 #include <limits>
 #include <map>
 #include <vector>
@@ -453,6 +454,25 @@ void TextureCache<P>::TickFrame() {
     }
 
     runtime.TickFrame();
+    if (frame_trace) {
+        FrameTraceFlush();
+        LOG_INFO(HW_GPU, "NS2 frame trace: end of frame {} ({} operations)", frame_tick, frame_trace_ops);
+    }
+    {
+        // Trace frames 300-303, 900-903 and 1500-1503 after the first movie-sized plane upload.
+        const u64 since = frame_tick + 1 - frame_trace_first_movie_frame;
+        const bool next = frame_trace_first_movie_frame != ~0ULL &&
+                          ((since >= 300 && since < 304) || (since >= 900 && since < 904) ||
+                           (since >= 1500 && since < 1504));
+        frame_trace = next;
+        frame_trace_ops = 0;
+        Common::NS2FrameTrace::Frame().store(frame_tick + 1, std::memory_order_relaxed);
+        Common::NS2FrameTrace::Active().store(next, std::memory_order_relaxed);
+        if (next) {
+            LOG_INFO(HW_GPU, "NS2 frame trace: begin frame {} ({} frames after the movie's first plane upload)",
+                     frame_tick + 1, since);
+        }
+    }
     if (!plane_bind_log.empty()) {
         // Which movie plane images this frame sampled: address, frame of the last upload, write
         // notifications and untracked changes so far.
@@ -504,6 +524,9 @@ void TextureCache<P>::MarkModification(ImageId id) noexcept {
 
 template <class P>
 void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist) {
+    if (frame_trace) {
+        FrameTraceBegin(compute ? "dispatch" : "draw");
+    }
     bool has_blacklisted = false;
     do {
         has_deleted_images = false;
@@ -747,6 +770,9 @@ bool TextureCache<P>::RescaleRenderTargets() {
 
 template <class P>
 void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
+    if (frame_trace && is_clear) {
+        FrameTraceBegin("clear");
+    }
     using namespace VideoCommon::Dirty;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
@@ -1021,6 +1047,9 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     const ImageId dst_id = images.dst_id;
     const ImageId src_id = images.src_id;
 
+    if (frame_trace) {
+        FrameTraceBegin("blit");
+    }
     PrepareImage(src_id, false, false);
     PrepareImage(dst_id, true, false);
 
@@ -1663,6 +1692,42 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 }
 
 template <class P>
+void TextureCache<P>::FrameTraceBegin(const char* kind) {
+    FrameTraceFlush();
+    frame_trace_line = fmt::format("NS2 frame trace: frame {} op {} {}:", frame_tick, frame_trace_ops++, kind);
+}
+
+template <class P>
+void TextureCache<P>::FrameTraceNote(const ImageBase& image, bool write) {
+    if (frame_trace_line.empty()) {
+        frame_trace_line = fmt::format("NS2 frame trace: frame {} op {} other:", frame_tick, frame_trace_ops++);
+    }
+    // Render targets are prepared on every draw: list each image once per operation.
+    const std::pair<GPUVAddr, bool> key{image.gpu_addr, write};
+    if (std::ranges::find(frame_trace_items, key) != frame_trace_items.end() ||
+        frame_trace_items.size() >= 24) {
+        return;
+    }
+    frame_trace_items.push_back(key);
+    frame_trace_line += fmt::format(" {}{:#x} {}x{}{} {}{}", write ? "W:" : "R:", image.gpu_addr,
+                                    image.info.size.width, image.info.size.height,
+                                    image.info.type == ImageType::e3D
+                                        ? fmt::format("x{}", image.info.size.depth)
+                                        : std::string{},
+                                    image.info.format,
+                                    True(image.flags & ImageFlagBits::CpuModified) ? " (cpu dirty)" : "");
+}
+
+template <class P>
+void TextureCache<P>::FrameTraceFlush() {
+    if (!frame_trace_line.empty()) {
+        LOG_INFO(HW_GPU, "{}", frame_trace_line);
+    }
+    frame_trace_line.clear();
+    frame_trace_items.clear();
+}
+
+template <class P>
 bool TextureCache<P>::IsPlaneImage(const ImageBase& image) noexcept {
     const auto format = image.info.format;
     return (format == PixelFormat::R8_UNORM || format == PixelFormat::R8G8_UNORM) &&
@@ -1700,6 +1765,10 @@ void TextureCache<P>::NotePlaneUpload(Image& image, ImageId image_id) {
     state.upload_frame = frame_tick;
     ++state.uploads;
     ++plane_uploads_total;
+    if (frame_trace_first_movie_frame == ~0ULL && image.info.size.width == 1920 &&
+        image.info.size.height == 1080 && image.info.format == PixelFormat::R8_UNORM) {
+        frame_trace_first_movie_frame = frame_tick;
+    }
     static u32 logged{};
     if (const u32 n = logged++; n < 300 || n % 300 == 0) {
         LOG_INFO(HW_GPU, "NS2 movie: plane upload #{} image id {} gpu {:#x} {}x{} {} in frame {}: mean byte {}",
@@ -2851,6 +2920,9 @@ std::pair<u32, u32> TextureCache<P>::PrepareDmaImage(ImageId dst_id, GPUVAddr ba
                                                      bool mark_as_modified) {
     const auto& image = slot_images[dst_id];
     const auto base = image.TryFindBase(base_addr);
+    if (frame_trace) {
+        FrameTraceBegin(mark_as_modified ? "dma to image" : "dma from image");
+    }
     PrepareImage(dst_id, mark_as_modified, false);
     const auto& new_image = slot_images[dst_id];
     lru_cache.Touch(new_image.lru_index, frame_tick);
@@ -3512,6 +3584,9 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
 template <class P>
 void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
     Image& image = slot_images[image_id];
+    if (frame_trace) {
+        FrameTraceNote(image, is_modification);
+    }
     if (invalidate) {
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
         if (False(image.flags & ImageFlagBits::Tracked)) {

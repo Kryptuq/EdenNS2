@@ -57,3 +57,17 @@ refreshed. Green is what YUV 0/0/0 converts to. yoshi-int-build-11 logs (diagnos
 - "changed in guest memory without a write notification": a sparse checksum of each sampled
   plane image, to tell "the game did not copy the frame" from "the cache was not told".
   `EDEN_NS2_PLANE_RECHECK=1` also uploads such images again (EdenNS2's behaviour).
+
+yoshi-int-build-11 results (user, run without and with EDEN_NS2_PLANE_RECHECK=1, same picture):
+- The client takes and reads out every decoded frame (899 frames out, 899 taken, 892 given back,
+  899 961 reads), and its CPU writes into the movie textures do reach the texture cache (tens of
+  thousands of write notifications, 0 untracked changes). So neither "frame not copied" nor
+  "write not noticed" is the cause.
+- The movie's Y (1920x1080 R8) and UV (960x540 RG8) textures are almost never *sampled*: in about
+  840 traced frames only 10 (run 1) / 17 (run 2) frames sampled any movie plane. EdenNS2 (b119,
+  same game) sampled them in 277 of 600 frames, i.e. every second frame (the 30 fps movie converted
+  into the game's own target). On Eglantine the game's GPU-side conversion of new movie frames
+  almost never runs.
+yoshi-int-build-12 traces whole frames (every draw, dispatch, clear, blit and DMA copy with the
+images it reads and writes) 300, 900 and 1500 frames after the movie's first upload, together
+with the presents and decoder outputs of those frames, to find what the game draws instead.
