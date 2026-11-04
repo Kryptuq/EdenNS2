@@ -81,3 +81,12 @@ zeros, and YUV 0/0/0 is the flat green. yoshi-int-build-13 logs, for every draw 
 frames, where each texture handle comes from (cbuf address/offset or handle program), the TIC index
 it becomes and, for a handle without an image, the TIC table, limit, raw TIC entry and whether it
 is valid.
+
+yoshi-int-build-13 handle trace (user log): the movie conversion draw (vs 0x1aa0cd0c00,
+ps 0x1aa0cd4300, into 0x8112dd0000) reads its two texture handles from cbuf 3 (+0x0, +0x8) and
+gets TIC 44 and 32 of the table at 0x1a9f430000 in every traced frame. Both entries hold
+5a5a5a5a... (never-written memory), so no image; every other draw of those frames resolved its
+textures. Either the handles in cbuf 3 are stale (the game's newer values did not arrive) or the
+game wrote the movie's texture headers somewhere this draw does not look. yoshi-int-build-14 logs
+the raw handle words, every inline constant buffer upload into that cbuf, and where 1920x1080 /
+960x540 texture headers are in the table.

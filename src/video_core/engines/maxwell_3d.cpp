@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include "common/assert.h"
+#include "common/ns2_frame_trace.h"
 #include "common/bit_util.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -763,6 +764,21 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
 
     const GPUVAddr address{buffer_address + regs.const_buffer.offset};
     const size_t copy_size = amount * sizeof(u32);
+    if (const u64 watched = Common::NS2FrameTrace::WatchedConstBuffer().load(std::memory_order_relaxed);
+        watched != 0 && buffer_address <= watched && watched < buffer_address + regs.const_buffer.size) {
+        // Yoshi movie diagnostics: what the game uploads into the constant buffer that holds the
+        // movie draw's texture handles.
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 300) {
+            std::string words;
+            for (u32 i = 0; i < std::min<u32>(amount, 8); ++i) {
+                words += fmt::format(" {:08x}", start_base[i]);
+            }
+            LOG_INFO(HW_GPU, "NS2 frame trace: inline upload to watched cbuf {:#x} (buffer {:#x}+{:#x}, {} words, GPU frame {}):{}",
+                     watched, buffer_address, regs.const_buffer.offset, amount,
+                     Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), words);
+        }
+    }
     memory_manager.WriteBlockCached(address, start_base, copy_size);
 
     // Increment the current buffer position.

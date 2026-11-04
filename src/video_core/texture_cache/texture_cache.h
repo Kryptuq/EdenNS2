@@ -1707,6 +1707,20 @@ std::string TextureCache<P>::DescribeImageIndex(u32 raw_index, bool compute) {
     text += fmt::format(", TIC {:016x} {:016x} {:016x} {:016x}: address {:#x} {}x{}, valid {}",
                         entry.raw[0], entry.raw[1], entry.raw[2], entry.raw[3], entry.Address(),
                         entry.Width(), entry.Height(), IsValidEntry(*gpu_memory, entry));
+    // Where the movie-sized texture headers are in this table (first 8192 entries).
+    std::string found;
+    u32 count = 0;
+    const u32 scan = (std::min)(table.current_limit + 1, 8192U);
+    std::vector<TICEntry> entries(scan);
+    gpu_memory->ReadBlockUnsafe(table.current_gpu_addr, entries.data(), entries.size() * sizeof(TICEntry));
+    for (u32 i = 0; i < scan && count < 16; ++i) {
+        const TICEntry& e = entries[i];
+        if ((e.Width() == 1920 && e.Height() == 1080) || (e.Width() == 960 && e.Height() == 540)) {
+            found += fmt::format(" {}@{:#x}:{}x{}", i, e.Address(), e.Width(), e.Height());
+            ++count;
+        }
+    }
+    text += fmt::format("; movie-sized headers in the table:{}", found.empty() ? " none" : found);
     return text;
 }
 

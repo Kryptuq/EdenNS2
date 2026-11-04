@@ -377,6 +377,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     // Yoshi movie diagnostics: where each texture handle of a traced frame's draw comes from.
     const bool trace_handles = Common::NS2FrameTrace::Active().load(std::memory_order_relaxed);
     std::vector<std::pair<size_t, std::string>> handle_trace;
+    std::vector<GPUVAddr> handle_cbufs;
     views.reserve(num_image_elements);
     samplers.reserve(num_textures);
 
@@ -445,11 +446,21 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 desc.handle_program != ~0U
                     ? fmt::format("stage {} {} [{}] from handle program {} -> TIC {}", stage, kind,
                                   index, desc.handle_program, handle.first)
-                    : fmt::format("stage {} {} [{}] from cbuf {}+{:#x} (cbuf at {:#x}) -> TIC {}",
+                    : fmt::format("stage {} {} [{}] from cbuf {}+{:#x} (cbuf at {:#x}, word {:#010x}) -> TIC {}",
                                   stage, kind, index, desc.cbuf_index, desc.cbuf_offset,
                                   desc.cbuf_index < cbufs.size() ? cbufs[desc.cbuf_index].address
                                                                  : GPUVAddr{},
+                                  desc.cbuf_index < cbufs.size() && cbufs[desc.cbuf_index].enabled
+                                      ? gpu_memory->Read<u32>(cbufs[desc.cbuf_index].address +
+                                                              desc.cbuf_offset +
+                                                              (index << desc.size_shift))
+                                      : 0U,
                                   handle.first));
+            if (desc.handle_program == ~0U && desc.cbuf_index < cbufs.size()) {
+                handle_cbufs.push_back(cbufs[desc.cbuf_index].address + desc.cbuf_offset);
+            } else {
+                handle_cbufs.push_back(0);
+            }
         }};
         const auto add_image{[&](const auto& desc, bool blacklist) LAMBDA_FORCEINLINE {
             for (u32 index = 0; index < desc.count; ++index) {
@@ -520,8 +531,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
         LOG_INFO(Render_Vulkan, "NS2 frame trace:   draw shaders vs={:#x} ps={:#x}, {} views, rt0={:#x} {}x{}",
                  vs, ps, views.size(), regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
-        for (const auto& [position, text] : handle_trace) {
+        for (size_t i = 0; i < handle_trace.size(); ++i) {
+            const auto& [position, text] = handle_trace[i];
             const auto& view = views[position];
+            if (view.id == VideoCommon::NULL_IMAGE_VIEW_ID && handle_cbufs[i] != 0) {
+                Common::NS2FrameTrace::WatchedConstBuffer().store(handle_cbufs[i], std::memory_order_relaxed);
+            }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     {}: {}", text,
                      view.id == VideoCommon::NULL_IMAGE_VIEW_ID
                          ? "no image: " + texture_cache.DescribeImageIndex(view.index, false)

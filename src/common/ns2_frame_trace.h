@@ -22,4 +22,11 @@ inline std::atomic<u64>& Frame() {
     return frame;
 }
 
+/// A constant buffer whose texture handle resolved to no image (its GPU address): inline
+/// constant buffer uploads into it are logged.
+inline std::atomic<u64>& WatchedConstBuffer() {
+    static std::atomic<u64> address{};
+    return address;
+}
+
 } // namespace Common::NS2FrameTrace
