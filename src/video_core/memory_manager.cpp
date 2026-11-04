@@ -8,6 +8,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/ns2_frame_trace.h"
 #include "common/logging.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_page_table.h"
@@ -467,7 +468,30 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
     ReadBlockImpl(gpu_src_addr, dest_buffer, size, VideoCommon::CacheType::None, true);
 }
 
+// Yoshi movie diagnostics: GPU-side writes into the first 256 texture headers of the bound table.
+static void NoteHeaderTableWrite(GPUVAddr address, std::size_t size, const void* data) {
+    const u64 table = Common::NS2FrameTrace::HeaderTable().load(std::memory_order_relaxed);
+    if (table == 0 || address >= table + 256 * 32 || address + size <= table) {
+        return;
+    }
+    static std::atomic<u32> logged{};
+    if (logged.fetch_add(1, std::memory_order_relaxed) >= 200) {
+        return;
+    }
+    const auto* bytes = static_cast<const u8*>(data);
+    std::string words;
+    for (std::size_t i = 0; i + 4 <= (std::min<std::size_t>)(size, 32); i += 4) {
+        u32 word;
+        std::memcpy(&word, bytes + i, 4);
+        words += fmt::format(" {:08x}", word);
+    }
+    LOG_INFO(HW_GPU, "NS2 movie: GPU-side write {:#x}+{:#x} into texture header {} of table {:#x} (GPU frame {}):{}",
+             address, size, (address - table) / 32, table,
+             Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), words);
+}
+
 void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size, [[maybe_unused]] VideoCommon::CacheType which, bool unsafe) {
+    NoteHeaderTableWrite(gpu_dest_addr, size, src_buffer);
     // Give Switch 2 sparse pages the write lands on their memory first (otherwise it is dropped).
     Tegra::Nx2BackSparseWrite(gpu_dest_addr, size, src_buffer);
     auto just_advance = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset, std::size_t copy_amount) {

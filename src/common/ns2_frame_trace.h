@@ -60,4 +60,11 @@ inline void WatchBlock(u64 gpu_addr, u64 device_addr, u64 frame) {
     }
 }
 
+/// The bound graphics texture header table (GPU address), for logging GPU-side writes into the
+/// headers the movie draw uses.
+inline std::atomic<u64>& HeaderTable() {
+    static std::atomic<u64> address{};
+    return address;
+}
+
 } // namespace Common::NS2FrameTrace

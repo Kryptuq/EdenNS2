@@ -500,6 +500,7 @@ void TextureCache<P>::TickFrame() {
         static std::array<u64, 2> last{};
         static u32 logged{};
         const GPUVAddr table = channel_state->graphics_image_table.current_gpu_addr;
+        Common::NS2FrameTrace::HeaderTable().store(table, std::memory_order_relaxed);
         std::array<u64, 2> now{};
         gpu_memory->ReadBlockUnsafe(table + 32 * sizeof(TICEntry), &now[0], sizeof(u64));
         gpu_memory->ReadBlockUnsafe(table + 44 * sizeof(TICEntry), &now[1], sizeof(u64));
