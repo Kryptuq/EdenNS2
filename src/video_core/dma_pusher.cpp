@@ -134,9 +134,10 @@ bool DmaPusher::Step() {
             // entry elsewhere is a call that starts clean; resume where the split one ended).
             static const bool park_split_methods = std::getenv("EDEN_NX2_PARK_SPLIT_METHODS") != nullptr;
             if (g_nx2_ampere) {
-                if (static u32 split_logs{}; dma_state.method_count != 0 && split_logs < 64) {
+                if (static u32 split_logs{}; dma_state.method_count != 0 && split_logs < 400) {
                     ++split_logs;
-                    LOG_DEBUG(HW_GPU, "Split method {:#x} ({} left) on ch {}: next entry {:#x} size {} raw {:#x} (level bit {}, priv bit {}), expected {:#x}, parked {}",
+                    // NS2 (Yoshi): Info so the user's log shows how GP entries continue methods.
+                    LOG_INFO(HW_GPU, "Split method {:#x} ({} left) on ch {}: next entry {:#x} size {} raw {:#x} (level bit {}, priv bit {}), expected {:#x}, parked {}",
                              dma_state.method, dma_state.method_count, channel_state.bind_id,
                              u64{header.addr}, u64{header.size}, header.raw, u64{header.is_push_buffer},
                              u64{header.allow_flush}, split_method_end, parked_methods.size());
@@ -146,7 +147,7 @@ bool DmaPusher::Step() {
                                              std::min<size_t>(header.size, 8) * sizeof(u32));
                     memory_manager.ReadBlockUnsafe(split_method_end - sizeof(prev_words), prev_words.data(),
                                              sizeof(prev_words));
-                    LOG_DEBUG(HW_GPU, "  previous entry ends {:08x}; next entry starts {:08x}",
+                    LOG_INFO(HW_GPU, "  previous entry ends {:08x}; next entry starts {:08x}",
                               fmt::join(prev_words, " "), fmt::join(next_words, " "));
                 }
                 if (park_split_methods) {
