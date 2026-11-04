@@ -362,6 +362,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 
     const auto& regs{maxwell3d->regs};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};
+    std::vector<std::string> movie_handles;
+    std::vector<size_t> movie_handle_views;
     const auto config_stage{[&](size_t stage) LAMBDA_FORCEINLINE {
         const Shader::Info& info{stage_infos[stage]};
         buffer_cache.UnbindGraphicsStorageBuffers(stage);
@@ -419,6 +421,25 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         for (const auto& desc : info.texture_descriptors) {
             for (u32 index = 0; index < desc.count; ++index) {
                 const auto handle{read_handle(desc, index)};
+                if (stage == 4) {
+                    // Diagnostics (comparison with the Eglantine integration branch): the raw
+                    // handle words of fragment textures, for draws into 1920x1080 targets.
+                    const u32 offset{desc.cbuf_offset + (index << desc.size_shift)};
+                    const u32 word{gpu_memory->Read<u32>(cbufs[desc.cbuf_index].address + offset)};
+                    const u32 second{desc.has_secondary
+                                         ? gpu_memory->Read<u32>(cbufs[desc.secondary_cbuf_index].address +
+                                                                 desc.secondary_cbuf_offset +
+                                                                 (index << desc.size_shift))
+                                         : 0U};
+                    movie_handles.push_back(fmt::format(
+                        "c{}+{:#x}@{:#x}={:#010x}{} -> TIC {}", desc.cbuf_index, offset,
+                        cbufs[desc.cbuf_index].address, word,
+                        desc.has_secondary ? fmt::format(" | c{}+{:#x}={:#010x}", desc.secondary_cbuf_index,
+                                                         desc.secondary_cbuf_offset, second)
+                                           : std::string{},
+                        handle.first));
+                    movie_handle_views.push_back(views.size());
+                }
                 views.push_back({handle.first});
 
                 VideoCommon::SamplerId sampler{texture_cache.GetSamplerId(handle.second, false)};
@@ -451,6 +472,24 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
     texture_cache.FillImageViews(std::span(views.data(), views.size()), false, Spec::has_images);
+    if (regs.rt[0].width == 1920 && regs.rt[0].height == 1080 && !movie_handles.empty()) {
+        static u32 logged{};
+        const u32 n = logged++;
+        if (n < 60 || (n < 6000 && n % 100 == 0)) {
+            const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
+            const GPUVAddr table = regs.tex_header.Address();
+            std::string text;
+            for (size_t i = 0; i < movie_handles.size(); ++i) {
+                const u32 tic = views[movie_handle_views[i]].index;
+                u64 first{};
+                gpu_memory->ReadBlockUnsafe(table + u64{tic} * 32, &first, sizeof(first));
+                text += fmt::format("; {} (header starts {:016x}): {}", movie_handles[i], first,
+                                    texture_cache.DescribeImageView(views[movie_handle_views[i]].id));
+            }
+            LOG_INFO(Render_Vulkan, "NS2 compare: draw #{} into {:#x} 1920x1080 ps={:#x} table {:#x} limit {}{}",
+                     n, regs.rt[0].Address(), ps, table, regs.tex_header.limit, text);
+        }
+    }
     if (VideoCommon::NS2Draw::FrameTraceActive() && !views.empty()) {
         std::string sampled;
         for (const auto& view : views) {

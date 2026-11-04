@@ -725,3 +725,16 @@ Root cause: a list that starts inside a pending method holds only that method's 
 Changed:
 - On native channels, a list that starts while a method is still waiting for arguments always runs from memory: the host GPU's data when it has newer data (build 117), otherwise guest memory. Lists that start with commands (nn::movie) keep the capture rules.
 - The first 32 such lists whose memory changed since submission are logged ("argument list ... running ... from memory instead of the captured ...").
+
+## Build 121 (diagnostics only: texture handles of the title movie, for comparison)
+Results of build 120: indirect-dispatch freeze fixed (user). Main stays the playable build.
+Why this build: on the Eglantine integration branch (yoshi-int-build-10 to -19) the title
+background flickers green. There the draw that converts the title movie into the game's 1920x1080
+background reads texture handles 0x1020002c / 0x10100020 (texture headers 44 and 32, built as
+c3[0] | c3[0x10] and c3[8] | c3[0x18]); those headers were never written, so the draw samples
+nothing. This build logs the same values on this build, where the title movie shows correctly.
+Logged (no behaviour change):
+- "NS2 compare: draw #N into <address> 1920x1080 ps=<program> table <header table> ...": for
+  every fragment texture of draws into 1920x1080 targets (first 60, then every 100th): the raw
+  handle words and their constant buffer, the texture header index, the first 8 bytes of that
+  header and the image it resolves to.
