@@ -453,6 +453,23 @@ void TextureCache<P>::TickFrame() {
     }
 
     runtime.TickFrame();
+    if (!plane_bind_log.empty()) {
+        // Which movie plane images this frame sampled: address, frame of the last upload, write
+        // notifications and untracked changes so far.
+        static u32 logged{};
+        if (logged++ < 900) {
+            LOG_INFO(HW_GPU, "NS2 movie: frame {} samples planes{}", frame_tick, plane_bind_log);
+        }
+        plane_bind_log.clear();
+        plane_binds.clear();
+    }
+    if (frame_tick % 300 == 0 && plane_images_total != 0) {
+        LOG_INFO(HW_GPU,
+                 "NS2 movie: {} plane images so far, {} plane uploads, {} CPU write notifications, "
+                 "{} untracked changes",
+                 plane_images_total, plane_uploads_total, plane_cpu_writes_total,
+                 plane_untracked_total);
+    }
     ++frame_tick;
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
@@ -862,6 +879,10 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
     ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
+        if (IsPlaneImage(image)) {
+            ++plane_states[image_id.index].cpu_writes;
+            ++plane_cpu_writes_total;
+        }
         if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
             // Written at last: a backed image replaces it where it is used next.
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
@@ -1617,6 +1638,9 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     }
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
+    if (IsPlaneImage(image)) {
+        NotePlaneUpload(image, image_id);
+    }
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
     auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
     UploadImageContents(image, staging);
@@ -1635,6 +1659,95 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         } else {
             uploaded_ranges.emplace_back(image.cpu_addr, image.guest_size_bytes);
         }
+    }
+}
+
+template <class P>
+bool TextureCache<P>::IsPlaneImage(const ImageBase& image) noexcept {
+    const auto format = image.info.format;
+    return (format == PixelFormat::R8_UNORM || format == PixelFormat::R8G8_UNORM) &&
+           image.info.size.width >= 480 && image.info.type == ImageType::e2D &&
+           image.info.resources.layers == 1 && image.guest_size_bytes <= (16U << 20);
+}
+
+template <class P>
+u64 TextureCache<P>::PlaneHash(const ImageBase& image, u64* mean) const {
+    // 64 bytes of every 4 KiB page: cheap enough once per frame for a few images.
+    std::array<u8, 64> sample{};
+    u64 hash = 0xcbf29ce484222325ULL;
+    u64 sum = 0, count = 0;
+    for (u64 offset = 0; offset + sample.size() <= image.guest_size_bytes; offset += 4096) {
+        gpu_memory->ReadBlockUnsafe(image.gpu_addr + offset, sample.data(), sample.size());
+        for (const u8 byte : sample) {
+            hash = (hash ^ byte) * 0x100000001b3ULL;
+            sum += byte;
+        }
+        count += sample.size();
+    }
+    if (mean != nullptr) {
+        *mean = count ? sum / count : 0;
+    }
+    return hash;
+}
+
+template <class P>
+void TextureCache<P>::NotePlaneUpload(Image& image, ImageId image_id) {
+    auto& state = plane_states[image_id.index];
+    u64 mean = 0;
+    state.gpu_addr = image.gpu_addr;
+    state.hash = PlaneHash(image, &mean);
+    state.checked_frame = frame_tick;
+    state.upload_frame = frame_tick;
+    ++state.uploads;
+    ++plane_uploads_total;
+    static u32 logged{};
+    if (const u32 n = logged++; n < 300 || n % 300 == 0) {
+        LOG_INFO(HW_GPU, "NS2 movie: plane upload #{} image id {} gpu {:#x} {}x{} {} in frame {}: mean byte {}",
+                 n, image_id.index, image.gpu_addr, image.info.size.width, image.info.size.height,
+                 image.info.format, frame_tick, mean);
+    }
+}
+
+template <class P>
+void TextureCache<P>::TracePlaneUse(Image& image, ImageId image_id) {
+    auto& state = plane_states[image_id.index];
+    if (state.checked_frame != frame_tick && False(image.flags & ImageFlagBits::CpuModified)) {
+        // The cache thinks its copy is current: has the guest memory changed since?
+        const u64 hash = PlaneHash(image, nullptr);
+        if (state.checked_frame != ~0ULL && hash != state.hash) {
+            ++state.untracked;
+            ++plane_untracked_total;
+            static u32 logged{};
+            if (const u32 n = logged++; n < 100 || n % 500 == 0) {
+                LOG_WARNING(HW_GPU,
+                            "NS2 movie: plane image id {} gpu {:#x} {}x{} {} changed in guest memory "
+                            "without a write notification (#{}; last upload in frame {}, {} "
+                            "notifications, gpu modified {})",
+                            image_id.index, image.gpu_addr, image.info.size.width,
+                            image.info.size.height, image.info.format, n, state.upload_frame,
+                            state.cpu_writes, True(image.flags & ImageFlagBits::GpuModified));
+            }
+            // EDEN_NS2_PLANE_RECHECK=1: upload it again (what EdenNS2 does for these images).
+            static const bool recheck = [] {
+                const char* value = std::getenv("EDEN_NS2_PLANE_RECHECK");
+                return value != nullptr && value[0] == '1';
+            }();
+            if (recheck) {
+                image.flags |= ImageFlagBits::CpuModified;
+                image.flags &= ~ImageFlagBits::GpuModified;
+            }
+        }
+        state.hash = hash;
+        state.checked_frame = frame_tick;
+    }
+    if (plane_binds.size() < 16 && std::ranges::find(plane_binds, image_id.index) == plane_binds.end()) {
+        plane_binds.push_back(image_id.index);
+        plane_bind_log += fmt::format(" {}:{:#x}(id {}, up {}, writes {}, untracked {}{})",
+                                      image.info.format == PixelFormat::R8_UNORM ? "Y" : "UV",
+                                      image.gpu_addr, image_id.index,
+                                      state.upload_frame == ~0ULL ? -1 : static_cast<s64>(state.upload_frame),
+                                      state.cpu_writes, state.untracked,
+                                      True(image.flags & ImageFlagBits::CpuModified) ? ", dirty" : "");
     }
 }
 
@@ -2345,6 +2458,15 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
     }
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
     const Image& image = slot_images[image_id];
+    if (IsPlaneImage(image)) {
+        plane_states[image_id.index] = PlaneState{.gpu_addr = image.gpu_addr};
+        static u32 logged{};
+        if (++plane_images_total, logged++ < 300) {
+            LOG_INFO(HW_GPU, "NS2 movie: plane image id {} at gpu {:#x} cpu {:#x}: {}x{} {} ({:#x} bytes)",
+                     image_id.index, image.gpu_addr, image.cpu_addr, image.info.size.width,
+                     image.info.size.height, image.info.format, image.guest_size_bytes);
+        }
+    }
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
     if (is_new) {
@@ -3396,6 +3518,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             TrackImage(image, image_id);
         }
     } else {
+        if (IsPlaneImage(image)) {
+            TracePlaneUse(image, image_id);
+        }
         RefreshContents(image, image_id);
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);

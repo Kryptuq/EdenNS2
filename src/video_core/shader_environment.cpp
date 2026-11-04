@@ -581,8 +581,11 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                          (program == Maxwell::ShaderType::VertexB ||
                           program == Maxwell::ShaderType::Tessellation)};
     if (native) {
+        // Geometry programs are translated too (EdenNS2 build 95): Unreal Engine renders 3D
+        // textures such as Yoshi's colour grading LUT through one that routes each triangle to
+        // its slice (ISBERD/OUT/epilogue lowering in frontend/ampere/lower_to_maxwell.h).
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel &&
-            !mesh_slot) {
+            program != Maxwell::ShaderType::Geometry && !mesh_slot) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {

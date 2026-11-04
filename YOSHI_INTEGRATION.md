@@ -35,3 +35,25 @@ at a time. Every port names its EdenNS2 origin. Windows builds: releases `yoshi-
   channel waited on acquires); all 8 argument lists held zeros in the snapshot and the GPU-written
   group counts in memory. Upstream Eglantine ran the reused memory and misparsed it into a
   garbage render target (Vulkan image creation failed, the emulator closed).
+
+- Null texel buffers (yoshi-int-build-10): a texture buffer whose TIC entry has no valid format
+  is bound as a null view (with a warning) instead of aborting on the white loading screen.
+- Native geometry programs are no longer rejected (`video_core/shader_environment.cpp`, EdenNS2
+  build 95). Yoshi draws its 32x32x32 colour grading LUT and other volume textures through a
+  pass-through geometry shader that picks the layer; yoshi-int-build-10 skipped those draws
+  ("Unsupported native graphics shader stage 4", draw into 0x8104900000 32x32).
+
+## Open: title-screen background flicker (yoshi-int-build-10)
+The background is Yoshi's nn::movie H.264 video. The decoder side works (frame 600 at pts 19.97 s,
+about 30 fps, images handed back), but the texture cache uploaded only 28 and 14 images in the
+600-frame windows after the movie started (EdenNS2: one Y 1920x1080 R8 and one UV 960x540 RG8
+upload per movie frame, ~380 in the same span). So the game's movie textures are mostly not
+refreshed. Green is what YUV 0/0/0 converts to. yoshi-int-build-11 logs (diagnostics only):
+- "NS2 movie: frame N written to image ... mean Y U V": what the decoder writes;
+- "NS2 movie: N frames out; client took ..., gave back ...; 961 reads ...": whether the client
+  takes and reads out each frame;
+- "NS2 movie: plane image / plane upload / frame N samples planes ...": the game's Y/UV textures,
+  their uploads and, per frame, which ones are sampled (upload frame, write notifications);
+- "changed in guest memory without a write notification": a sparse checksum of each sampled
+  plane image, to tell "the game did not copy the frame" from "the cache was not told".
+  `EDEN_NS2_PLANE_RECHECK=1` also uploads such images again (EdenNS2's behaviour).
