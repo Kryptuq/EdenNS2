@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <span>
 
 #include <boost/container/small_vector.hpp>
@@ -567,7 +568,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                     gpu_memory->ReadBlockUnsafe(cbuf.address, words.data(), words.size() * 4);
                     for (size_t w = 0; w < words.size() && hit_count < 32; ++w) {
                         const u32 tic = words[w] & 0xfffff;
-                        if (tic != 0 && std::ranges::find(wanted, tic) != wanted.end()) {
+                        const u32 tic_bytes = (words[w] & 0xffffff) % 32 == 0 ? (words[w] & 0xffffff) / 32 : 0;
+                        if ((tic != 0 && std::ranges::find(wanted, tic) != wanted.end()) ||
+                            (tic_bytes != 0 && std::ranges::find(wanted, tic_bytes) != wanted.end())) {
                             hits += fmt::format(" stage {} slot {} +{:#x} = {:#010x}", stage, slot,
                                                 w * 4, words[w]);
                             ++hit_count;
@@ -580,6 +583,53 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 wanted_text += fmt::format(" {}", index);
             }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     fragment cbufs:{}", slots);
+            // The fragment program's native code (once per address) and the first 0x200 bytes of
+            // each fragment constant buffer, to see offline how the handles are computed.
+            static std::mutex dump_mutex;
+            static std::vector<u64> dumped;
+            bool dump_program = false;
+            {
+                std::scoped_lock lock{dump_mutex};
+                if (dumped.size() < 6 && std::ranges::find(dumped, ps) == dumped.end()) {
+                    dumped.push_back(ps);
+                    dump_program = true;
+                }
+            }
+            if (dump_program) {
+                constexpr size_t MaxBytes = 0x6000;
+                std::vector<u32> code(MaxBytes / 4);
+                gpu_memory->ReadBlockUnsafe(ps, code.data(), MaxBytes);
+                size_t end = code.size();
+                // Native programs end with a branch to itself after their EXIT (0x947, -16).
+                for (size_t i = 0x80 / 4; i + 3 < code.size(); i += 4) {
+                    if ((code[i] & 0xfff) == 0x947 && code[i + 1] == 0xfffffff0) {
+                        end = i + 4;
+                        break;
+                    }
+                }
+                for (size_t i = 0; i < end; i += 64) {
+                    std::string line;
+                    for (size_t j = i; j < (std::min)(end, i + 64); ++j) {
+                        line += fmt::format("{:08x}", code[j]);
+                    }
+                    LOG_INFO(Render_Vulkan, "NS2 program dump {:#x} +{:#06x}: {}", ps, i * 4, line);
+                }
+                for (size_t slot = 0; slot < 8; ++slot) {
+                    const auto& cbuf{maxwell3d->state.shader_stages[4].const_buffers[slot]};
+                    if (!cbuf.enabled || cbuf.address == 0) {
+                        continue;
+                    }
+                    std::array<u32, 128> words{};
+                    gpu_memory->ReadBlockUnsafe(cbuf.address, words.data(),
+                                                (std::min<size_t>)(cbuf.size, sizeof(words)));
+                    std::string line;
+                    for (const u32 w : words) {
+                        line += fmt::format("{:08x}", w);
+                    }
+                    LOG_INFO(Render_Vulkan, "NS2 cbuf dump {:#x} slot {} at {:#x}: {}", ps, slot,
+                             cbuf.address, line);
+                }
+            }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     movie-sized headers:{}; words naming them:{}",
                      wanted_text, hits.empty() ? " none" : hits);
         }

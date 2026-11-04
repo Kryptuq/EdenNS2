@@ -99,3 +99,12 @@ same two handle locations (cbuf 3 +0/+8), so the location is the game's. GPU spl
 and same-value skipping are ruled out. yoshi-int-build-15 searches every bound constant buffer of
 every stage for words naming the movie's headers, and logs every fragment cbuf bind of the traced
 frames, to find which buffer holds the handles and why slot 3 points elsewhere at the draw.
+
+yoshi-int-build-15 (user log): the fragment slot 3 buffer is bound right before the draw (e.g.
+"fragment cbuf bind slot 3 address 0x1aa1830100 size 0x100") and holds 0x3a888889 at +0 for two
+different programs (the movie conversion and a 1408x788 R8_UINT pass); no bound constant buffer
+of any stage holds a word naming any of the 38 movie-sized headers. Offline, Eglantine's and
+EdenNS2's shader frontends produce identical texture descriptors for all 972 Yoshi programs both
+lower. yoshi-int-build-16 dumps the native code of the fragment programs whose handles resolve to
+no image and the first 0x200 bytes of their constant buffers, for offline analysis of how those
+programs really address their textures.
