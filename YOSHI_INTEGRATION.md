@@ -108,3 +108,11 @@ EdenNS2's shader frontends produce identical texture descriptors for all 972 Yos
 lower. yoshi-int-build-16 dumps the native code of the fragment programs whose handles resolve to
 no image and the first 0x200 bytes of their constant buffers, for offline analysis of how those
 programs really address their textures.
+
+Also from the build 15 log: the fragment slot 3 buffer is a per-draw handle block (0x100 bytes)
+carved from three rotating 256 KiB regions (…1730000, …1770000, …1830000); every other draw's
+block holds valid handles (0x617, 0x75a, …). Only the first block of a region (+0x100), which the
+movie draw and the 1408x788 R8_UINT draw use as the first draws of a frame, holds other data.
+yoshi-int-build-17 watches those blocks: their contents at the end of each of the next six GPU
+frames, and every CPU write, inline upload or copy-engine write into them with its GPU frame, to
+tell "handles written after the GPU read the block" from "block overwritten before the GPU read it".

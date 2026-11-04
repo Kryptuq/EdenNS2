@@ -537,6 +537,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             const auto& view = views[position];
             if (view.id == VideoCommon::NULL_IMAGE_VIEW_ID && handle_cbufs[i] != 0) {
                 Common::NS2FrameTrace::WatchedConstBuffer().store(handle_cbufs[i], std::memory_order_relaxed);
+                const GPUVAddr block = handle_cbufs[i] & ~GPUVAddr{0xff};
+                Common::NS2FrameTrace::WatchBlock(block, gpu_memory->GpuToCpuAddress(block).value_or(0),
+                                                  Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed));
             }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     {}: {}", text,
                      view.id == VideoCommon::NULL_IMAGE_VIEW_ID

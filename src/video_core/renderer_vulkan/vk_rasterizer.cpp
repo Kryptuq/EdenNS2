@@ -19,6 +19,7 @@
 
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 
+#include "common/ns2_frame_trace.h"
 #include "common/assert.h"
 #include "shader_recompiler/exception.h"
 #include "common/logging.h"
@@ -1094,10 +1095,32 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
     return new_area;
 }
 
+// Yoshi movie diagnostics: writes into a watched handle block (common/ns2_frame_trace.h), with
+// the GPU frame they happen in.
+static void NoteWatchedBlockWrite(const char* kind, u64 addr, u64 size, bool gpu_address = false) {
+    std::scoped_lock lock{Common::NS2FrameTrace::WatchedBlocksMutex()};
+    const u64 frame = Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed);
+    for (const auto& block : Common::NS2FrameTrace::WatchedBlocks()) {
+        const u64 base = gpu_address ? block.gpu_addr : block.device_addr;
+        if (base == 0 || frame > block.frame + 6) {
+            continue;
+        }
+        if (addr < base + 0x100 && addr + size > base) {
+            static u32 logged{};
+            if (logged++ < 400) {
+                LOG_INFO(Render_Vulkan,
+                         "NS2 frame trace: {} {:#x}+{:#x} into watched block {:#x} (draw in GPU frame {}) during GPU frame {}",
+                         kind, addr, size, block.gpu_addr, block.frame, frame);
+            }
+        }
+    }
+}
+
 void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (addr == 0 || size == 0) {
         return;
     }
+    NoteWatchedBlockWrite("GPU-side write", addr, size);
     if (True(which & VideoCommon::CacheType::TextureCache)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.WriteMemory(addr, size);
@@ -1135,6 +1158,7 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
+    NoteWatchedBlockWrite("CPU write", addr, size);
     {
         std::scoped_lock lock{buffer_cache.mutex};
         if (buffer_cache.OnCPUWrite(addr, size)) {
@@ -1153,6 +1177,7 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) {
         return;
     }
+    NoteWatchedBlockWrite("cache invalidation", addr, size);
 
     {
         std::scoped_lock lock{texture_cache.mutex};
@@ -1337,6 +1362,7 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
         return;
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+    NoteWatchedBlockWrite("inline upload", *cpu_addr, copy_size);
     // EDEN_NX2_INLINE_DEFER=0: invalidate every cache at once (for comparisons).
     static const bool defer = [] {
         const char* value = std::getenv("EDEN_NX2_INLINE_DEFER");
@@ -1460,6 +1486,7 @@ bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
 }
 
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
+    NoteWatchedBlockWrite("copy engine (GPU address)", dest_address, amount, true);
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.Nx2CollectListCopies(true);
     const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);

@@ -459,6 +459,26 @@ void TextureCache<P>::TickFrame() {
         LOG_INFO(HW_GPU, "NS2 frame trace: end of frame {} ({} operations)", frame_tick, frame_trace_ops);
     }
     {
+        // Watched handle blocks: their first words at the end of each of the 6 frames after the
+        // draw that found no image in them (still the same, or the movie's handles arriving late).
+        std::scoped_lock lock{Common::NS2FrameTrace::WatchedBlocksMutex()};
+        auto& blocks = Common::NS2FrameTrace::WatchedBlocks();
+        for (const auto& block : blocks) {
+            if (frame_tick < block.frame || frame_tick > block.frame + 6) {
+                continue;
+            }
+            std::array<u32, 8> words{};
+            gpu_memory->ReadBlockUnsafe(block.gpu_addr, words.data(), sizeof(words));
+            std::array<u32, 8> next{};
+            gpu_memory->ReadBlockUnsafe(block.gpu_addr + 0x100, next.data(), sizeof(next));
+            LOG_INFO(HW_GPU,
+                     "NS2 frame trace: end of GPU frame {}: block {:#x} (draw in frame {}) holds{}; next 0x100:{}",
+                     frame_tick, block.gpu_addr, block.frame,
+                     fmt::format(" {:08x}", fmt::join(words, " ")),
+                     fmt::format(" {:08x}", fmt::join(next, " ")));
+        }
+    }
+    {
         // Trace frames 300-303, 900-903 and 1500-1503 after the first movie-sized plane upload.
         const u64 since = frame_tick + 1 - frame_trace_first_movie_frame;
         const bool next = frame_trace_first_movie_frame != ~0ULL &&
