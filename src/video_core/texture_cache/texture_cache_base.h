@@ -398,6 +398,8 @@ private:
 public:
     /// Yoshi movie diagnostics: why a texture handle resolves to no image.
     std::string DescribeImageIndex(u32 index, bool compute);
+    /// Yoshi movie diagnostics: indices of the 1920x1080 / 960x540 headers in the table.
+    std::vector<u32> MovieSizedHeaders(bool compute);
 
 private:
 

@@ -542,6 +542,47 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                          ? "no image: " + texture_cache.DescribeImageIndex(view.index, false)
                          : fmt::format("view {}", view.id.index));
         }
+        const bool any_null = std::ranges::any_of(handle_trace, [&](const auto& entry) {
+            return views[entry.first].id == VideoCommon::NULL_IMAGE_VIEW_ID;
+        });
+        if (any_null) {
+            // Where the handles of the movie's texture headers are: every bound constant buffer of
+            // every stage, searched for words naming a 1920x1080 / 960x540 header.
+            const std::vector<u32> wanted = texture_cache.MovieSizedHeaders(false);
+            std::string slots;
+            std::string hits;
+            u32 hit_count = 0;
+            for (size_t stage = 0; stage < 5; ++stage) {
+                const auto& stage_cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+                for (size_t slot = 0; slot < stage_cbufs.size(); ++slot) {
+                    const auto& cbuf{stage_cbufs[slot]};
+                    if (!cbuf.enabled || cbuf.address == 0) {
+                        continue;
+                    }
+                    if (stage == 4) {
+                        slots += fmt::format(" {}:{:#x}+{:#x}", slot, cbuf.address, cbuf.size);
+                    }
+                    const u32 bytes = (std::min)(cbuf.size, 0x10000U);
+                    std::vector<u32> words(bytes / 4);
+                    gpu_memory->ReadBlockUnsafe(cbuf.address, words.data(), words.size() * 4);
+                    for (size_t w = 0; w < words.size() && hit_count < 32; ++w) {
+                        const u32 tic = words[w] & 0xfffff;
+                        if (tic != 0 && std::ranges::find(wanted, tic) != wanted.end()) {
+                            hits += fmt::format(" stage {} slot {} +{:#x} = {:#010x}", stage, slot,
+                                                w * 4, words[w]);
+                            ++hit_count;
+                        }
+                    }
+                }
+            }
+            std::string wanted_text;
+            for (const u32 index : wanted) {
+                wanted_text += fmt::format(" {}", index);
+            }
+            LOG_INFO(Render_Vulkan, "NS2 frame trace:     fragment cbufs:{}", slots);
+            LOG_INFO(Render_Vulkan, "NS2 frame trace:     movie-sized headers:{}; words naming them:{}",
+                     wanted_text, hits.empty() ? " none" : hits);
+        }
     }
 
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};

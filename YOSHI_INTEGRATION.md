@@ -90,3 +90,12 @@ textures. Either the handles in cbuf 3 are stale (the game's newer values did no
 game wrote the movie's texture headers somewhere this draw does not look. yoshi-int-build-14 logs
 the raw handle words, every inline constant buffer upload into that cbuf, and where 1920x1080 /
 960x540 texture headers are in the table.
+
+yoshi-int-build-14 (user, 4 runs with EDEN_NX2_SPLIT=0 / MME_JIT+MEMO=0 / SKIP_SAME=0 / all):
+the same picture and the same log every time. The movie draw's cbuf 3 (+0/+8) holds 0x3a888889
+(1/960, a parameter) and 0, or 44/32 (headers never written); the movie's real headers exist
+(e.g. 1254 1920x1080 and 1256 960x540). Offline, EdenNS2's frontend gives 35 Yoshi programs the
+same two handle locations (cbuf 3 +0/+8), so the location is the game's. GPU split, macro JIT/memo
+and same-value skipping are ruled out. yoshi-int-build-15 searches every bound constant buffer of
+every stage for words naming the movie's headers, and logs every fragment cbuf bind of the traced
+frames, to find which buffer holds the handles and why slot 3 points elsewhere at the draw.

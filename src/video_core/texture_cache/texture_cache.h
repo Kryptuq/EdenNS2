@@ -1692,6 +1692,22 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 }
 
 template <class P>
+std::vector<u32> TextureCache<P>::MovieSizedHeaders(bool compute) {
+    auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
+    const u32 scan = (std::min)(table.current_limit + 1, 8192U);
+    std::vector<TICEntry> entries(scan);
+    gpu_memory->ReadBlockUnsafe(table.current_gpu_addr, entries.data(), entries.size() * sizeof(TICEntry));
+    std::vector<u32> result;
+    for (u32 i = 0; i < scan; ++i) {
+        const TICEntry& e = entries[i];
+        if ((e.Width() == 1920 && e.Height() == 1080) || (e.Width() == 960 && e.Height() == 540)) {
+            result.push_back(i);
+        }
+    }
+    return result;
+}
+
+template <class P>
 std::string TextureCache<P>::DescribeImageIndex(u32 raw_index, bool compute) {
     auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
     const u32 index = Tegra::Texture::TextureHeaderIndex(raw_index, table.current_limit,

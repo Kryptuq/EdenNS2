@@ -736,6 +736,12 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
         LOG_INFO(HW_GPU, "Constant buffer bind: stage {} slot {} address {:#x} size {:#x}", stage_index,
                  bind_data.shader_slot.Value(), regs.const_buffer.Address(), regs.const_buffer.size);
     }
+    if (stage_index == 4 && Common::NS2FrameTrace::Active().load(std::memory_order_relaxed)) {
+        // Yoshi movie diagnostics: every fragment constant buffer bind of a traced frame.
+        LOG_INFO(HW_GPU, "NS2 frame trace: fragment cbuf bind slot {} valid {} address {:#x} size {:#x}",
+                 bind_data.shader_slot.Value(), bind_data.valid.Value(), regs.const_buffer.Address(),
+                 regs.const_buffer.size);
+    }
     if (bind_data.shader_slot >= Regs::MaxConstBuffers) {
         return; // slot field is 5 bits; the state array holds 18
     }
