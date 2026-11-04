@@ -15,6 +15,11 @@
 #include "video_core/surface.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/texture_cache/image_info.h"
+#include <array>
+#include <atomic>
+#include <cstring>
+#include <fmt/ranges.h>
+#include "video_core/ns2_command_trace.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/types.h"
 #include "video_core/texture_cache/util.h"
@@ -161,6 +166,19 @@ ImageInfo::ImageInfo(const Maxwell3D::Regs::RenderTargetConfig& ct,
     dma_downloaded = forced_flushed;
     format = VideoCore::Surface::PixelFormatFromRenderTargetFormat(ct.format);
     rescaleable = false;
+    if (ct.height > 0x10000 || ct.depth > 0x800 || static_cast<u32>(ct.format) > 0xff) {
+        // NS2 diagnostics (Yoshi): a render target whose registers hold garbage. Print the
+        // register block and the recent commands that wrote it.
+        static std::atomic<u32> logged{0};
+        if (logged.fetch_add(1) < 2) {
+            std::array<u32, sizeof(ct) / sizeof(u32)> words{};
+            std::memcpy(words.data(), &ct, sizeof(words));
+            LOG_ERROR(HW_GPU, "NS2: render target registers hold garbage: {:08x}; recent commands "
+                      "of channel {} (oldest first; 3D RT0 is m0x800.., RT n at 0x800 + 0x10 * n):{}",
+                      fmt::join(words, ","), VideoCommon::NS2CommandTrace::CurrentChannel(),
+                      VideoCommon::NS2CommandTrace::Dump(1000));
+        }
+    }
     if (ct.tile_mode.is_pitch_linear) {
         ASSERT(ct.tile_mode.dim_control ==
                Maxwell3D::Regs::TileMode::DimensionControl::DefineArraySize);

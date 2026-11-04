@@ -15,6 +15,7 @@
 #include "core/memory.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/dma_pusher.h"
+#include "video_core/ns2_command_trace.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -94,6 +95,11 @@ bool DmaPusher::Step() {
     auto& current_command = command_list.command_lists[dma_pushbuffer_subindex];
     const CommandListHeader& header = current_command;
     dma_state.dma_get = header.addr;
+    if (command_resume_offset == 0) {
+        VideoCommon::NS2CommandTrace::NoteList(channel_state.bind_id, header.addr,
+                                               static_cast<u32>(header.size),
+                                               VideoCommon::NS2CommandTrace::ListSource::Live, 0);
+    }
 
     if (signal_sync && !synced) {
         std::unique_lock lk(sync_mutex);
@@ -374,6 +380,8 @@ bool DmaPusher::WantsSegment() const {
 }
 
 void DmaPusher::CallMethod(u32 argument) {
+    VideoCommon::NS2CommandTrace::NoteMethod(dma_state.subchannel, dma_state.method, argument,
+                                             dma_state.dma_get + dma_state.dma_word_offset);
     if (g_semaphore_watch != 0) [[unlikely]] {
         WatchArgument(dma_state.method, argument);
     }
@@ -436,6 +444,11 @@ void DmaPusher::CallMethod(u32 argument) {
 }
 
 void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
+    for (u32 i = 0; i < std::min<u32>(num_methods, 64); ++i) {
+        VideoCommon::NS2CommandTrace::NoteMethod(
+            dma_state.subchannel, dma_state.method + (dma_state.non_incrementing ? 0 : i), base_start[i],
+            dma_state.dma_get + dma_state.dma_word_offset + u64{i} * sizeof(u32));
+    }
     if (g_semaphore_watch != 0) [[unlikely]] {
         for (u32 i = 0; i < num_methods; ++i) {
             WatchArgument(dma_state.method + (dma_state.non_incrementing ? 0 : i), base_start[i]);
