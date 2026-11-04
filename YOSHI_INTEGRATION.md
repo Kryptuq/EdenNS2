@@ -71,3 +71,13 @@ yoshi-int-build-11 results (user, run without and with EDEN_NS2_PLANE_RECHECK=1,
 yoshi-int-build-12 traces whole frames (every draw, dispatch, clear, blit and DMA copy with the
 images it reads and writes) 300, 900 and 1500 frames after the movie's first upload, together
 with the presents and decoder outputs of those frames, to find what the game draws instead.
+
+yoshi-int-build-12 frame trace (user log, 2026-11-04): every second frame the first draw writes
+the game's movie target 0x8112dd0000 (1920x1080 B8G8R8A8_SRGB), and the final pass composites it
+(op 104). In 11 of the 12 traced frames that draw read **no image at all**; in frame 1031 it read
+the movie's Y (1920x1080 R8) and UV (960x540 RG8) textures. So the movie conversion runs at the
+movie's rate, but its texture handles almost always resolve to no image: the shader then reads
+zeros, and YUV 0/0/0 is the flat green. yoshi-int-build-13 logs, for every draw of the traced
+frames, where each texture handle comes from (cbuf address/offset or handle program), the TIC index
+it becomes and, for a handle without an image, the TIC table, limit, raw TIC entry and whether it
+is valid.

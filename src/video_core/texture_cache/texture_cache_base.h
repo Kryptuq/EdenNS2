@@ -395,6 +395,12 @@ private:
     void FrameTraceNote(const ImageBase& image, bool write);
     void FrameTraceFlush();
 
+public:
+    /// Yoshi movie diagnostics: why a texture handle resolves to no image.
+    std::string DescribeImageIndex(u32 index, bool compute);
+
+private:
+
     /// Upload data from guest to an image
     template <typename StagingBuffer>
     void UploadImageContents(Image& image, StagingBuffer& staging_buffer);

@@ -1692,6 +1692,25 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 }
 
 template <class P>
+std::string TextureCache<P>::DescribeImageIndex(u32 raw_index, bool compute) {
+    auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
+    const u32 index = Tegra::Texture::TextureHeaderIndex(raw_index, table.current_limit,
+                                                         gpu_memory->UsesNativeTiling());
+    std::string text = fmt::format("raw index {} -> TIC {} of table {:#x} (limit {})", raw_index,
+                                   index, table.current_gpu_addr, table.current_limit);
+    if (index > table.current_limit) {
+        return text + ", beyond the limit";
+    }
+    TICEntry entry{};
+    gpu_memory->ReadBlockUnsafe(table.current_gpu_addr + index * sizeof(TICEntry), &entry,
+                                sizeof(entry));
+    text += fmt::format(", TIC {:016x} {:016x} {:016x} {:016x}: address {:#x} {}x{}, valid {}",
+                        entry.raw[0], entry.raw[1], entry.raw[2], entry.raw[3], entry.Address(),
+                        entry.Width(), entry.Height(), IsValidEntry(*gpu_memory, entry));
+    return text;
+}
+
+template <class P>
 void TextureCache<P>::FrameTraceBegin(const char* kind) {
     FrameTraceFlush();
     frame_trace_line = fmt::format("NS2 frame trace: frame {} op {} {}:", frame_tick, frame_trace_ops++, kind);
