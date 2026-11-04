@@ -8,9 +8,15 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <unordered_map>
+#include <thread>
+#include <mutex>
+#include <cstring>
+#include <chrono>
 #include <string>
 #include <vector>
 
+#include "common/cityhash.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -178,34 +184,54 @@ bool DmaPusher::Step() {
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
-        // NS2 diagnostics (Yoshi): when an entry has a snapshot but runs from memory, say why and
-        // whether memory still holds the submitted words.
-        if (!submitted && command_resume_offset == 0 &&
-            dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
-            static std::atomic<u32> ns2_logs{0};
-            if (ns2_logs.load(std::memory_order_relaxed) < 48) {
-                const u32 words = static_cast<u32>(std::min<u64>(header.size, 4096));
-                std::vector<u32> live(words);
-                memory_manager.ReadBlockUnsafe(dma_state.dma_get, live.data(), words * sizeof(u32));
-                const u32* snap = reinterpret_cast<const u32*>(command_list.submitted_words.data() +
-                                                               command_list.submitted_offsets[dma_pushbuffer_subindex]);
-                u32 first_diff = words;
-                for (u32 w = 0; w < words; ++w) {
-                    if (live[w] != snap[w]) { first_diff = w; break; }
+        // An entry with a snapshot that the rules above send to memory because of a suspension:
+        // memory may hold commands the game completed in place before it released the acquire
+        // (run them), or the next frame's commands in reused memory (run the snapshot). As in
+        // EdenNS2: the memory belongs to a later submission when that submission captured exactly
+        // it; with a history of reuse, wait briefly for that submission. A list that starts
+        // inside a pending method holds arguments the GPU writes (indirect dispatch) and runs
+        // from memory.
+        bool snapshot_after_suspension = false;
+        if (!submitted && command_resume_offset == 0 && dma_state.method_count == 0 &&
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+            dma_pushbuffer_subindex < command_list.submitted_sequences.size() &&
+            !IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32)) &&
+            !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get, header.size * sizeof(u32)))) {
+            const CommandHeader* snap = command_list.submitted_words.data() +
+                                        command_list.submitted_offsets[dma_pushbuffer_subindex];
+            const size_t bytes = size_t{header.size} * sizeof(u32);
+            ns2_live_words.resize(header.size);
+            memory_manager.ReadBlockUnsafe(dma_state.dma_get, ns2_live_words.data(), bytes);
+            if (std::memcmp(ns2_live_words.data(), snap, bytes) == 0) {
+                snapshot_after_suspension = true;
+            } else {
+                const u64 sequence = command_list.submitted_sequences[dma_pushbuffer_subindex];
+                const auto hash_live = [&] {
+                    return Common::CityHash64(reinterpret_cast<const char*>(ns2_live_words.data()), bytes);
+                };
+                bool reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, header.addr,
+                                                              sequence, hash_live());
+                if (!reused && NativeSubmissions::UsuallyReused(channel_state.bind_id, header.addr)) {
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{10};
+                    while (!reused && std::chrono::steady_clock::now() < deadline) {
+                        std::this_thread::yield();
+                        memory_manager.ReadBlockUnsafe(dma_state.dma_get, ns2_live_words.data(), bytes);
+                        reused = NativeSubmissions::ClaimedLater(channel_state.bind_id, header.addr,
+                                                                 sequence, hash_live());
+                    }
                 }
-                ns2_logs.fetch_add(1, std::memory_order_relaxed);
-                LOG_INFO(HW_GPU, "NS2: ch {} entry {:#x} ({} words) runs from memory, not its snapshot: "
-                         "suspensions at submit {} now {}, GPU-written {}, safe dirty {}; memory {}",
-                         channel_state.bind_id, u64{header.addr}, u64{header.size},
-                         command_list.snapshot_suspensions, suspensions.load(std::memory_order_acquire),
-                         IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32)),
-                         use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get, header.size * sizeof(u32)),
-                         first_diff == words ? std::string{"equals the snapshot"}
-                             : fmt::format("differs from word {} (snapshot {:08x}, memory {:08x})",
-                                           first_diff, snap[first_diff], live[first_diff]));
+                NativeSubmissions::NoteOutcome(channel_state.bind_id, header.addr, reused);
+                snapshot_after_suspension = reused;
+                static std::atomic<u32> ns2_logs{0};
+                if (ns2_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
+                    LOG_INFO(HW_GPU, "NS2: ch {} entry {:#x} ({} words) changed after submission: {}",
+                             channel_state.bind_id, u64{header.addr}, u64{header.size},
+                             reused ? "reused for a later submission, running it as submitted"
+                                    : "completed in place, running the current contents");
+                }
             }
         }
-        if (submitted) {
+        if (submitted || snapshot_after_suspension) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
@@ -735,5 +761,55 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
 void DmaPusher::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
 }
+
+namespace NativeSubmissions {
+namespace {
+struct Submission {
+    u64 sequence;
+    u64 hash;
+    u32 reused;    ///< Changes of this list that a later submission claimed
+    u32 completed; ///< Changes that no submission claimed (completed in place)
+};
+std::mutex submissions_mutex;
+std::unordered_map<u64, Submission> latest;
+u64 next_sequence{};
+u64 Key(s32 channel, GPUVAddr address) {
+    return (static_cast<u64>(static_cast<u32>(channel)) << 40) | (address & ((1ULL << 40) - 1));
+}
+} // namespace
+
+u64 Record(s32 channel, GPUVAddr address, std::span<const CommandHeader> words) {
+    const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(words.data()), words.size_bytes());
+    std::scoped_lock lock{submissions_mutex};
+    if (latest.size() > (1U << 18)) {
+        latest.clear();
+    }
+    const u64 sequence = ++next_sequence;
+    Submission& entry = latest[Key(channel, address)];
+    entry.sequence = sequence;
+    entry.hash = hash;
+    return sequence;
+}
+
+void NoteOutcome(s32 channel, GPUVAddr address, bool reused) {
+    std::scoped_lock lock{submissions_mutex};
+    const auto it = latest.find(Key(channel, address));
+    if (it == latest.end()) return;
+    u32& counter = reused ? it->second.reused : it->second.completed;
+    counter = (std::min)(counter + 1, 1U << 30);
+}
+
+bool UsuallyReused(s32 channel, GPUVAddr address) {
+    std::scoped_lock lock{submissions_mutex};
+    const auto it = latest.find(Key(channel, address));
+    return it != latest.end() && it->second.reused >= 8 && it->second.reused > 4 * it->second.completed;
+}
+
+bool ClaimedLater(s32 channel, GPUVAddr address, u64 sequence, u64 hash) {
+    std::scoped_lock lock{submissions_mutex};
+    const auto it = latest.find(Key(channel, address));
+    return it != latest.end() && it->second.sequence > sequence && it->second.hash == hash;
+}
+} // namespace NativeSubmissions
 
 } // namespace Tegra

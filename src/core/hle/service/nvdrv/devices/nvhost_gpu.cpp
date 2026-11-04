@@ -460,6 +460,10 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
                 channel_state->memory_manager->ReadBlockUnsafe(
                     entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                entries.submitted_sequences.push_back(Tegra::NativeSubmissions::Record(
+                    bind_id, entry.addr,
+                    std::span<const Tegra::CommandHeader>{entries.submitted_words.data() + offset,
+                                                          entry.size}));
                 offset += entry.size;
             }
         }
