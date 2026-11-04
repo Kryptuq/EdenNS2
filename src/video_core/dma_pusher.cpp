@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -176,6 +178,33 @@ bool DmaPusher::Step() {
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        // NS2 diagnostics (Yoshi): when an entry has a snapshot but runs from memory, say why and
+        // whether memory still holds the submitted words.
+        if (!submitted && command_resume_offset == 0 &&
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
+            static std::atomic<u32> ns2_logs{0};
+            if (ns2_logs.load(std::memory_order_relaxed) < 48) {
+                const u32 words = static_cast<u32>(std::min<u64>(header.size, 4096));
+                std::vector<u32> live(words);
+                memory_manager.ReadBlockUnsafe(dma_state.dma_get, live.data(), words * sizeof(u32));
+                const u32* snap = reinterpret_cast<const u32*>(command_list.submitted_words.data() +
+                                                               command_list.submitted_offsets[dma_pushbuffer_subindex]);
+                u32 first_diff = words;
+                for (u32 w = 0; w < words; ++w) {
+                    if (live[w] != snap[w]) { first_diff = w; break; }
+                }
+                ns2_logs.fetch_add(1, std::memory_order_relaxed);
+                LOG_INFO(HW_GPU, "NS2: ch {} entry {:#x} ({} words) runs from memory, not its snapshot: "
+                         "suspensions at submit {} now {}, GPU-written {}, safe dirty {}; memory {}",
+                         channel_state.bind_id, u64{header.addr}, u64{header.size},
+                         command_list.snapshot_suspensions, suspensions.load(std::memory_order_acquire),
+                         IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32)),
+                         use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get, header.size * sizeof(u32)),
+                         first_diff == words ? std::string{"equals the snapshot"}
+                             : fmt::format("differs from word {} (snapshot {:08x}, memory {:08x})",
+                                           first_diff, snap[first_diff], live[first_diff]));
+            }
+        }
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
