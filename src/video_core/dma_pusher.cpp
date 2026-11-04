@@ -175,11 +175,32 @@ bool DmaPusher::Step() {
         // safe read below would flush (with the split, the front can't tell: it reads memory
         // unflushed anyway). Entries on pages the GPU writes (culling) always take the flushing
         // read: their words at submit time are an older frame's.
+        // Yoshi and the Mysterious Book (Switch 2) reuses command memory it has submitted, often
+        // while the channel is suspended on an acquire, and never completes a command list in
+        // place; it only lets the GPU write the arguments of a pending method (indirect dispatch
+        // group counts: submitted as zeros, written by an earlier dispatch). Evidence (build 7
+        // log): every command list whose memory changed after submission held complete commands
+        // in its snapshot and unrelated commands in memory; every argument list held zeros in the
+        // snapshot and the counts in memory. So for Yoshi a suspension does not discard the
+        // snapshot, and an entry that starts inside a pending method never uses it.
+        // EDEN_NS2_SNAPSHOT_RULE=1/0 forces the rule on/off for other titles.
+        static const int forced_snapshot_rule = [] {
+            const char* value = std::getenv("EDEN_NS2_SNAPSHOT_RULE");
+            return value == nullptr ? -1 : value[0] == '1' ? 1 : 0;
+        }();
+        const bool yoshi_snapshot_rule =
+            forced_snapshot_rule == 1 ||
+            (forced_snapshot_rule == -1 && (channel_state.program_id == 0x0400245021D2C000ULL ||
+                                            channel_state.program_id == 0x04007C6028AA8000ULL));
+        const bool argument_entry = dma_state.method_count != 0;
+        const bool snapshot_valid =
+            yoshi_snapshot_rule ? !argument_entry
+                                : (command_list.snapshot_suspensions & 1) == 0 &&
+                                      command_list.snapshot_suspensions ==
+                                          suspensions.load(std::memory_order_acquire);
         const bool submitted = command_resume_offset == 0 &&
                                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
-                               (command_list.snapshot_suspensions & 1) == 0 &&
-                               command_list.snapshot_suspensions ==
-                                   suspensions.load(std::memory_order_acquire) &&
+                               snapshot_valid &&
                                !IsGpuWrittenCommands(dma_state.dma_get,
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
@@ -196,7 +217,7 @@ bool DmaPusher::Step() {
             memory_manager.ReadBlockUnsafe(dma_state.dma_get, ns2_live_words.data(), bytes);
             static std::atomic<u32> ns2_logs{0};
             if (std::memcmp(ns2_live_words.data(), snap, bytes) != 0 &&
-                ns2_logs.fetch_add(1, std::memory_order_relaxed) < 12) {
+                ns2_logs.fetch_add(1, std::memory_order_relaxed) < 40) {
                 const auto now_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count());
                 const size_t shown = std::min<size_t>(header.size, 64);
