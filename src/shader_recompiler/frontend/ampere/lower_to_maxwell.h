@@ -3017,18 +3017,35 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(0xe24000000000000fULL | predicate);
                 break;
             }
-            if (main_exited || index == 0 || insn.words[0] != 0x7944 ||
-                (insn.words[2] & ~0x3ffffU) != 0x03c00000 ||
-                (code[index - 1].words[0] & ~0x00ff0000U) != 0x00007802 ||
-                code[index - 1].Bits(16, 8) >= 250 ||
-                code[index - 1].words[1] != (index + 1) * 16 ||
-                code[index - 1].words[2] != 0xf00)
+            // The link is the register last set to the return address (MOV Rx, imm), which the
+            // compiler may schedule some instructions ahead of the call: nothing between, in the
+            // same straight-line code, may write it. (Upstream fae454cf; EdenNS2 build 110.)
+            u32 link = ~0U;
+            std::array<bool, 256> written{};
+            for (u32 prior = index; prior-- > 0 && index - prior <= 64;) {
+                const Instruction& candidate = code[prior];
+                const u32 prior_opcode = candidate.Bits(0, 12);
+                if ((candidate.words[0] & ~0x00ff0000U) == 0x00007802 &&
+                    candidate.words[1] == (index + 1) * 16 && candidate.words[2] == 0xf00) {
+                    link = candidate.Bits(16, 8);
+                    break;
+                }
+                if (prior_opcode == 0x947 || prior_opcode == 0x949 || prior_opcode == 0x958 ||
+                    prior_opcode == 0x944 || prior_opcode == 0x950 || prior_opcode == 0x94d ||
+                    prior_opcode == 0x945 || prior_opcode == 0x941 || prior_opcode == 0x942)
+                    break;
+                const u32 written_reg = candidate.Bits(16, 8);
+                written[written_reg] = true;
+                if (prior_opcode == 0x225 || prior_opcode == 0x625 || prior_opcode == 0x825)
+                    written[(written_reg + 1) & 0xff] = true;
+            }
+            if (main_exited || insn.words[0] != 0x7944 || (insn.words[2] & ~0x3ffffU) != 0x03c00000 ||
+                link >= 250 || written[link])
                 return fail(index, "native call linkage mode");
             const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native call destination alignment");
-            const u32 link = code[index - 1].Bits(16, 8);
             for (size_t call = 0; call < call_targets.size(); ++call) {
                 if (call_targets[call] == target / 16 && call_links[call] != link)
                     return fail(index, "native inconsistent call linkage");
@@ -3070,13 +3087,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (complete) return finish(index);
             break;
         }
-        case 0x945: case 0x941: case 0x942: case 0x948: // (+ WARPSYNC)
+        case 0x945: case 0x941: case 0x942: case 0x948: case 0x348: // (+ WARPSYNC, immediate or register mask)
             // BSSY / BSYNC / BREAK only manage warp reconvergence: BSYNC waits for the other
             // threads and falls through, BREAK drops the thread from that wait. Eden runs threads
             // independently, so all three are no-ops (a SYNC would wrongly jump, and a branch
             // out of a lowered SSY region would leave its token on Eden's flow stack).
             break;
         case 0x947: { // BRA
+            // The offset's two low bits: .DIV (2) branches when the warp has diverged, .CONV (3)
+            // when its active threads are the mask in the uniform register at 24-31 (bit 91;
+            // URZ without it). The compiler puts warp-synchronous fast paths behind them (shuffles
+            // on a converged warp; the other path calls a WARPSYNC helper). Eden runs the warp's
+            // threads converged there: .CONV always branches and .DIV never does.
+            const u32 mode = insn.Bits(32, 2);
+            if (mode == 1 || (mode == 0 && insn.Bits(91, 1)))
+                return fail(index, "native branch convergence mode");
+            if (mode == 2) break;
             u64 branch_predicate = predicate;
             if (opcode == 0x947 && insn.Bits(87, 4) != 7) {
                 if (insn.Bits(12, 4) != 7) {
@@ -3087,7 +3113,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             } else if (insn.Bits(87, 4) != 7) {
                 return fail(index, "native extra branch condition");
             }
-            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
+            const u64 raw = (insn.words[1] & ~3U) | (u64{insn.words[2] & 0x3ffff} << 32);
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
@@ -3163,7 +3189,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             for (u32 target : call_targets) {
                 if (target <= index) return fail(index, "native call target overlaps main program");
             }
-            main_exited = true;
+            // The main program goes on past an EXIT that a branch still jumps over.
+            const bool pending_branch = std::any_of(relocations.begin(), relocations.end(),
+                [&](const Relocation& relocation) {
+                    return relocation.target > index &&
+                           std::find(call_targets.begin(), call_targets.end(),
+                                     static_cast<u32>(relocation.target)) == call_targets.end();
+                });
+            if (!pending_branch) main_exited = true;
             break;
         }
         // From EdenNS2 (forms Yoshi uses): TLD4.B register handle, TLD.SCR uniform handle,
