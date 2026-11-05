@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "common/common_types.h"
-#include "common/logging/log.h"
+#include "common/logging.h"
 
 namespace Common::NS2FrameTrace {
 
