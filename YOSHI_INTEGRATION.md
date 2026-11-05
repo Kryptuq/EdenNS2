@@ -205,3 +205,35 @@ download, buffer flush download, texture cache download, or unattributed); every
 MarkWrittenBuffer over a watched page logs its caller line and whether the range downloads at
 fences. An emulator write that turns the movie handles back into the old bytes proves a stale
 write-back; none at all would mean the game rewrote the block itself.
+
+yoshi-int-build-23 result (user log, main at 0x800ee000): no emulator-side write touched the watched
+pages and the buffer cache never marked them GPU-written, yet 32 of 32 traced movie draws read the
+wrong data ~1.4-2.4 ms after the game wrote the right handles. In one CPU frame the movie draw, a
+1408x788 pass and a 1920x1080 vertex stage all read the same block A+0x100 = 0x3a888889 (the vertex
+stage's own constant): the game itself handed the block out twice within the frame. The stale
+buffer download idea is disproven.
+
+Static analysis of the game (main + sdk, the user's ExeFS; never committed), details in the
+private notes: the RHI moves a context's constant chunks into a batch when it closes it and fences
+the batch with nvnCommandBufferFenceSync; RHIInterruptThread waits for the batch with
+nvnSyncWait(sync, -1) and then returns its chunks to the pool. NVN implements that fence as a 3D
+report-semaphore release (method 0x6c0-0x6c3, D 0x1000f014, payload = per-queue counter) appended
+after the batch at submit time; nvnSyncWait compares the queue's semaphore word in memory with the
+batch's value. So the block is reused exactly when the emulator has made that semaphore word reach
+the batch's value. With the user's settings (GPU accuracy High) the payload write waits for the
+host fence on both emulators; what makes the word reach the value before the GPU thread runs the
+movie draw is not known from the code alone:
+(A) a release whose payload came from command memory NVN had already reused (a future value),
+(B) an emulator path that writes the payload ahead of the draws before it,
+(C) the fence covering the movie's block sits before the movie draw in the stream.
+
+yoshi-int-build-24 (diagnostics only, no behaviour change) logs, with one global sequence number
+(a single atomic counter, so the numbers order events across threads):
+- SUBMIT: each GPFIFO submission (channel, entries, flags, returned fence);
+- PARSE: each one-word fenced report-semaphore release as the front thread parses it: slot,
+  payload, channel, entry, which copy of the words was used, the payload word in the submit-time
+  copy and in memory now, the slot's value now;
+- EXEC: the release reaching execution, with the number of draws configured before it;
+- FENCE: how its payload write is scheduled (waits for the host fence / runs now);
+- VISIBLE: every write that changes the slot in guest memory (old -> new, by which path);
+- the writer trace's movie writes/reads carry the same sequence number, reads also the draw count.

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include "common/ns2_frame_trace.h"
 #include "common/assert.h"
 #include "common/logging.h"
 #include "core/core.h"
@@ -489,6 +490,17 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
     u32 increment{(flags.fence_increment.Value() != 0 ? 2 : 0) +
                   (flags.increment_value.Value() != 0 ? params.fence.value : 0)};
     params.fence.value = syncpoint_manager.IncrementSyncpointMaxExt(channel_syncpoint, increment);
+    // Yoshi diagnostics (yint-24): the submission, on the same sequence as the parse and
+    // execution of its commands.
+    if (Common::NS2FrameTrace::TakeSemaphoreTrace()) [[unlikely]] {
+        LOG_INFO(Service_NVDRV,
+                 "NS2 sem trace: seq {} t={}us present {} SUBMIT ch {} {} entries, flags {:#x}, "
+                 "fence ({}, {:#x}), first entry {:#x}",
+                 Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+                 Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), bind_id,
+                 entries.command_lists.size(), flags.raw, params.fence.id, params.fence.value,
+                 entries.command_lists.empty() ? u64{0} : static_cast<u64>(entries.command_lists[0].addr));
+    }
     gpu.PushGPUEntries(bind_id, std::move(entries));
 
     if (g_nx2_driver && !flags.fence_increment.Value() && increment > 0) {

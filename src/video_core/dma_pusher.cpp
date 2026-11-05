@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "common/cityhash.h"
+#include "common/ns2_frame_trace.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -89,6 +90,11 @@ bool DmaPusher::Step() {
     }
 
     if (prefetch_size > 0) {
+        if (Common::NS2FrameTrace::SemaphoreTraceOn()) [[unlikely]] {
+            ns2_entry_source = "an emulator-built list";
+            ns2_entry_copy = nullptr;
+            ns2_entry_size = 0;
+        }
         const std::span<const CommandHeader> commands{command_list.prefetch_command_list};
         command_resume_offset +=
             ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -255,16 +261,19 @@ bool DmaPusher::Step() {
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
                 header.size};
+            NoteEntrySource("the submit-time copy", command_list);
             RecordParsedEntry(header, commands);
             command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            NoteEntrySource("memory (safe read)", command_list);
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
+            NoteEntrySource("the GPU-written copy", command_list);
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -272,6 +281,7 @@ bool DmaPusher::Step() {
             FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            NoteEntrySource("memory", command_list);
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -457,6 +467,10 @@ bool DmaPusher::WantsSegment() const {
 void DmaPusher::CallMethod(u32 argument) {
     VideoCommon::NS2CommandTrace::NoteMethod(dma_state.subchannel, dma_state.method, argument,
                                              dma_state.dma_get + dma_state.dma_word_offset);
+    if (dma_state.method >= 0x6c0 && dma_state.method <= 0x6c3 &&
+        Common::NS2FrameTrace::SemaphoreTraceOn()) [[unlikely]] {
+        NoteReportSemaphore(argument);
+    }
     if (g_semaphore_watch != 0) [[unlikely]] {
         WatchArgument(dma_state.method, argument);
     }
@@ -516,6 +530,78 @@ void DmaPusher::CallMethod(u32 argument) {
             subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
         }
     }
+}
+
+// Yoshi diagnostics (yint-24): which entry and which copy of its words the parse is using.
+void DmaPusher::NoteEntrySource(const char* source, const CommandList& command_list) {
+    if (!Common::NS2FrameTrace::SemaphoreTraceOn()) [[likely]] {
+        return;
+    }
+    ns2_entry_source = source;
+    ns2_entry_index = static_cast<u32>(dma_pushbuffer_subindex);
+    ns2_entry_submit_us = command_list.submit_time_us;
+    ns2_entry_copy = nullptr;
+    ns2_entry_size = 0;
+    if (dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+        dma_pushbuffer_subindex < command_list.command_lists.size()) {
+        ns2_entry_copy = command_list.submitted_words.data() +
+                         command_list.submitted_offsets[dma_pushbuffer_subindex];
+        ns2_entry_size = static_cast<u32>(command_list.command_lists[dma_pushbuffer_subindex].size);
+    }
+}
+
+// Yoshi diagnostics (yint-24): NVN signals a fence sync with a 3D report-semaphore release of
+// one word (method 0x6c0-0x6c3; D: release, fence bit, one-word structure). Logged as parsed,
+// with the copy its payload came from and what that word holds in the submit-time copy and in
+// memory now, and the slot's value now.
+void DmaPusher::NoteReportSemaphore(u32 argument) {
+    if (subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D) {
+        return;
+    }
+    switch (dma_state.method) {
+    case 0x6c0:
+        ns2_sem_high = argument;
+        return;
+    case 0x6c1:
+        ns2_sem_low = argument;
+        return;
+    case 0x6c2: {
+        ns2_sem_payload = argument;
+        ns2_sem_payload_address = dma_state.dma_get + dma_state.dma_word_offset;
+        ns2_sem_payload_source = ns2_entry_source;
+        const u64 word = dma_state.dma_word_offset / sizeof(u32);
+        ns2_sem_payload_in_copy = ns2_entry_copy != nullptr && word < ns2_entry_size;
+        ns2_sem_payload_copy = ns2_sem_payload_in_copy ? ns2_entry_copy[word].argument : 0;
+        return;
+    }
+    default:
+        break;
+    }
+    // D: operation release (0), fence bit 4, one-word structure bit 28.
+    if ((argument & 3) != 0 || ((argument >> 4) & 1) == 0 || ((argument >> 28) & 1) == 0) {
+        return;
+    }
+    const GPUVAddr address = (GPUVAddr{ns2_sem_high} << 32) | ns2_sem_low;
+    const u8* host = memory_manager.GetPointer(address);
+    const int slot = Common::NS2FrameTrace::RegisterSemaphoreSlot(address, reinterpret_cast<uintptr_t>(host));
+    if (slot < 0 || !Common::NS2FrameTrace::TakeSemaphoreTrace()) {
+        return;
+    }
+    const u32 memory_now = memory_manager.Read<u32>(ns2_sem_payload_address);
+    const u64 now_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                            std::chrono::steady_clock::now().time_since_epoch())
+                                            .count());
+    LOG_INFO(HW_GPU,
+             "NS2 sem trace: seq {} t={}us present {} PARSE slot {} at {:#x} payload {:#x} (D {:#x}) "
+             "ch {} entry {} words from {}; payload word at {:#x}: submit-time copy {}, memory now "
+             "{:#x}; slot value now {:#x}; submitted {} us ago",
+             Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+             Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), slot,
+             address, ns2_sem_payload, argument, channel_state.bind_id, ns2_entry_index,
+             ns2_sem_payload_source, ns2_sem_payload_address,
+             ns2_sem_payload_in_copy ? fmt::format("{:#x}", ns2_sem_payload_copy) : std::string{"none"},
+             memory_now, Common::NS2FrameTrace::SemaphoreSlotValue(slot),
+             ns2_entry_submit_us != 0 && now_us >= ns2_entry_submit_us ? now_us - ns2_entry_submit_us : 0);
 }
 
 void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {

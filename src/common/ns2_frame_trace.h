@@ -154,6 +154,99 @@ inline u64 TraceMicros() {
                                 .count());
 }
 
+/// Yoshi diagnostics (yint-24): one sequence number for every traced event on every thread (a
+/// single atomic counter, so the numbers give the order the events really happened in).
+inline std::atomic<u64>& Sequence() {
+    static std::atomic<u64> sequence{};
+    return sequence;
+}
+inline u64 NextSequence() {
+    return Sequence().fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+/// Draws the GPU thread configured since the trace started (stream position on the back thread).
+inline std::atomic<u64>& DrawsConfigured() {
+    static std::atomic<u64> draws{};
+    return draws;
+}
+/// NVN queue semaphore slots: report-semaphore releases of one word with the fence bit (NVN's
+/// fence syncs). Registered when the release is parsed; each slot is one queue's semaphore.
+struct SemaphoreSlot {
+    std::atomic<u64> gpu{};
+    std::atomic<uintptr_t> host{};
+};
+inline constexpr size_t MaxSemaphoreSlots = 8;
+inline std::array<SemaphoreSlot, MaxSemaphoreSlots>& SemaphoreSlots() {
+    static std::array<SemaphoreSlot, MaxSemaphoreSlots> slots{};
+    return slots;
+}
+inline std::atomic<u32>& SemaphoreSlotCount() {
+    static std::atomic<u32> count{};
+    return count;
+}
+/// The slot's index (registering it if new), or -1 when the table is full.
+inline int RegisterSemaphoreSlot(u64 gpu, uintptr_t host) {
+    static std::mutex mutex;
+    std::scoped_lock lock{mutex};
+    const u32 count = SemaphoreSlotCount().load(std::memory_order_relaxed);
+    for (u32 i = 0; i < count; ++i) {
+        if (SemaphoreSlots()[i].gpu.load(std::memory_order_relaxed) == gpu) {
+            return static_cast<int>(i);
+        }
+    }
+    if (count >= MaxSemaphoreSlots) {
+        return -1;
+    }
+    SemaphoreSlots()[count].gpu.store(gpu, std::memory_order_relaxed);
+    SemaphoreSlots()[count].host.store(host, std::memory_order_relaxed);
+    SemaphoreSlotCount().store(count + 1, std::memory_order_release);
+    return static_cast<int>(count);
+}
+/// The slot a host range touches (the u32 payload at the slot's address), or -1.
+inline int FindSemaphoreSlotHost(uintptr_t host, size_t size) {
+    const u32 count = SemaphoreSlotCount().load(std::memory_order_acquire);
+    for (u32 i = 0; i < count; ++i) {
+        const uintptr_t slot = SemaphoreSlots()[i].host.load(std::memory_order_relaxed);
+        if (slot != 0 && host < slot + sizeof(u32) && host + size > slot) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+inline int FindSemaphoreSlotGpu(u64 gpu) {
+    const u32 count = SemaphoreSlotCount().load(std::memory_order_acquire);
+    for (u32 i = 0; i < count; ++i) {
+        if (SemaphoreSlots()[i].gpu.load(std::memory_order_relaxed) == gpu) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+inline u32 SemaphoreSlotValue(int slot) {
+    const uintptr_t host = SemaphoreSlots()[slot].host.load(std::memory_order_relaxed);
+    u32 value{};
+    if (host != 0) {
+        std::memcpy(&value, reinterpret_cast<const void*>(host), sizeof(value));
+    }
+    return value;
+}
+/// Whether semaphore events are traced now: while the writer trace runs, within a budget.
+inline bool SemaphoreTraceOn() {
+    return WriterPageCount().load(std::memory_order_relaxed) != 0;
+}
+inline std::atomic<int>& SemaphoreTraceBudget() {
+    static std::atomic<int> budget{12000};
+    return budget;
+}
+inline bool TakeSemaphoreTrace() {
+    return SemaphoreTraceOn() &&
+           SemaphoreTraceBudget().fetch_sub(1, std::memory_order_relaxed) > 0;
+}
+/// The slot of the query report being handed to the fence manager on this thread (-1: none).
+inline int& PendingSemaphoreSlot() {
+    thread_local int slot = -1;
+    return slot;
+}
+
 /// Emulator-side writes into the writer-trace pages (buffer/texture cache downloads, engine
 /// writes): which path writes (thread-local, set by the caller), and the movie block at +0x100 of
 /// the page before and after the copy. Tells an emulator write-back apart from a game rewrite.
@@ -188,6 +281,10 @@ public:
         if (WriterPageCount().load(std::memory_order_relaxed) == 0) [[likely]] {
             return;
         }
+        sem_slot_ = FindSemaphoreSlotHost(dst_, size);
+        if (sem_slot_ >= 0) {
+            sem_before_ = SemaphoreSlotValue(sem_slot_);
+        }
         page_ = FindWriterPageHost(dst_, size);
         if (page_ < 0) {
             return;
@@ -196,6 +293,15 @@ public:
         std::memcpy(before_.data(), reinterpret_cast<const void*>(block_), sizeof(before_));
     }
     ~EmulatorWriteNote() {
+        if (sem_slot_ >= 0 && TakeSemaphoreTrace()) {
+            const char* tag = EmulatorWriteTag();
+            LOG_INFO(HW_Memory,
+                     "NS2 sem trace: seq {} t={}us present {} VISIBLE slot {} {:#x} -> {:#x} by an "
+                     "emulator memory write ({}, {} bytes at device {:#x})",
+                     NextSequence(), TraceMicros(), PresentsReturned().load(std::memory_order_relaxed),
+                     sem_slot_, sem_before_, SemaphoreSlotValue(sem_slot_),
+                     tag != nullptr ? tag : "unattributed", size_, device_addr_);
+        }
         if (page_ < 0 || EmulatorWriteBudget().fetch_sub(1, std::memory_order_relaxed) <= 0) {
             return;
         }
@@ -223,6 +329,8 @@ private:
     size_t size_;
     u64 device_addr_;
     int page_{-1};
+    int sem_slot_{-1};
+    u32 sem_before_{};
     uintptr_t block_{};
     std::array<u32, 4> before_{};
 };

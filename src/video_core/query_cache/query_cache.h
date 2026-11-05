@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include "common/ns2_frame_trace.h"
 #include "common/container/unordered_map.h"
 #include <utility>
 
@@ -272,9 +273,13 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
+    // Yoshi diagnostics (yint-24): reports into an NVN queue semaphore slot.
+    const int ns2_slot = Common::NS2FrameTrace::SemaphoreTraceOn()
+                             ? Common::NS2FrameTrace::FindSemaphoreSlotHost(reinterpret_cast<uintptr_t>(pointer), sizeof(u32))
+                             : -1;
     bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
     std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp, cpu_addr] {
+                                     pointer, pointer_timestamp, cpu_addr, ns2_slot] {
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
@@ -296,8 +301,17 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
             std::memcpy(pointer, &query_base->value, sizeof(query_base->value));
         } else {
+            const u32 ns2_before = ns2_slot >= 0 ? Common::NS2FrameTrace::SemaphoreSlotValue(ns2_slot) : 0;
             u32 value = static_cast<u32>(query_base->value);
             std::memcpy(pointer, &value, sizeof(value));
+            if (ns2_slot >= 0 && Common::NS2FrameTrace::TakeSemaphoreTrace()) {
+                LOG_INFO(HW_GPU,
+                         "NS2 sem trace: seq {} t={}us present {} VISIBLE slot {} {:#x} -> {:#x} by "
+                         "the query report's fence operation",
+                         Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+                         Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed),
+                         ns2_slot, ns2_before, value);
+            }
         }
         Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, static_cast<u32>(query_base->value));
         if (!is_synced) [[likely]] {
@@ -305,9 +319,19 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         }
     });
     if (is_fence) {
+        Common::NS2FrameTrace::PendingSemaphoreSlot() = ns2_slot;
         impl->rasterizer.SignalFence(std::move(operation));
+        Common::NS2FrameTrace::PendingSemaphoreSlot() = -1;
     } else {
         if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
+            if (ns2_slot >= 0 && Common::NS2FrameTrace::TakeSemaphoreTrace()) {
+                LOG_INFO(HW_GPU,
+                         "NS2 sem trace: seq {} t={}us present {} VISIBLE slot {} {:#x} -> {:#x} by "
+                         "a non-fence report written at once",
+                         Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+                         Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed),
+                         ns2_slot, Common::NS2FrameTrace::SemaphoreSlotValue(ns2_slot), payload);
+            }
             if (has_timestamp) {
                 u64 timestamp = impl->gpu.GetTicks();
                 u64 value = static_cast<u64>(payload);
@@ -596,6 +620,17 @@ bool QueryCacheBase<Traits>::SemiFlushQueryDirty(QueryCacheBase<Traits>::QueryLo
             return false;
         }
         u32 value_l = static_cast<u32>(query_base->value);
+        if (const int ns2_slot = Common::NS2FrameTrace::SemaphoreTraceOn()
+                                     ? Common::NS2FrameTrace::FindSemaphoreSlotHost(reinterpret_cast<uintptr_t>(ptr), sizeof(u32))
+                                     : -1;
+            ns2_slot >= 0 && Common::NS2FrameTrace::TakeSemaphoreTrace()) {
+            LOG_INFO(HW_GPU,
+                     "NS2 sem trace: seq {} t={}us present {} VISIBLE slot {} {:#x} -> {:#x} by a "
+                     "query flush (final value written before its fence)",
+                     Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+                     Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed),
+                     ns2_slot, Common::NS2FrameTrace::SemaphoreSlotValue(ns2_slot), value_l);
+        }
         std::memcpy(ptr, &value_l, sizeof(value_l));
         return false;
     }

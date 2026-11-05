@@ -378,6 +378,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     boost::container::small_vector<VideoCommon::SamplerId, 64> samplers;
     // Yoshi movie diagnostics: where each texture handle of a traced frame's draw comes from.
     const bool trace_handles = Common::NS2FrameTrace::Active().load(std::memory_order_relaxed);
+    if (Common::NS2FrameTrace::SemaphoreTraceOn()) [[unlikely]] {
+        Common::NS2FrameTrace::DrawsConfigured().fetch_add(1, std::memory_order_relaxed);
+    }
     std::vector<std::pair<size_t, std::string>> handle_trace;
     std::vector<GPUVAddr> handle_cbufs;
     views.reserve(num_image_elements);
@@ -668,8 +671,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
                 const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
                 LOG_INFO(Render_Vulkan,
-                         "NS2 writer trace: t={}us GPU frame {} present {} draw vs={:#x} ps={:#x} into {:#x} {}x{} "
+                         "NS2 writer trace: seq {} draw# {} t={}us GPU frame {} present {} draw vs={:#x} ps={:#x} into {:#x} {}x{} "
                          "reads stage {} slot {} at {:#x} (size {:#x}):{}",
+                         Common::NS2FrameTrace::NextSequence(),
+                         Common::NS2FrameTrace::DrawsConfigured().load(std::memory_order_relaxed),
                          Common::NS2FrameTrace::TraceMicros(),
                          Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed),
                          Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), vs, ps,

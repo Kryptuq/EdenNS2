@@ -126,10 +126,10 @@ void DynarmicCallbacks64::NoteWriterTrace(u64 vaddr, u64 size, u64 value, u64 va
         thread_id = thread->GetThreadId();
     }
     LOG_INFO(Core_ARM,
-             "NS2 writer trace: t={}us GPU frame {} present {} thread {} wrote GPU {:#x} (page {} +{:#x}) "
+             "NS2 writer trace: seq {} t={}us GPU frame {} present {} thread {} wrote GPU {:#x} (page {} +{:#x}) "
              "{} bytes {:016x}{:016x} | pc~{:#x} lr={:#x} sp={:#x} fp={:#x} x0={:#x} x1={:#x} "
              "x2={:#x} x3={:#x} x8={:#x} x19={:#x} x20={:#x} | callers{}",
-             Common::NS2FrameTrace::TraceMicros(),
+             Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
              Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed),
              Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), thread_id,
              page_gpu + offset, page, offset, size, value_high, value, jit.GetPC(),

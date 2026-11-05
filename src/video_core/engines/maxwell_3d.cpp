@@ -611,6 +611,29 @@ void Maxwell3D::StampQueryResult(Core::System& system, u64 payload, bool long_qu
 }
 
 void Maxwell3D::ProcessQueryGet() {
+    // Yoshi diagnostics (yint-24): an NVN fence release reaching execution, with how many draws
+    // this thread configured before it (its position among the draws).
+    if (Common::NS2FrameTrace::SemaphoreTraceOn()) [[unlikely]] {
+        const u32 d = regs.report_semaphore.query.raw;
+        int slot = Common::NS2FrameTrace::FindSemaphoreSlotGpu(regs.report_semaphore.Address());
+        // Release of one word with the fence bit (NVN fence syncs), also when it was not parsed
+        // as a plain method write (macros).
+        if (slot < 0 && (d & 3) == 0 && ((d >> 4) & 1) != 0 && ((d >> 28) & 1) != 0) {
+            slot = Common::NS2FrameTrace::RegisterSemaphoreSlot(
+                regs.report_semaphore.Address(),
+                reinterpret_cast<uintptr_t>(memory_manager.GetPointer(regs.report_semaphore.Address())));
+        }
+        if (slot >= 0 && Common::NS2FrameTrace::TakeSemaphoreTrace()) {
+            LOG_INFO(HW_GPU,
+                     "NS2 sem trace: seq {} t={}us present {} EXEC slot {} payload {:#x} (D {:#x}) "
+                     "after {} configured draws; slot value now {:#x}",
+                     Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+                     Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), slot,
+                     regs.report_semaphore.payload, regs.report_semaphore.query.raw,
+                     Common::NS2FrameTrace::DrawsConfigured().load(std::memory_order_relaxed),
+                     Common::NS2FrameTrace::SemaphoreSlotValue(slot));
+        }
+    }
     VideoCommon::QueryPropertiesFlags flags{};
     if (regs.report_semaphore.query.short_query == 0) {
         flags |= VideoCommon::QueryPropertiesFlags::HasTimeout;

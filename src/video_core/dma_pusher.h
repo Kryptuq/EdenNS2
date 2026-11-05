@@ -205,6 +205,9 @@ private:
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();
     void WatchArgument(u32 method, u32 argument) const;
+    /// Yoshi diagnostics (yint-24): a 3D report-semaphore register write (methods 0x6c0-0x6c3).
+    void NoteReportSemaphore(u32 argument);
+    void NoteEntrySource(const char* source, const CommandList& command_list);
 
 public:
     /// Logs the GPFIFO entry being processed (and the one before it), read through the GPU MMU
@@ -258,6 +261,21 @@ public:
         GPUVAddr resume_address; ///< Where the entry that continues the method starts
     };
     void ResolveSplitMethod(GPUVAddr entry_address);
+
+    // Yoshi diagnostics (yint-24): where the words of the entry being parsed come from, its
+    // submit-time copy (if it has one) and the report-semaphore registers seen so far.
+    const char* ns2_entry_source = "unknown";
+    const CommandHeader* ns2_entry_copy = nullptr;
+    u32 ns2_entry_size = 0;
+    u32 ns2_entry_index = 0;
+    u64 ns2_entry_submit_us = 0;
+    u32 ns2_sem_high = 0;
+    u32 ns2_sem_low = 0;
+    u32 ns2_sem_payload = 0;
+    GPUVAddr ns2_sem_payload_address = 0;
+    const char* ns2_sem_payload_source = "unknown";
+    bool ns2_sem_payload_in_copy = false;
+    u32 ns2_sem_payload_copy = 0;
     static constexpr size_t MaxParkedMethods = 16;
 
     // Debug aid: hashes of the words of the last entries as they were parsed.

@@ -17,6 +17,7 @@
 #include <vector>
 #include <queue>
 
+#include "common/ns2_frame_trace.h"
 #include "common/common_types.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -86,7 +87,22 @@ public:
             TryReleasePendingFences<false>();
         }
         auto [should_flush, committed_flushes] = CommitCacheFlushes();
+        // Yoshi diagnostics (yint-24): how an NVN fence release's payload write is scheduled.
+        const int ns2_slot = Common::NS2FrameTrace::PendingSemaphoreSlot();
+        Common::NS2FrameTrace::PendingSemaphoreSlot() = -1;
+        // pending: fences queued before this one (read only where the fence lock is held), or -1.
+        const auto ns2_note = [&](const char* path, long long pending) {
+            if (ns2_slot >= 0 && Common::NS2FrameTrace::TakeSemaphoreTrace()) {
+                LOG_INFO(HW_GPU,
+                         "NS2 sem trace: seq {} t={}us present {} FENCE slot {} payload write {} "
+                         "({} fences pending); slot value now {:#x}",
+                         Common::NS2FrameTrace::NextSequence(), Common::NS2FrameTrace::TraceMicros(),
+                         Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed),
+                         ns2_slot, path, pending, Common::NS2FrameTrace::SemaphoreSlotValue(ns2_slot));
+            }
+        };
         if (!delay_fence && committed_flushes == 0 && SkipEmptyFence()) {
+            ns2_note("runs now (empty fence skipped)", -1);
             Nx2Profile::Scope skipped_scope{Nx2Profile::Zone::FenceSkipped};
             func();
             rasterizer.InvalidateGPUCache();
@@ -107,6 +123,8 @@ public:
             pending_operations.emplace_back(std::move(uncommitted_operations));
             uncommitted_operations.clear(); // moved-from: make it empty explicitly
         }
+        ns2_note(delay_fence ? "waits for this host fence" : "runs now (after queueing the fence)",
+                 static_cast<long long>(fences.size()));
         pending_flushes.push_back(committed_flushes);
         QueueFence(new_fence);
         if (!delay_fence) {
