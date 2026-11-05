@@ -310,8 +310,8 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
                 return true;
             });
         }
-        for (const auto& [begin, size] : untracked) {
-            device_memory.UpdatePagesCachedCount(begin, size, -1);
+        for (const auto& [begin, tracked_size] : untracked) {
+            device_memory.UpdatePagesCachedCount(begin, tracked_size, -1);
         }
     }
     const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
