@@ -4,12 +4,14 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/ns2_frame_trace.h"
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
 #include "dynarmic/interface/A64/config.h"
 
 namespace Core {
@@ -50,6 +52,9 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 
 void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size) {
     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
+        if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0) [[unlikely]] {
+            NoteWriterTrace(vaddr, size, value, 0);
+        }
         switch (size) {
         case sizeof(u64): return m_memory.Write64(vaddr, u64(value));
         case sizeof(u32): return m_memory.Write32(vaddr, u32(value));
@@ -61,24 +66,86 @@ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std
 }
 void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
+        if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0) [[unlikely]] {
+            NoteWriterTrace(vaddr, 16, value[0], value[1]);
+        }
         m_memory.Write64(vaddr, value[0]);
         m_memory.Write64(vaddr + 8, value[1]);
     }
 }
 
+// Yoshi movie diagnostics (common/ns2_frame_trace.h): a guest write into a watched page. The JIT
+// only syncs PC at block exits (block linking skips even that), so PC is approximate; registers
+// are those the JIT state holds (a block's own updates may not be in it yet), but the frame
+// pointer chain and LR identify the writing function's callers.
+void DynarmicCallbacks64::NoteWriterTrace(u64 vaddr, u64 size, u64 value, u64 value_high) {
+    const u8* const host = m_memory.GetPointerSilent(vaddr);
+    if (host == nullptr) {
+        return;
+    }
+    const int page = Common::NS2FrameTrace::FindWriterPageHost(reinterpret_cast<uintptr_t>(host), size);
+    if (page < 0 || Common::NS2FrameTrace::WriterCpuBudget().fetch_sub(1, std::memory_order_relaxed) <= 0) {
+        return;
+    }
+    const auto page_host = Common::NS2FrameTrace::WriterPages()[page].host.load(std::memory_order_relaxed);
+    const auto page_gpu = Common::NS2FrameTrace::WriterPages()[page].gpu.load(std::memory_order_relaxed);
+    const u64 offset = reinterpret_cast<uintptr_t>(host) - page_host;
+    auto& jit = *m_parent.m_jit;
+    std::string frames;
+    u64 fp = jit.GetRegister(29);
+    for (int i = 0; i < 14 && fp != 0 && (fp & 7) == 0; ++i) {
+        if (!m_memory.IsValidVirtualAddressRange(fp, 16)) {
+            break;
+        }
+        const u64 next = m_memory.Read64(fp);
+        const u64 ret = m_memory.Read64(fp + 8);
+        frames += fmt::format(" {:#x}", ret);
+        if (next <= fp) {
+            break;
+        }
+        fp = next;
+    }
+    u64 thread_id = ~0ULL;
+    if (auto* thread = Kernel::GetCurrentThreadPointer(m_parent.m_system.Kernel()); thread != nullptr) {
+        thread_id = thread->GetThreadId();
+    }
+    LOG_INFO(Core_ARM,
+             "NS2 writer trace: t={}us GPU frame {} thread {} wrote GPU {:#x} (page {} +{:#x}) "
+             "{} bytes {:016x}{:016x} | pc~{:#x} lr={:#x} sp={:#x} fp={:#x} x0={:#x} x1={:#x} "
+             "x2={:#x} x3={:#x} x8={:#x} x19={:#x} x20={:#x} | callers{}",
+             Common::NS2FrameTrace::TraceMicros(),
+             Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), thread_id,
+             page_gpu + offset, page, offset, size, value_high, value, jit.GetPC(),
+             jit.GetRegister(30), jit.GetSP(), jit.GetRegister(29), jit.GetRegister(0),
+             jit.GetRegister(1), jit.GetRegister(2), jit.GetRegister(3), jit.GetRegister(8),
+             jit.GetRegister(19), jit.GetRegister(20), frames);
+}
+
 bool DynarmicCallbacks64::MemoryWriteExclusive8(u64 vaddr, std::uint8_t value, std::uint8_t expected) {
+    if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0) [[unlikely]] {
+        NoteWriterTrace(vaddr, 1, value, 0);
+    }
     return CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive8(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive16(u64 vaddr, std::uint16_t value, std::uint16_t expected) {
+    if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0) [[unlikely]] {
+        NoteWriterTrace(vaddr, 2, value, 0);
+    }
     return CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive16(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive32(u64 vaddr, std::uint32_t value, std::uint32_t expected) {
+    if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0) [[unlikely]] {
+        NoteWriterTrace(vaddr, 4, value, 0);
+    }
     return CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive32(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive64(u64 vaddr, std::uint64_t value, std::uint64_t expected) {
+    if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0) [[unlikely]] {
+        NoteWriterTrace(vaddr, 8, value, 0);
+    }
     return CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive64(vaddr, value, expected);
 }

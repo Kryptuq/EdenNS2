@@ -57,6 +57,7 @@ public:
     u64 GetTicksRemaining() override;
     u64 GetCNTPCT() override;
     bool CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type);
+    void NoteWriterTrace(u64 vaddr, u64 size, u64 value, u64 value_high);
     void ReturnException(u64 pc, Dynarmic::HaltReason hr);
 
     Dynarmic::CodePage cached_code_page;

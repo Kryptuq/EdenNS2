@@ -750,3 +750,18 @@ Logged (no behaviour change), to see what headers 32/44 and 0-255 hold on this b
 - "NS2 compare: GPU frame N: texture header table ...: header 32 starts ..., header 44 starts ...;
   headers 0-255 with data: ...": on every change and every 1200 frames.
 - "NS2 compare: GPU-side write ... into texture header N" / "copy engine ... into texture header".
+
+## Build 123 (diagnostics only: who writes the title movie's handle block, for comparison)
+Results of build 122: headers 1-255 are empty here too and nothing writes headers 32/44; this
+build's movie draw finds the real planes. On the Eglantine integration branch (yoshi-int-build-20)
+the movie draw's handle block (the first block of a page of the game's per-frame parameter memory)
+is written correctly by the game and then reused by the same game thread for another draw's
+parameters about 2 ms later, before the emulated GPU reads it; the GPU then reads the other draw's
+data (green background).
+Logged (no behaviour change), the same trace as yoshi-int-build-20, to compare the timing here:
+- "NS2 writer trace: ... watching page ...": the first page of the movie draw's handle block
+  (from the 300th movie draw on, up to 8 pages).
+- "NS2 writer trace: ... thread N wrote GPU <address> ...": guest CPU writes into those pages that
+  reach the JIT's memory callbacks, with registers and the frame-pointer chain.
+- "NS2 writer trace: ... draw ... reads stage S slot N at <address> ...": draws reading constant
+  buffers in those pages, with the first 8 words they read.
