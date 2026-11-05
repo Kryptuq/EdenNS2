@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdlib>
 
+#include "common/ns2_frame_trace.h"
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -218,7 +219,31 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         const auto properties = g_nx2_ampere && (regs.semaphore_trigger & (1U << 24)) != 0
                                     ? VideoCommon::QueryPropertiesFlags::IsAFence
                                     : VideoCommon::QueryPropertiesFlags::HasTimeout;
-        const GPUVAddr mirror = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
+        // NVN's two-page queue semaphore regions hold two different counters: the first page the
+        // fence counter its 3D report-semaphore releases write (nvnSyncWait polls it, GPU waits
+        // acquire it), the second page the GPFIFO position its host releases write after each
+        // segment. Nothing copies one into the other; copying the GPFIFO position over the fence
+        // counter made every pending fence look reached (Yoshi reused constant memory the GPU
+        // still had to read: the title movie's flicker). EDEN_NX2_SEMAPHORE_MIRROR=1 restores the
+        // copy for comparisons.
+        static const bool mirror_releases = [] {
+            const char* value = std::getenv("EDEN_NX2_SEMAPHORE_MIRROR");
+            const bool enabled = value != nullptr && value[0] == '1';
+            if (enabled) {
+                LOG_INFO(HW_GPU, "EDEN_NX2_SEMAPHORE_MIRROR=1: mirroring second-page semaphore "
+                                 "releases into the first page (old behaviour)");
+            }
+            return enabled;
+        }();
+        const GPUVAddr second_page_of = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
+        const GPUVAddr mirror = mirror_releases ? second_page_of : 0;
+        // Yoshi diagnostics (writer trace): follow the second-page word too, so the trace shows
+        // GPFIFO positions landing on their own address.
+        if (second_page_of != 0 && Common::NS2FrameTrace::SemaphoreTraceOn()) [[unlikely]] {
+            Common::NS2FrameTrace::RegisterSemaphoreSlot(
+                sequence_address,
+                reinterpret_cast<uintptr_t>(dma_pusher.memory_manager.GetPointer(sequence_address)));
+        }
         if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
         }

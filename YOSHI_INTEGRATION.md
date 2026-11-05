@@ -237,3 +237,27 @@ yoshi-int-build-24 (diagnostics only, no behaviour change) logs, with one global
 - FENCE: how its payload write is scheduled (waits for the host fence / runs now);
 - VISIBLE: every write that changes the slot in guest memory (old -> new, by which path);
 - the writer trace's movie writes/reads carry the same sequence number, reads also the draw count.
+
+yoshi-int-build-24 result (user log, main at 0x80ce4000) — root cause of the title flicker:
+- Every traced fence release (3554) was parsed from its submit-time copy with the submitted payload
+  (no stale or future command words). The 3D releases into NVN's queue fence word (GPU
+  0x1a9a911000) carried 0x2bca, 0x2bcb, ... (+1 each) and all waited for the host fence.
+- The same word also received 450 writes of 0x1731c, 0x17322, 0x1733e, ... (steps 6-177) from the
+  puller's semaphore mirror: Puller::ProcessSemaphoreTriggerMethod copied every host release in the
+  second page of a two-page region (registered by nx2:gpu sub 101 for every 0x2000-byte
+  GPU-accessible memory) to the same offset in the first page (Nx2SemaphoreMirror, video_core/nx2.h).
+- The game's NVN driver writes two different counters there: the first page (qidx*16) gets the
+  queue's fence counter from 3D report-semaphore releases; nvnSyncWait compares it with a fence's
+  value ((s32)(word - value) >= 0) and GPU waits acquire it. The second page (+0x1000) gets the
+  queue's GPFIFO position from a host release after every GPFIFO segment. Nothing on the console
+  copies one into the other.
+- The mirrored GPFIFO position is far ahead of the fence counter, so every pending fence looked
+  reached: the RHI's interrupt thread released each batch at once and its constant chunks were
+  reused before the GPU thread ran the batch's draws. The word held a mirrored value 74% of the
+  traced second and at every traced movie write; 10 of 12 movie reads in that window were wrong.
+- EdenNS2 has no mirror (its puller writes only the named address), which is why main is correct.
+
+Fix (yoshi-int-build-25): the puller no longer mirrors host releases (all titles).
+EDEN_NX2_SEMAPHORE_MIRROR=1 restores the old copy for A/B comparisons (logged once when set).
+The yint-24 trace stays on for this build (it starts with the movie writer trace and is bounded)
+and now also follows the second-page word, so a log shows both counters on their own addresses.

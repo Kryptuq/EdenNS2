@@ -479,8 +479,8 @@ private:
                     last, b[6], b[7]);
         if (last > start) {
             Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(start, last - start + 1);
-            // Two-page regions hold queue semaphores: GPU releases go to the second page, waits
-            // read the first (see video_core/nx2.h).
+            // Two-page regions hold queue semaphores (fence counters in the first page, GPFIFO
+            // positions in the second; see video_core/nx2.h).
             if (last - start + 1 == 0x2000) {
                 Tegra::Nx2AddSemaphoreRegion(start);
                 LOG_DEBUG(Service, "nx2:gpu semaphore page {:#x} mirrored to {:#x}", start + 0x1000,

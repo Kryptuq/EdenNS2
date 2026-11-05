@@ -90,10 +90,12 @@ inline void Nx2ClearGpuWrittenPages() {
     return (g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
-// NVN2 queues release their progress values into the second page of a two-page GPU-accessible
-// region and GPU acquires read the same offsets in the first page (the CPU polls the second).
-// Something on the console copies one into the other; until that is known, the puller mirrors
-// releases that land in a second page. Every queue has such a region, so keep a small table.
+// NVN2 queue semaphore regions (two pages): the first page holds each queue's fence counter (3D
+// report-semaphore releases; nvnSyncWait and GPU waits read it), the second page its GPFIFO
+// position (host releases after each segment). They are different counters and nothing copies
+// one into the other. The puller used to mirror second-page releases into the first page; that
+// is now only done with EDEN_NX2_SEMAPHORE_MIRROR=1 (comparisons). Every queue has such a region,
+// so keep a small table.
 inline constexpr size_t Nx2MaxSemaphoreRegions = 32;
 inline std::array<std::atomic<u64>, Nx2MaxSemaphoreRegions> g_nx2_semaphore_regions{}; // starts
 
