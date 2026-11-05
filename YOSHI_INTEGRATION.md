@@ -126,3 +126,28 @@ frontends agree. So the handles are right and stable; the texture headers 44 and
 table (0x1aa0030000) have never been written (kernel heap fill 0x5a). The slot 4 buffer holds the
 YUV->RGB matrix (1.164, 1.793, ...). yoshi-int-build-18 logs when (if ever) headers 32/44 of the
 bound table get data, which of the headers 0-255 hold data, and where the table's pages map.
+
+yoshi-int-build-18/19 and EdenNS2 build-121/122 (user logs): headers 1-255 are empty on both
+emulators and nothing ever writes headers 32/44, on either. The game's texture descriptor allocator
+(NVN texture pool, IDs from 256 up) can never hand out 44 or 32, so 44/32 are not texture IDs the
+game chose for the movie. EdenNS2's movie draw reads its handles from the same place (the first
+block, +0x100, of a 256 KiB transient region) and finds the real per-frame planes there.
+
+Static analysis of the game (NintendoMediaPlayer, sample conversion at main+0x68e035c, NV12
+parameter setup at main+0x1105040): the game uploads every decoded frame into the sample's own
+"IntermediateLuma"/"IntermediateChroma" textures and builds the conversion's uniform buffer from
+them (RHI CreateUniformBuffer, single-frame usage). Nothing in that path can produce 44/32.
+
+What the build-17 contents show instead: the handle block is overwritten. At the draw of GPU frame
+969 the block held 1/960 floats (another draw's parameters); in frames 369-378 its first 16 bytes
+held 0x2c 0x25 0x20 0xffffffff while the samplers the movie wrote at +0x10/+0x18 were still there;
+in frame 971 other floats. The region is rewritten by the CPU in every GPU frame, and the movie
+draw and the 1408x788 R8_UINT pass of the same GPU frame read the same block. So the GPU reads the
+movie's block after the CPU already reused the region for a later frame. On EdenNS2 the movie
+blocks are spread over many regions (…1450100, …1d90100, …1cd0100, …) and are not reused before
+the GPU reads them; on Eglantine the same three regions come back every frame.
+
+yoshi-int-build-20 finds the code that reuses the region: it watches the first page of every
+region a movie block lies in, and logs every guest CPU write into it that reaches the JIT's memory
+callbacks (thread, LR, stack pointer, a few registers and the frame-pointer chain of callers), and
+every draw reading a constant buffer in those pages (what it reads), on one time base.

@@ -13,6 +13,7 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 
@@ -540,6 +541,15 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 const GPUVAddr block = handle_cbufs[i] & ~GPUVAddr{0xff};
                 Common::NS2FrameTrace::WatchBlock(block, gpu_memory->GpuToCpuAddress(block).value_or(0),
                                                   Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed));
+                // Writer trace: the first page of the block's region (the handle block of the
+                // movie draw is the region's first allocation, at +0x100).
+                const GPUVAddr page = block & ~GPUVAddr{0xfff};
+                if (const u8* host = gpu_memory->GetPointer<u8>(page); host != nullptr &&
+                    Common::NS2FrameTrace::AddWriterPage(reinterpret_cast<uintptr_t>(host), page)) {
+                    LOG_INFO(Render_Vulkan, "NS2 writer trace: t={}us GPU frame {} watching page {:#x} (block {:#x})",
+                             Common::NS2FrameTrace::TraceMicros(),
+                             Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), page, block);
+                }
             }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     {}: {}", text,
                      view.id == VideoCommon::NULL_IMAGE_VIEW_ID
@@ -635,6 +645,35 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     movie-sized headers:{}; words naming them:{}",
                      wanted_text, hits.empty() ? " none" : hits);
+        }
+    }
+    if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0 &&
+        Common::NS2FrameTrace::WriterGpuBudget().load(std::memory_order_relaxed) > 0) {
+        // Writer trace: every draw that reads a constant buffer in a watched page, with what it
+        // reads, in the same time base as the guest writes.
+        for (size_t stage = 0; stage < 5; ++stage) {
+            const auto& stage_cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+            for (size_t slot = 0; slot < stage_cbufs.size(); ++slot) {
+                const auto& cbuf{stage_cbufs[slot]};
+                if (!cbuf.enabled || cbuf.address == 0 ||
+                    Common::NS2FrameTrace::FindWriterPageGpu(cbuf.address, (std::max)(cbuf.size, 4U)) < 0) {
+                    continue;
+                }
+                if (Common::NS2FrameTrace::WriterGpuBudget().fetch_sub(1, std::memory_order_relaxed) <= 0) {
+                    break;
+                }
+                std::array<u32, 8> words{};
+                gpu_memory->ReadBlockUnsafe(cbuf.address, words.data(), sizeof(words));
+                const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
+                const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
+                LOG_INFO(Render_Vulkan,
+                         "NS2 writer trace: t={}us GPU frame {} draw vs={:#x} ps={:#x} into {:#x} {}x{} "
+                         "reads stage {} slot {} at {:#x} (size {:#x}):{}",
+                         Common::NS2FrameTrace::TraceMicros(),
+                         Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), vs, ps,
+                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height, stage, slot,
+                         cbuf.address, cbuf.size, fmt::format(" {:08x}", fmt::join(words, " ")));
+            }
         }
     }
 
