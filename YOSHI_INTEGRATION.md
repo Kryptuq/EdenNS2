@@ -185,3 +185,23 @@ present while the trace runs logs "NS2 present trace": its fence, whether that f
 when the reply went out, which frame it waited for and whether a channel was suspended. If the
 movie draw's wrong reads come after the present of the movie's frame returned with that frame
 "NOT reached", the early present is proven to be how the chunk is recycled.
+
+yoshi-int-build-21 result (user log, main at 0x80e6f000): the early-present idea is wrong. All
+1500 traced presents waited for their own frame, returned with its fence reached, and no channel
+was suspended. The movie draw (ps 0x1aa1953e00 in this run) uses one block, 0x1aa2430100, every
+frame. In each movie frame the game writes the correct handles there with a memcpy (pc in the SDK
+memcpy, e.g. Y 0x7aa) about 6 ms after the previous present; nothing else in that frame allocates
++0x100 of the chunk; the GPU thread reads the block 1.7-2.5 ms later and finds the content from
+before that memcpy: 23 of 23 traced movie reads (the previous frame's 0x2c 0x25 0x20 -1 in the first
+five, other earlier values afterwards). The read goes to the same host memory the game wrote (the
+trace matches the pages by host pointer), so something wrote the old bytes back within those 2 ms.
+Only one CPU read trap of GPU-written memory happened in the whole run (elsewhere), so the read
+trap flush is not it.
+
+yoshi-int-build-22 (diagnostics only) says who writes them back: every emulator-side copy into a
+watched page (device memory WriteBlock/WriteBlockUnsafe/Write, GPU memory manager WriteBlock) logs
+the block's first 16 bytes before and after and the path (async buffer download at a fence, buffer
+download, buffer flush download, texture cache download, or unattributed); every buffer cache
+MarkWrittenBuffer over a watched page logs its caller line and whether the range downloads at
+fences. An emulator write that turns the movie handles back into the old bytes proves a stale
+write-back; none at all would mean the game rewrote the block itself.

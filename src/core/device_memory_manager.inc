@@ -15,6 +15,7 @@
 
 #include "common/address_space.h"
 #include "common/address_space.inc"
+#include "common/ns2_frame_trace.h"
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/div_ceil.h"
@@ -422,6 +423,7 @@ void DeviceMemoryManager<Traits>::Write(DAddr address, T value) {
     if (!ptr) [[unlikely]] {
         return;
     }
+    Common::NS2FrameTrace::EmulatorWriteNote note{ptr, sizeof(T), address};
     std::memcpy(ptr, &value, sizeof(T));
 }
 
@@ -521,6 +523,7 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
             }
         },
         [&](size_t copy_amount, u8* const dst_ptr) {
+            Common::NS2FrameTrace::EmulatorWriteNote note{dst_ptr, copy_amount, address};
             std::memcpy(dst_ptr, src_pointer, copy_amount);
         },
         [&](const std::size_t copy_amount) {
@@ -587,6 +590,7 @@ void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* sr
             }
         },
         [&](size_t copy_amount, u8* const dst_ptr) {
+            Common::NS2FrameTrace::EmulatorWriteNote note{dst_ptr, copy_amount, address};
             std::memcpy(dst_ptr, src_pointer, copy_amount);
         },
         [&](const std::size_t copy_amount) {

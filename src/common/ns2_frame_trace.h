@@ -7,10 +7,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/logging/log.h"
 
 namespace Common::NS2FrameTrace {
 
@@ -151,5 +153,78 @@ inline u64 TraceMicros() {
                                 std::chrono::steady_clock::now() - start)
                                 .count());
 }
+
+/// Emulator-side writes into the writer-trace pages (buffer/texture cache downloads, engine
+/// writes): which path writes (thread-local, set by the caller), and the movie block at +0x100 of
+/// the page before and after the copy. Tells an emulator write-back apart from a game rewrite.
+inline const char*& EmulatorWriteTag() {
+    thread_local const char* tag = nullptr;
+    return tag;
+}
+struct EmulatorWriteTagScope {
+    const char* previous;
+    explicit EmulatorWriteTagScope(const char* tag) : previous{EmulatorWriteTag()} {
+        EmulatorWriteTag() = tag;
+    }
+    ~EmulatorWriteTagScope() {
+        EmulatorWriteTag() = previous;
+    }
+    EmulatorWriteTagScope(const EmulatorWriteTagScope&) = delete;
+    EmulatorWriteTagScope& operator=(const EmulatorWriteTagScope&) = delete;
+};
+inline std::atomic<int>& EmulatorWriteBudget() {
+    static std::atomic<int> budget{3000};
+    return budget;
+}
+inline std::atomic<int>& GpuWrittenMarkBudget() {
+    static std::atomic<int> budget{600};
+    return budget;
+}
+/// Put around an emulator-side copy into host memory [dst, dst + size).
+class EmulatorWriteNote {
+public:
+    EmulatorWriteNote(const void* dst, size_t size, u64 device_addr)
+        : dst_{reinterpret_cast<uintptr_t>(dst)}, size_{size}, device_addr_{device_addr} {
+        if (WriterPageCount().load(std::memory_order_relaxed) == 0) [[likely]] {
+            return;
+        }
+        page_ = FindWriterPageHost(dst_, size);
+        if (page_ < 0) {
+            return;
+        }
+        block_ = WriterPages()[page_].host.load(std::memory_order_relaxed) + 0x100;
+        std::memcpy(before_.data(), reinterpret_cast<const void*>(block_), sizeof(before_));
+    }
+    ~EmulatorWriteNote() {
+        if (page_ < 0 || EmulatorWriteBudget().fetch_sub(1, std::memory_order_relaxed) <= 0) {
+            return;
+        }
+        std::array<u32, 4> after{};
+        std::memcpy(after.data(), reinterpret_cast<const void*>(block_), sizeof(after));
+        const uintptr_t page_host = WriterPages()[page_].host.load(std::memory_order_relaxed);
+        const u64 page_gpu = WriterPages()[page_].gpu.load(std::memory_order_relaxed);
+        const char* tag = EmulatorWriteTag();
+        LOG_INFO(HW_Memory,
+                 "NS2 writer trace: t={}us GPU frame {} present {} emulator write by {} into GPU "
+                 "{:#x} (page {} +{:#x}) {} bytes (device {:#x}): block +0x100 "
+                 "{:08x} {:08x} {:08x} {:08x} -> {:08x} {:08x} {:08x} {:08x}{}",
+                 TraceMicros(), Frame().load(std::memory_order_relaxed),
+                 PresentsReturned().load(std::memory_order_relaxed),
+                 tag != nullptr ? tag : "an unattributed path", page_gpu + (dst_ - page_host),
+                 page_, dst_ - page_host, size_, device_addr_, before_[0], before_[1], before_[2],
+                 before_[3], after[0], after[1], after[2], after[3],
+                 before_ != after ? " (block changed)" : "");
+    }
+    EmulatorWriteNote(const EmulatorWriteNote&) = delete;
+    EmulatorWriteNote& operator=(const EmulatorWriteNote&) = delete;
+
+private:
+    uintptr_t dst_;
+    size_t size_;
+    u64 device_addr_;
+    int page_{-1};
+    uintptr_t block_{};
+    std::array<u32, 4> before_{};
+};
 
 } // namespace Common::NS2FrameTrace
