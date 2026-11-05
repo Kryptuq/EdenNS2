@@ -95,6 +95,16 @@ inline std::atomic<int>& WriterGpuBudget() {
     static std::atomic<int> budget{1500};
     return budget;
 }
+/// Presents handed back to the game (nx2:vi2 229 replies). A write logged with present N belongs
+/// to the frame the game presents as N + 1; it places traced writes and reads in the game's frames.
+inline std::atomic<u64>& PresentsReturned() {
+    static std::atomic<u64> count{};
+    return count;
+}
+inline std::atomic<int>& PresentTraceBudget() {
+    static std::atomic<int> budget{1500};
+    return budget;
+}
 /// Returns true if the page was added now.
 inline bool AddWriterPage(uintptr_t host, u64 gpu) {
     static std::mutex mutex;

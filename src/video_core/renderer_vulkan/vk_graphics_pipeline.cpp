@@ -546,9 +546,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 const GPUVAddr page = block & ~GPUVAddr{0xfff};
                 if (const u8* host = gpu_memory->GetPointer<u8>(page); host != nullptr &&
                     Common::NS2FrameTrace::AddWriterPage(reinterpret_cast<uintptr_t>(host), page)) {
-                    LOG_INFO(Render_Vulkan, "NS2 writer trace: t={}us GPU frame {} watching page {:#x} (block {:#x})",
+                    LOG_INFO(Render_Vulkan, "NS2 writer trace: t={}us GPU frame {} present {} watching page {:#x} (block {:#x})",
                              Common::NS2FrameTrace::TraceMicros(),
-                             Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), page, block);
+                             Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed),
+                             Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), page, block);
                 }
             }
             LOG_INFO(Render_Vulkan, "NS2 frame trace:     {}: {}", text,
@@ -667,10 +668,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                 const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
                 const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
                 LOG_INFO(Render_Vulkan,
-                         "NS2 writer trace: t={}us GPU frame {} draw vs={:#x} ps={:#x} into {:#x} {}x{} "
+                         "NS2 writer trace: t={}us GPU frame {} present {} draw vs={:#x} ps={:#x} into {:#x} {}x{} "
                          "reads stage {} slot {} at {:#x} (size {:#x}):{}",
                          Common::NS2FrameTrace::TraceMicros(),
-                         Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed), vs, ps,
+                         Common::NS2FrameTrace::Frame().load(std::memory_order_relaxed),
+                         Common::NS2FrameTrace::PresentsReturned().load(std::memory_order_relaxed), vs, ps,
                          regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height, stage, slot,
                          cbuf.address, cbuf.size, fmt::format(" {:08x}", fmt::join(words, " ")));
             }

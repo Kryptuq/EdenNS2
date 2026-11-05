@@ -1726,7 +1726,11 @@ private:
             return value == nullptr ? -1 : value[0] == '1' ? 1 : 0;
         }();
         const auto entered = std::chrono::steady_clock::now();
+        // Yoshi diagnostics (writer trace): which frame this present waited for.
+        const char* waited_for = "this frame";
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
+            waited_for = frames_ahead == 1 ? "the previous frame (EDEN_NX2_FRAMES_AHEAD=1)"
+                                           : "the previous frame (a channel waits on a semaphore)";
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
                       ~w[22] < 192 ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(~w[22]) : 0U);
@@ -1743,6 +1747,7 @@ private:
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
             if (gpu_behind) {
                 WaitForFrame(~w[22], w[24]);
+                waited_for = "the previous frame, then this one (GPU behind)";
             }
         } else if (frames_ahead == 0) {
             WaitForFrame(~w[22], w[24]);
@@ -1783,6 +1788,23 @@ private:
                          m_stats.pace_us / 600);
                 m_stats = {.last_present = entered};
             }
+        }
+        // Yoshi diagnostics (writer trace): does the game get its buffers back with this frame's
+        // GPU work unfinished? Writes logged with present N after this belong to frame N + 1.
+        const u64 returned = Common::NS2FrameTrace::PresentsReturned().fetch_add(1, std::memory_order_relaxed) + 1;
+        if (Common::NS2FrameTrace::WriterPageCount().load(std::memory_order_relaxed) != 0 &&
+            Common::NS2FrameTrace::PresentTraceBudget().fetch_sub(1, std::memory_order_relaxed) > 0) {
+            const u32 fence_id = ~w[22];
+            auto& syncpoints = system.Host1x().GetSyncpointManager();
+            const bool known = fence_id < 192;
+            LOG_INFO(Service,
+                     "NS2 present trace: t={}us present {} returned: fence ({}, {:#x}) {} at reply "
+                     "(guest {:#x}); waited for {} ({} us), channels suspended {}",
+                     Common::NS2FrameTrace::TraceMicros(), returned, fence_id, w[24],
+                     !known ? "unknown" : syncpoints.IsReadyGuest(fence_id, w[24]) ? "reached" : "NOT reached",
+                     known ? syncpoints.GetGuestSyncpointValue(fence_id) : 0U, waited_for,
+                     std::chrono::duration_cast<std::chrono::microseconds>(waited - entered).count(),
+                     system.GPU().HasSuspendedChannels());
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),

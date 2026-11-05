@@ -151,3 +151,37 @@ yoshi-int-build-20 finds the code that reuses the region: it watches the first p
 region a movie block lies in, and logs every guest CPU write into it that reaches the JIT's memory
 callbacks (thread, LR, stack pointer, a few registers and the frame-pointer chain of callers), and
 every draw reading a constant buffer in those pages (what it reads), on one time base.
+
+yoshi-int-build-20 result (user log): all writes into the watched pages come from one game thread,
+the RHI's per-draw constant upload (main+0x107656c, chunk bump allocator main+0x107719c, chunk pool
+get main+0x1077b40). The game writes the movie's handles (for example Y = 0x641) into the first
+block of a chunk; within about 2 ms, and before the GPU thread reads the movie draw's constants, it
+writes another draw's constants (0x2c 0x25 0x20 -1, or the vertex float 1/960) to the same
+address. 38 of 38 traced movie draws read foreign data.
+
+EdenNS2 build-123 (same trace on `main`, user log, main at 0x80d4c000) for comparison:
+- 23 of 23 traced movie draws read the handles the game wrote (0x643/0x642, 0x608/0x733, ...); no
+  movie draw read a handle below 256.
+- CPU write to GPU read of the movie block: about 2.7 ms in steady state (2.6-2.9 ms), the same
+  order as Eglantine's ~2 ms. The GPU thread is not slower on Eglantine.
+- EdenNS2 also rotates a small set of chunks (8 pages came back), but the next CPU write into a
+  movie block's chunk comes 33-68 ms (2-4 GPU frames) after the movie write, always after the GPU
+  read. On Eglantine it comes within ~2 ms. So the difference is when the game recycles a chunk,
+  not GPU latency.
+- The game polls only syncpoint 3 (video decoder) through the gsv 204 cache; its channel
+  syncpoints 1/2 are never published on EdenNS2. The cache is therefore not what makes EdenNS2
+  hold chunks longer.
+- Checked and ruled out: a double syncpoint count. Both emulators append the submission's
+  increments after its commands (EdenNS2 `native_completion`, Eglantine
+  BuildIncrementCountCommandList); the game's pushbuffers emit none.
+- Remaining structural difference on the way to the next frame: EdenNS2's vi2 present hands a
+  buffer back only after its release fence passed (RefreshReleasedBuffers); this branch hands all
+  15 back at every present and waits for the frame's fence only until a channel is seen suspended
+  on a semaphore (3 ms), then only for the previous frame.
+
+yoshi-int-build-21 (diagnostics only) answers whether that is what lets the game reuse the chunk:
+every writer-trace line carries the number of presents already returned to the game, and every
+present while the trace runs logs "NS2 present trace": its fence, whether that fence was reached
+when the reply went out, which frame it waited for and whether a channel was suspended. If the
+movie draw's wrong reads come after the present of the movie's frame returned with that frame
+"NOT reached", the early present is proven to be how the chunk is recycled.
