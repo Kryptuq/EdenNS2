@@ -170,11 +170,20 @@ private:
     std::vector<std::unique_ptr<ShaderInfo>> storage;
     std::vector<Entry*> marked_for_removal;
 
+    struct Rejection {
+        std::exception_ptr error;
+        /// The memory the capture read (header and instructions up to the failure). Its pages are
+        /// tracked like a registered shader's, so later CPU writes there also reach
+        /// InvalidatePagesInRegion and drop the rejection.
+        VAddr begin{};
+        u64 size{};
+    };
+
     /// Native programs the lowering rejected, by address, so each draw or dispatch rethrows the
-    /// first error instead of lowering again; dropped when guest memory there is written.
+    /// first error instead of lowering again; dropped when guest memory in their range is written.
     std::mutex rejected_mutex;
-    ::Common::unordered_map<u64, std::exception_ptr> rejected_native;
-    /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
+    ::Common::unordered_map<u64, Rejection> rejected_native;
+    /// Bounds of every range ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};
     std::atomic<VAddr> rejected_highest{};
 };

@@ -8,7 +8,9 @@
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include "core/device_memory.h"
+#include "shader_recompiler/exception.h"
 #include "video_core/shader_cache.h"
+#include "video_core/shader_environment.h"
 
 namespace VideoCommon {
 struct ShaderCacheTestAccess {
@@ -22,6 +24,18 @@ struct ShaderCacheTestAccess {
     }
     static const ShaderInfo* Find(const ShaderCache& cache, VAddr address) {
         return cache.TryGet(address);
+    }
+    /// Rejects the program at `address` the way RefreshStages does after a failed lowering.
+    static void Reject(ShaderCache& cache, VAddr address) {
+        try {
+            ResetLastNativeCapture();
+            throw Shader::RuntimeError("rejected for the test");
+        } catch (const Shader::Exception&) {
+            cache.RememberRejection(address);
+        }
+    }
+    static bool IsRejected(ShaderCache& cache, VAddr address) {
+        return cache.IsRejected(address);
     }
 };
 } // namespace VideoCommon
@@ -117,4 +131,27 @@ TEST_CASE("Shader invalidation CPU benchmark", "[.][cache_bench]") {
     }
     std::cout << "Shader invalidation: sequential=" << sequential_ms << " ms batched=" << batched_ms
               << " ms (CPU only, not gameplay FPS)\n";
+}
+
+TEST_CASE("Shader rejections are dropped by writes anywhere in their range", "[shader_invalidation]") {
+    Core::DeviceMemory memory;
+    Tegra::MaxwellDeviceMemoryManager device_memory{memory};
+    auto cache = ShaderCacheTestAccess::Create(device_memory);
+    constexpr VAddr program = 0x200000;
+
+    // Without a capture the rejection covers the program's 0x80-byte header.
+    ShaderCacheTestAccess::Reject(*cache, program);
+    REQUIRE(ShaderCacheTestAccess::IsRejected(*cache, program));
+    cache->InvalidateRegion(program - 0x10, 0x10);
+    cache->InvalidateRegion(program + 0x80, 0x10);
+    REQUIRE(ShaderCacheTestAccess::IsRejected(*cache, program));
+
+    // A write that starts after the program's first byte still overlaps it.
+    cache->InvalidateRegion(program + 0x40, 4);
+    REQUIRE(!ShaderCacheTestAccess::IsRejected(*cache, program));
+
+    ShaderCacheTestAccess::Reject(*cache, program);
+    REQUIRE(ShaderCacheTestAccess::IsRejected(*cache, program));
+    cache->InvalidateRegions(std::vector<std::pair<DAddr, size_t>>{{program + 0x7f, 1}});
+    REQUIRE(!ShaderCacheTestAccess::IsRejected(*cache, program));
 }

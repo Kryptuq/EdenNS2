@@ -400,7 +400,17 @@ private:
     GPUVAddr page_end{};
 };
 
+thread_local NativeCaptureRange last_native_capture{};
+
 } // Anonymous namespace
+
+void ResetLastNativeCapture() {
+    last_native_capture = {};
+}
+
+NativeCaptureRange LastNativeCapture() {
+    return last_native_capture;
+}
 
 // A native program is captured and lowered once, when the shader cache first meets it. The
 // environments built later for its pipelines receive that result instead of lowering again.
@@ -427,6 +437,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
     NativeInstructionReader reader{*gpu_memory};
+    last_native_capture = {program_base, native_header_size};
     for (u32 index = 0; index < maximum_instructions; ++index) {
         const GPUVAddr address = program_base + native_header_size + index * sizeof(Instruction);
         Instruction instruction;
@@ -442,6 +453,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
             gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
         }
         native.push_back(instruction);
+        last_native_capture.size = native_header_size + native.size() * sizeof(Instruction);
         const auto status = capture.Observe(instruction, index);
         if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
             if (const char* dir = std::getenv("EDEN_NX2_SHADER_DUMP")) {

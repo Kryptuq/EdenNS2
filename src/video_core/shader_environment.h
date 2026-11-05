@@ -42,6 +42,16 @@ struct LoweredNativeCode {
     u32 texture_bound = ~0U;
 };
 
+/// The guest memory the calling thread's last native capture read: the program's header and every
+/// instruction up to where capture or lowering stopped (or failed). A rejection depends on these
+/// bytes only.
+struct NativeCaptureRange {
+    GPUVAddr start{};
+    u64 size{};
+};
+void ResetLastNativeCapture();
+NativeCaptureRange LastNativeCapture();
+
 class GenericEnvironment : public Shader::Environment {
 public:
     explicit GenericEnvironment() = default;

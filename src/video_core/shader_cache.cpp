@@ -127,6 +127,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                 // Native programs are lowered while the environment is built (once: the
                 // ShaderInfo keeps the result for the pipeline's environments).
                 RethrowIfRejected(*cpu_shader_addr);
+                ResetLastNativeCapture();
                 GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, native ? shader_addr : base_addr, start_address};
                 shader_info = MakeShaderInfo(env, *cpu_shader_addr);
             } catch (const Shader::Exception&) {
@@ -197,6 +198,7 @@ const ShaderInfo* ShaderCache::ComputeShader() {
     }
     try {
         RethrowIfRejected(*cpu_shader_addr);
+        ResetLastNativeCapture();
         ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
         return MakeShaderInfo(env, *cpu_shader_addr);
     } catch (const Shader::Exception&) {
@@ -208,7 +210,7 @@ const ShaderInfo* ShaderCache::ComputeShader() {
 void ShaderCache::RethrowIfRejected(VAddr addr) {
     std::scoped_lock lock{rejected_mutex};
     if (const auto it = rejected_native.find(addr); it != rejected_native.end()) {
-        std::rethrow_exception(it->second);
+        std::rethrow_exception(it->second.error);
     }
 }
 
@@ -218,12 +220,27 @@ bool ShaderCache::IsRejected(VAddr addr) {
 }
 
 void ShaderCache::RememberRejection(VAddr addr) {
-    std::scoped_lock lock{rejected_mutex};
-    rejected_native.emplace(addr, std::current_exception());
-    rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), addr),
-                          std::memory_order_relaxed);
-    rejected_highest.store((std::max)(rejected_highest.load(std::memory_order_relaxed), addr),
-                           std::memory_order_relaxed);
+    // The bytes the failed capture read decide the rejection; without a capture (rejected before
+    // it started) the header stands for the program.
+    Rejection rejection{.error = std::current_exception(), .begin = addr, .size = 0x80};
+    if (const NativeCaptureRange capture = LastNativeCapture(); capture.size != 0) {
+        if (const auto begin = gpu_memory->GpuToCpuAddress(capture.start)) {
+            rejection.begin = *begin;
+            rejection.size = capture.size;
+        }
+    }
+    {
+        std::scoped_lock lock{rejected_mutex};
+        if (!rejected_native.emplace(addr, rejection).second) {
+            return;
+        }
+        rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), rejection.begin),
+                              std::memory_order_relaxed);
+        rejected_highest.store((std::max)(rejected_highest.load(std::memory_order_relaxed),
+                                          rejection.begin + rejection.size),
+                               std::memory_order_relaxed);
+    }
+    device_memory.UpdatePagesCachedCount(rejection.begin, rejection.size, 1);
 }
 
 void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
@@ -280,11 +297,22 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
     // Rejected programs are few and in a few places: look at them only for writes that can
     // reach them (this runs for every inline upload and pre-draw invalidation).
     if (addr_end > rejected_lowest.load(std::memory_order_relaxed) &&
-        addr <= rejected_highest.load(std::memory_order_relaxed)) {
-        std::scoped_lock lock{rejected_mutex};
-        boost::unordered::erase_if(rejected_native, [&](const auto& rejected) {
-            return rejected.first >= addr && rejected.first < addr_end;
-        });
+        addr < rejected_highest.load(std::memory_order_relaxed)) {
+        boost::container::small_vector<std::pair<VAddr, u64>, 4> untracked;
+        {
+            std::scoped_lock lock{rejected_mutex};
+            boost::unordered::erase_if(rejected_native, [&](const auto& rejected) {
+                const Rejection& rejection = rejected.second;
+                if (rejection.begin >= addr_end || rejection.begin + rejection.size <= addr) {
+                    return false;
+                }
+                untracked.emplace_back(rejection.begin, rejection.size);
+                return true;
+            });
+        }
+        for (const auto& [begin, size] : untracked) {
+            device_memory.UpdatePagesCachedCount(begin, size, -1);
+        }
     }
     const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
     for (u64 page = addr >> YUZU_PAGEBITS; page < page_end; ++page) {

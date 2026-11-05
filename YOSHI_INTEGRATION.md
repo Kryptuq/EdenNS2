@@ -261,3 +261,42 @@ Fix (yoshi-int-build-25): the puller no longer mirrors host releases (all titles
 EDEN_NX2_SEMAPHORE_MIRROR=1 restores the old copy for A/B comparisons (logged once when set).
 The yint-24 trace stays on for this build (it starts with the movie writer trace and is bounded)
 and now also follows the second-page word, so a log shows both counters on their own addresses.
+
+## Loading area: skipped draws from rejected native programs (yoshi-int-build-26)
+yoshi-int-build-25 results (user): title flicker gone (A/B with EDEN_NX2_SEMAPHORE_MIRROR=1 brings
+it back). First gameplay test on this branch: the first loading area flickers with corrupted
+textures. The same happens with the mirror on, so it is independent of the build-25 fix.
+
+Run 2 log (loading area, 177-251 s): 15 native programs rejected, their draws skipped. Two kinds:
+- 5 with a valid header failed with "branch outside capture bounds" on data words (floats): the
+  capture read past the program's end. The capture (program_capture.h, from upstream f7be55db)
+  counts every CALL.REL.NOINC as a jump. Yoshi also uses NOINC calls as real subroutine calls (the
+  return address moved into a link register before the call, RET after the main EXIT; EdenNS2
+  build 110), the form the lowering accepts. Counted as a jump, the subroutine start becomes a
+  forward target past the main EXIT, so the EXIT never counts and the final RET cannot end the
+  capture: it reads on until a data word decodes as a branch with an impossible target. EdenNS2's
+  capture treats these as calls.
+- 10 whose memory was zero or garbage when bound (header 0, garbage header, valid header with
+  zero or truncated code). Who writes that code and when is not known yet.
+- Rejections are cached and only dropped by an invalidation that covers the program's first byte.
+  CPU writes reach the shader cache only on pages it tracks, and a rejected program tracked none,
+  so code written later never lifted the rejection: the draw stayed skipped for good. EdenNS2 has
+  no such cache (it retries every bind).
+
+Changed:
+- Capture (A): a NOINC call is a call when it is unpredicated and a MOV of its return address
+  precedes it within 64 instructions (the lowering's link search); otherwise a jump, as before
+  (title 4). BRA's .DIV/.CONV mode bits are masked from the offset (upstream fae454cf).
+- Lowering (A, ported from upstream fae454cf, matching EdenNS2 build 110): the call link may be set
+  up to 64 instructions before the call if nothing between writes it; BRA.CONV branches, BRA.DIV
+  falls through; register-mask WARPSYNC is a no-op; an EXIT that a branch still jumps over does
+  not end the main program.
+- Rejections (B): each rejection remembers the memory its capture read (header and every
+  instruction up to the failure), tracks those pages like a registered shader, and is dropped by
+  any write that overlaps the range (not only one covering its first byte).
+Tests: ampere_capture.cpp (capture ends a linked-call program at its RET and not in the data that
+follows; early link; unlinked and predicated NOINC stay jumps; BRA mode bits), shader_invalidation
+(rejection dropped by a write anywhere in its range). The new capture tests fail on build 25's
+code; the rejection test fails on build 25's shader cache.
+To check in the log: "Native graphics shader rejected" / "Draw skipped" lines in the loading area
+compared with run 2 (5 capture failures + 10 invalid-memory binds).
