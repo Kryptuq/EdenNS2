@@ -27,11 +27,84 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/ns2_program_address_trace.h"
 #include "video_core/shader_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
+
+namespace {
+// Diagnostics only (yint-29): what memory a rejected program's address resolves to.
+std::string DescribeProgramMemory(Tegra::MemoryManager& gpu_memory,
+                                  Tegra::MaxwellDeviceMemoryManager& device_memory, GPUVAddr address) {
+    const std::optional<DAddr> device = gpu_memory.GpuToCpuAddress(address);
+    if (!device) {
+        return fmt::format("GPU {:#x} is not mapped", address);
+    }
+    std::string text = fmt::format("GPU {:#x} -> device {:#x} (page kind {:#x})", address, *device,
+                                   static_cast<u32>(gpu_memory.GetPageKind(address)));
+    if (device_memory.GetPointer<u8>(*device) == nullptr) {
+        return text + ", the device page has NO memory";
+    }
+    std::array<u32, 8> device_view{};
+    device_memory.ReadBlockUnsafe(*device, device_view.data(), sizeof(device_view));
+    const auto [asid, vaddress] = device_memory.DiagnosticCpuBacking(*device);
+    if (vaddress == 0) {
+        return text + fmt::format(", NOT backed by process memory (GPU-only or host memory); device "
+                                  "view {:08x}",
+                                  fmt::join(device_view, " "));
+    }
+    const int same = device_memory.DiagnosticSameHostMemory(*device);
+    std::array<u32, 8> process_view{};
+    const bool read = device_memory.DiagnosticReadThroughCpu(*device, process_view.data(),
+                                                             sizeof(process_view));
+    text += fmt::format(", backed by process {} VA {:#x} which {}; device view {:08x}", asid,
+                        vaddress,
+                        same == 1 ? "maps the same host memory now"
+                                  : "maps OTHER host memory now (remapped since the GPU mapping)",
+                        fmt::join(device_view, " "));
+    if (same != 1) {
+        text += read ? fmt::format("; process view {:08x}", fmt::join(process_view, " "))
+                     : std::string{"; process view unreadable"};
+    }
+    return text;
+}
+
+std::string DescribeAddressWrite(Tegra::MemoryManager& gpu_memory, size_t stage, bool high, u32 value) {
+    namespace Trace = VideoCommon::NS2ProgramAddressTrace;
+    const Trace::Provenance provenance = Trace::Find(stage, high, value);
+    const auto now = Trace::Clock::now();
+    const auto ago = [&](Trace::Clock::time_point time) {
+        return std::chrono::duration<double, std::milli>(now - time).count();
+    };
+    std::string text = fmt::format("{} {:#x}: ", high ? "high" : "low", value);
+    if (const auto& parsed = provenance.parsed) {
+        if (parsed->address == 0) {
+            text += fmt::format("parsed from an inline header ({}), ch {}, {:.1f} ms ago", parsed->source,
+                                parsed->channel, ago(parsed->time));
+        } else {
+            u32 live{};
+            gpu_memory.ReadBlockUnsafe(parsed->address, &live, sizeof(live));
+            text += fmt::format("parsed from word {:#x} ({}), ch {}, {:.1f} ms ago; that word holds {:#x} "
+                                "now{}",
+                                parsed->address, parsed->source, parsed->channel, ago(parsed->time),
+                                live, live == value ? " (same)" : " (CHANGED)");
+        }
+    } else {
+        text += fmt::format("NOT parsed from a command word among the last {} writes",
+                            provenance.parsed_count);
+    }
+    if (const auto& stored = provenance.stored) {
+        text += stored->macro != 0
+                    ? fmt::format("; stored by macro {:#x} (segment {:#x})", stored->macro, stored->address)
+                    : fmt::format("; stored directly (segment {:#x})", stored->address);
+    } else {
+        text += "; no register store of this value seen";
+    }
+    return text;
+}
+} // Anonymous namespace
 
 void ShaderCache::InvalidateRegion(VAddr addr, size_t size) {
     std::scoped_lock lock{invalidation_mutex};
@@ -146,6 +219,12 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                     std::memcpy(config.data(), &shader_config, sizeof(config));
                     LOG_ERROR(HW_GPU, "Rejected program {:#x} is bound to stage {}: header {:08x}, slot {:08x}",
                               shader_addr, index, fmt::join(header, " "), fmt::join(config, " "));
+                    // Diagnostics only (yint-29): where the address came from, what it maps to.
+                    LOG_INFO(HW_GPU, "Program address trace: {:#x} stage {}: {} | {} | memory: {}",
+                             shader_addr, index,
+                             DescribeAddressWrite(*gpu_memory, index, true, shader_config.reserved[0]),
+                             DescribeAddressWrite(*gpu_memory, index, false, shader_config.reserved[1]),
+                             DescribeProgramMemory(*gpu_memory, device_memory, shader_addr));
                 }
                 throw;
             }
@@ -209,6 +288,15 @@ const ShaderInfo* ShaderCache::ComputeShader() {
         return built;
     } catch (const Shader::Exception&) {
         RememberRejection(*cpu_shader_addr);
+        // Diagnostics only (yint-29): the QMD the program came from and what its address maps to.
+        static std::unordered_set<GPUVAddr> described;
+        if (described.size() < 64 && described.insert(shader_addr).second) {
+            LOG_INFO(HW_GPU,
+                     "Program address trace: compute {:#x} = code {:#x} + program start {:#x} (QMD "
+                     "{:#x}) | memory: {}",
+                     shader_addr, program_base, qmd.program_start, kepler_compute->NativeQmdAddress(),
+                     DescribeProgramMemory(*gpu_memory, device_memory, shader_addr));
+        }
         throw;
     }
 }

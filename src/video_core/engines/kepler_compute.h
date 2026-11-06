@@ -57,6 +57,11 @@ extern std::atomic<u32> g_nx2_trace_draws_after_upscale;
 
 class KeplerCompute final : public EngineInterface {
 public:
+    /// Diagnostics only: the GPU address of the last native QMD (method 0xad << 8).
+    GPUVAddr NativeQmdAddress() const {
+        return GPUVAddr{native_registers[0xad]} << 8;
+    }
+
     explicit KeplerCompute(MemoryManager& memory_manager);
     ~KeplerCompute();
 

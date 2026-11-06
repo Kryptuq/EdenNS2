@@ -22,6 +22,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/memory.h"
+#include "video_core/ns2_program_address_trace.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/ns2_command_trace.h"
@@ -467,6 +468,12 @@ bool DmaPusher::WantsSegment() const {
 void DmaPusher::CallMethod(u32 argument) {
     VideoCommon::NS2CommandTrace::NoteMethod(dma_state.subchannel, dma_state.method, argument,
                                              dma_state.dma_get + dma_state.dma_word_offset);
+    if (VideoCommon::NS2ProgramAddressTrace::IsProgramAddressMethod(dma_state.method) &&
+        subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) [[unlikely]] {
+        VideoCommon::NS2ProgramAddressTrace::NoteParsed(
+            dma_state.method, argument, dma_state.dma_get + dma_state.dma_word_offset,
+            channel_state.bind_id);
+    }
     if (dma_state.method >= 0x6c0 && dma_state.method <= 0x6c3 &&
         Common::NS2FrameTrace::SemaphoreTraceOn()) [[unlikely]] {
         NoteReportSemaphore(argument);
@@ -534,6 +541,8 @@ void DmaPusher::CallMethod(u32 argument) {
 
 // Yoshi diagnostics (yint-24): which entry and which copy of its words the parse is using.
 void DmaPusher::NoteEntrySource(const char* source, const CommandList& command_list) {
+    // Diagnostics only: which copy program address writes are parsed from (yint-29).
+    VideoCommon::NS2ProgramAddressTrace::EntrySource() = source;
     if (!Common::NS2FrameTrace::SemaphoreTraceOn()) [[likely]] {
         return;
     }
@@ -613,6 +622,17 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
     if (g_semaphore_watch != 0) [[unlikely]] {
         for (u32 i = 0; i < num_methods; ++i) {
             WatchArgument(dma_state.method + (dma_state.non_incrementing ? 0 : i), base_start[i]);
+        }
+    }
+    if (subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+        for (u32 i = 0; i < num_methods; ++i) {
+            const u32 method = dma_state.method + (dma_state.non_incrementing ? 0 : i);
+            if (VideoCommon::NS2ProgramAddressTrace::IsProgramAddressMethod(method)) [[unlikely]] {
+                VideoCommon::NS2ProgramAddressTrace::NoteParsed(
+                    method, base_start[i],
+                    dma_state.dma_get + dma_state.dma_word_offset + u64{i} * sizeof(u32),
+                    channel_state.bind_id);
+            }
         }
     }
     auto& split = VideoCommon::GpuSplit::Get();

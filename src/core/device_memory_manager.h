@@ -134,6 +134,15 @@ public:
     /// Traps the next guest CPU read of these pages, to learn which GPU writes the CPU reads.
     void ArmReadTraps(DAddr addr, size_t size);
 
+    /// Diagnostics only: the process (asid) and virtual address whose memory backs the device
+    /// address (recorded when the page was mapped); {0, 0} when no process memory backs it.
+    std::pair<size_t, VAddr> DiagnosticCpuBacking(DAddr address);
+    /// Diagnostics only: 1 when that process address maps the same host memory as the device
+    /// address now, 0 when it maps other memory (or none), -1 when no process memory backs it.
+    int DiagnosticSameHostMemory(DAddr address);
+    /// Diagnostics only: reads through that process mapping as it is now (false: no backing).
+    bool DiagnosticReadThroughCpu(DAddr address, void* dest_pointer, size_t size);
+
 private:
     struct TranslationEntry {
         DAddr guest_page{};

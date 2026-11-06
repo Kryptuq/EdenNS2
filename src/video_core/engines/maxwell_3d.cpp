@@ -16,6 +16,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "video_core/ns2_program_address_trace.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -303,6 +304,13 @@ size_t Maxwell3D::EstimateIndexBufferSize() {
     return std::min<size_t>(memory_manager.GetMemoryLayoutSize(start_address, byte_size * max_size) / byte_size, lower_cap);
 }
 
+static_assert(MAXWELL3D_REG_INDEX(pipelines) == VideoCommon::NS2ProgramAddressTrace::PipelineBase);
+static_assert((offsetof(Maxwell3D::Regs, pipelines) + offsetof(Maxwell3D::Regs::Pipeline, reserved)) /
+                  sizeof(u32) ==
+              VideoCommon::NS2ProgramAddressTrace::PipelineBase + VideoCommon::NS2ProgramAddressTrace::HighWord);
+static_assert(sizeof(Maxwell3D::Regs::Pipeline) ==
+              VideoCommon::NS2ProgramAddressTrace::PipelineStride * sizeof(u32));
+
 u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
     // Keep track of the register value in shadow_state when requested.
     auto const c = shadow_state.shadow_ram_control;
@@ -346,6 +354,7 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
         draw_manager.DrawDeferred(*this, true);
     }
     regs.reg_array[method] = argument;
+    VideoCommon::NS2ProgramAddressTrace::NoteStored(method, argument, current_dma_segment);
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
 }
@@ -448,6 +457,7 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, std::span<cons
         ((method - MacroRegistersStart) >> 1) % static_cast<u32>(GetNativeMacroPositions().size());
 
     // Execute the current macro.
+    const VideoCommon::NS2ProgramAddressTrace::MacroScope trace_macro{method};
     GetNativeMacroEngine().Execute(system, *this, GetNativeMacroPositions()[entry], parameters);
     draw_manager.DrawDeferred(*this);
 }

@@ -329,3 +329,19 @@ deferred for GPU-modified pages), safe GPU memory / device writes, inline upload
 (BufferCache::DMACopy writes guest memory with WriteBlockUnsafe), DMA fills, cache downloads,
 query writes; these are the "unsafe" lines above. Not observable at all: Core::Memory
 WriteBlockUnsafe and raw-pointer writes by HLE services into process memory.
+
+## yoshi-int-build-29 (1/2): program address trace (diagnostics only)
+Build 28 runtime log: no rejected program recovered. Five programs were bound while their memory
+held no code, and none of them received code later while still bound (one address held a
+GPU-written data buffer). Question: is the program address the game binds wrong (taken from a
+stale or misparsed command word), or right but resolving to other memory than the game uses?
+Added (video_core/ns2_program_address_trace.h; no change to command processing):
+- Every 3D pipeline program address write (pipelines[i].reserved[0]/[1]) as parsed (GPU address
+  of the command word, which copy of the entry: submit-time copy / memory / GPU-written copy) and
+  as stored (by which macro, if any).
+- "Program address trace: <program> stage N: high ...: parsed from word W (copy), ch C, T ms ago;
+  that word holds X now (same/CHANGED); stored by macro M | low ... | memory: GPU A -> device D
+  (page kind K), backed by process P VA V which maps the same / OTHER host memory now; device view
+  ..." once per rejected graphics program. Compute: the QMD address, code base, program start and
+  the same memory description. "NOT backed by process memory" = GPU-only/host memory; "the device
+  page has NO memory" = unmapped device page.
