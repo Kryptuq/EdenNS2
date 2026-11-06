@@ -345,3 +345,22 @@ Added (video_core/ns2_program_address_trace.h; no change to command processing):
   ..." once per rejected graphics program. Compute: the QMD address, code base, program start and
   the same memory description. "NOT backed by process memory" = GPU-only/host memory; "the device
   page has NO memory" = unmapped device page.
+
+## yoshi-int-build-29 (2/2): instruction forms ported from EdenNS2 main
+Build 28: the red/yellow area stayed black; 12 compute programs there were rejected for
+instructions this branch did not lower (the memory was valid). Ported (only these pieces):
+- SHFL 0x589: all four modes (IDX/UP/DOWN/BFLY, bits 58-59 -> Maxwell bits 30-31); the branch
+  accepted IDX only (log: 08001f05 = DOWN).
+- F2I 0x305 from F16: any rounding (bits 78-79) and FTZ; the branch accepted truncation only
+  (log: 00103100 = round to nearest). The branch's H0/H1 selection stays.
+- HMMA 0x23c: lowered to the NS2_HMMA pseudo-instruction (maxwell.inc) and translated with warp
+  shuffles and F32 accumulation (translate/impl/ns2_matrix.cpp, the HMMA half of main's file; the
+  branch lowers LDSM itself). On by default only for Yoshi (full version and demo; set in
+  ChannelState::Init, shader_recompiler/frontend/ampere/native_options.h). Other titles keep the
+  opt-in: EDEN_NX2_TENSOR (stub / expansion) behaves as before (title 4's 372-HMMA network).
+Not ported: guest registers in the lowering's reserved range ("native program uses lowering
+scratch registers", 1 program in the red/yellow area). main renames them to extended IR registers
+(EdenNS2 build 99); that touches the IR register type, IR emitter, translator, environment,
+address map and the lowered-code format, so it needs its own change.
+Tests: video_core/ampere_ports.cpp (the rejected words from the build-28 log: SHFL.DOWN, F2I F16
+nearest, HMMA F16 and F32, default off for other titles, NS2_HMMA decodes).

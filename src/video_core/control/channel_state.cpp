@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/assert.h"
+#include "shader_recompiler/frontend/ampere/native_options.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/fermi_2d.h"
@@ -71,6 +72,11 @@ ChannelState::ChannelState(s32 bind_id_)
 void ChannelState::Init(Core::System& system, u64 program_id_) {
     ASSERT(memory_manager);
     program_id = program_id_;
+    // Yoshi and the Mysterious Book (full version, demo): its upscaling passes use HMMA, which is
+    // lowered to NS2_HMMA for it by default (EdenNS2 main); other titles keep the opt-in.
+    if (program_id == 0x0400245021D2C000ULL || program_id == 0x04007C6028AA8000ULL) {
+        Shader::Ampere::NativeTensorByDefault().store(true, std::memory_order_relaxed);
+    }
     payload.emplace(system, *memory_manager, *this);
     BindNvkDefaultSubchannels(*payload);
     if (g_nx2_ampere) {

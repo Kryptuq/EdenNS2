@@ -13,6 +13,7 @@
 #include <optional>
 #include <string_view>
 #include <vector>
+#include "shader_recompiler/frontend/ampere/native_options.h"
 #include "common/common_types.h"
 
 namespace Shader::Ampere {
@@ -1037,12 +1038,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                  (u64{insn.Bits(64, 8)} << 39) | (u64{insn.Bits(81, 3)} << 48));
             break;
         }
-        case 0x589: { // SHFL.IDX, register lane and immediate segmentation mask.
-            if ((insn.words[2] & ~0x000e0000U) || insn.Bits(53, 11))
+        case 0x589: { // SHFL, register lane and immediate clamp/segmentation mask; mode (IDX, UP,
+            // DOWN, BFLY) at bits 58-59 as in Maxwell's bits 30-31 (EdenNS2 main).
+            if ((insn.words[2] & ~0x000e0000U) || insn.Bits(53, 5) || insn.Bits(60, 4))
                 return fail(index, "native shuffle mode");
             emit(0xef10000000000000ULL | predicate | dest |
                 (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(32, 8)} << 20) |
-                (u64{1} << 29) | (u64{insn.Bits(40, 13)} << 34) | (u64{insn.Bits(81, 3)} << 48));
+                (u64{1} << 29) | (u64{insn.Bits(58, 2)} << 30) | (u64{insn.Bits(40, 13)} << 34) |
+                (u64{insn.Bits(81, 3)} << 48));
             break;
         }
         case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register address.
@@ -1418,6 +1421,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // minutes to compile, so it stays opt-in (the QMD still completes when rejected).
             // EDEN_NX2_TENSOR=stub keeps the rest of the program but makes every HMMA D = C.
             static const char* const mode = std::getenv("EDEN_NX2_TENSOR");
+            if (!mode && NativeTensorByDefault().load(std::memory_order_relaxed)) {
+                // EdenNS2 main: NS2_HMMA, translated with warp shuffles and F32 accumulation.
+                // Bits 75 and 78 select the shape (1, 0 = m16n8k16), bit 76 F32 results.
+                const bool f32_result = insn.Bits(76, 1) != 0;
+                const u32 hmma_a = insn.Bits(24, 8), hmma_b = insn.Bits(32, 8), hmma_c = insn.Bits(64, 8);
+                const u32 limit = uses_uniform_bank ? high_uniform_base : 246U;
+                const u32 result_regs = f32_result ? 4U : 2U;
+                if (native_predicate != 7 || (insn.words[1] & ~0xffU) ||
+                    (insn.words[2] & ~(0xffU | 0x1800U | 0x4000U)) || !insn.Bits(75, 1) ||
+                    insn.Bits(78, 1) || hmma_a + 4 > limit || hmma_b + 2 > limit ||
+                    dest + result_regs > limit || (hmma_c != 255 && hmma_c + result_regs > limit))
+                    return fail(index, "native matrix multiply mode");
+                emit(0xe100000000000000ULL | predicate | dest | (u64{hmma_a} << 8) | (u64{hmma_b} << 20) |
+                     (u64{hmma_c} << 28) | (u64{f32_result} << 36));
+                break;
+            }
             if (!mode) return fail(index, "native matrix multiply (set EDEN_NX2_TENSOR to emulate)");
             const u32 a = insn.Bits(24, 8), b = insn.Bits(32, 8), c = insn.Bits(64, 8);
             if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0xffU) != 0x800 || dest + 2 > 246 ||
@@ -1753,7 +1772,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         case 0x305: case 0xb05: case 0xd05: { // F2I NTZ, register/constant-buffer/uniform source
             const u32 mode = insn.words[2] & ~(opcode == 0xd05 ? 0x08000000U : 0U);
             // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1.
-            const bool half = opcode == 0x305 && (mode & ~0x100U) == 0x0010f000;
+            // F16 source with any rounding (bits 78-79) and FTZ (80), as on EdenNS2 main.
+            const bool half = opcode == 0x305 && (mode & ~(0x100U | 0xc000U | 0x10000U)) == 0x00103000;
             const bool small = mode == 0x00212800;
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
@@ -1788,7 +1808,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                 (u64{small || nearest ? 0U : floor ? 1U : half ? insn.Bits(78, 2) : 3U} << 39) |
+                 (u64{insn.Bits(80, 1)} << 44));
             if (!is_signed && !small) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));

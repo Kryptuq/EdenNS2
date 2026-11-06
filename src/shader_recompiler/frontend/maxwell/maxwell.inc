@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 INST(CCTLT,        "CCTLT",          "1110 1011 1111 0--0")
+INST(NS2_HMMA,     "NS2 HMMA",       "1110 0001 0000 0---")
 INST(AL2P,         "AL2P",           "1110 1111 1010 0---")
 INST(ALD,          "ALD",            "1110 1111 1101 1---")
 INST(AST,          "AST",            "1110 1111 1111 0---")
