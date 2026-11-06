@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <string>
 #include <unordered_set>
@@ -16,6 +17,7 @@
 
 #include "common/assert.h"
 #include "common/cityhash.h"
+#include "common/ns2_rejection_trace.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/object_pool.h"
@@ -119,6 +121,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
             // without rethrowing (two C++ throws each time cost ~1-2% of the GPU thread).
             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
             last_shaders_valid = false;
+            Common::NS2RejectionTrace::NoteSkip(*cpu_shader_addr);
             return false;
         }
         if (!shader_info) {
@@ -130,6 +133,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                 ResetLastNativeCapture();
                 GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, native ? shader_addr : base_addr, start_address};
                 shader_info = MakeShaderInfo(env, *cpu_shader_addr);
+                Common::NS2RejectionTrace::OnBuilt(*cpu_shader_addr);
             } catch (const Shader::Exception&) {
                 RememberRejection(*cpu_shader_addr);
                 // Once per program: which stage slot it is bound to, its header and the slot's
@@ -200,7 +204,9 @@ const ShaderInfo* ShaderCache::ComputeShader() {
         RethrowIfRejected(*cpu_shader_addr);
         ResetLastNativeCapture();
         ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
-        return MakeShaderInfo(env, *cpu_shader_addr);
+        const ShaderInfo* const built = MakeShaderInfo(env, *cpu_shader_addr);
+        Common::NS2RejectionTrace::OnBuilt(*cpu_shader_addr);
+        return built;
     } catch (const Shader::Exception&) {
         RememberRejection(*cpu_shader_addr);
         throw;
@@ -232,6 +238,8 @@ void ShaderCache::RememberRejection(VAddr addr) {
     {
         std::scoped_lock lock{rejected_mutex};
         if (!rejected_native.emplace(addr, rejection).second) {
+            // Already rejected (compute dispatches come here on every launch).
+            Common::NS2RejectionTrace::NoteSkip(addr);
             return;
         }
         rejected_lowest.store((std::min)(rejected_lowest.load(std::memory_order_relaxed), rejection.begin),
@@ -241,6 +249,15 @@ void ShaderCache::RememberRejection(VAddr addr) {
                                std::memory_order_relaxed);
     }
     device_memory.UpdatePagesCachedCount(rejection.begin, rejection.size, 1);
+    std::string what;
+    try {
+        std::rethrow_exception(rejection.error);
+    } catch (const std::exception& error) {
+        what = error.what();
+    } catch (...) {
+        what = "unknown exception";
+    }
+    Common::NS2RejectionTrace::OnRejected(addr, rejection.begin, rejection.size, what);
 }
 
 void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
@@ -307,6 +324,7 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
                     return false;
                 }
                 untracked.emplace_back(rejection.begin, rejection.size);
+                Common::NS2RejectionTrace::OnLifted(rejected.first, addr, addr_end - addr);
                 return true;
             });
         }

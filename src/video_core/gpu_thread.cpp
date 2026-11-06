@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "common/assert.h"
+#include "common/ns2_rejection_trace.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -111,6 +112,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     });
                 } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
                     split.Defer([rasterizer_ptr, addr = invalidate->addr, size = invalidate->size] {
+                        const Common::NS2RejectionTrace::SourceScope trace_source{
+                            "queued CPU-side invalidate request"};
                         rasterizer_ptr->OnCacheInvalidation(addr, size);
                     });
                 } else {
@@ -136,6 +139,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
             } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::FlushInvalidate};
+                const Common::NS2RejectionTrace::SourceScope trace_source{
+                    "queued CPU-side invalidate request"};
                 renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr, invalidate->size);
             } else {
                 ASSERT(false);

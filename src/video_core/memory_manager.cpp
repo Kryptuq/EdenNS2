@@ -9,6 +9,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/ns2_frame_trace.h"
+#include "common/ns2_rejection_trace.h"
 #include "common/logging.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_page_table.h"
@@ -503,6 +504,10 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
             rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
         }
         if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+            if (unsafe) {
+                Common::NS2RejectionTrace::NoteUnsafeWrite(dev_addr_base, copy_amount,
+                                                           "GPU memory unsafe/cached write");
+            }
             Common::NS2FrameTrace::EmulatorWriteNote note{physical, copy_amount, dev_addr_base};
             std::memcpy(physical, src_buffer, copy_amount);
         }
@@ -516,6 +521,10 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
         if (physical != nullptr) [[likely]] {
+            if (unsafe) {
+                Common::NS2RejectionTrace::NoteUnsafeWrite(dev_addr_base, copy_amount,
+                                                           "GPU memory unsafe/cached write");
+            }
             Common::NS2FrameTrace::EmulatorWriteNote note{physical, copy_amount, dev_addr_base};
             std::memcpy(physical, src_buffer, copy_amount);
         } else {
@@ -813,6 +822,8 @@ void MemoryManager::GetSubmappedRangeImpl(GPUVAddr gpu_addr, std::size_t size, b
 }
 
 void MemoryManager::FlushCaching() {
+    const Common::NS2RejectionTrace::SourceScope trace_source{
+        "deferred engine write (inline upload / cached write) flushed"};
     // Flush from the invalidate accumulator
     if (accumulator.InvalidateAll([this](GPUVAddr addr, size_t size) {
         GetSubmappedRangeImpl<false>(addr, size, page_stash2);

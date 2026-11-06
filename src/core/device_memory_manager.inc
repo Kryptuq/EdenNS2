@@ -16,6 +16,7 @@
 #include "common/address_space.h"
 #include "common/address_space.inc"
 #include "common/ns2_frame_trace.h"
+#include "common/ns2_rejection_trace.h"
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/div_ceil.h"
@@ -423,6 +424,7 @@ void DeviceMemoryManager<Traits>::Write(DAddr address, T value) {
     if (!ptr) [[unlikely]] {
         return;
     }
+    Common::NS2RejectionTrace::NoteUnsafeWrite(address, sizeof(T), "device Write");
     Common::NS2FrameTrace::EmulatorWriteNote note{ptr, sizeof(T), address};
     std::memcpy(ptr, &value, sizeof(T));
 }
@@ -529,6 +531,7 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
         [&](const std::size_t copy_amount) {
             src_pointer = static_cast<const u8*>(src_pointer) + copy_amount;
         });
+    const Common::NS2RejectionTrace::SourceScope trace_source{"device WriteBlock (host/HLE)"};
     device_inter->InvalidateRegion(address, size);
 }
 
@@ -578,6 +581,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* src_pointer,
                                                    size_t size) {
+    Common::NS2RejectionTrace::NoteUnsafeWrite(address, size, "device WriteBlockUnsafe");
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {

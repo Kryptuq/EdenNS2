@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "common/ns2_frame_trace.h"
+#include "common/ns2_rejection_trace.h"
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -535,7 +536,12 @@ void Puller::CallMethod(DmaPusher& dma_pusher, const MethodCall& method_call) {
     LOG_TRACE(HW_GPU, "Processing method {:08X} on subchannel {}", method_call.method, method_call.subchannel);
     ASSERT(method_call.subchannel < bound_engines.size());
 
-    if (ExecuteMethodOnEngine(dma_pusher, method_call.method)) {
+    // Diagnostics only: which engine/method a write into a rejected program comes from.
+    const bool on_engine = ExecuteMethodOnEngine(dma_pusher, method_call.method);
+    const Common::NS2RejectionTrace::MethodScope trace_scope{
+        on_engine ? static_cast<u32>(bound_engines[method_call.subchannel]) : 0xffffU,
+        method_call.method, dma_pusher.channel_state.bind_id};
+    if (on_engine) {
         CallEngineMethod(dma_pusher, method_call);
     } else {
         CallPullerMethod(dma_pusher, method_call);
@@ -546,7 +552,11 @@ void Puller::CallMethod(DmaPusher& dma_pusher, const MethodCall& method_call) {
 void Puller::CallMultiMethod(DmaPusher& dma_pusher, u32 method, u32 subchannel, const u32* base_start, u32 amount, u32 methods_pending) {
     LOG_TRACE(HW_GPU, "Processing method {:08X} on subchannel {}", method, subchannel);
     ASSERT(subchannel < bound_engines.size());
-    if (ExecuteMethodOnEngine(dma_pusher, method)) {
+    const bool on_engine = ExecuteMethodOnEngine(dma_pusher, method);
+    const Common::NS2RejectionTrace::MethodScope trace_scope{
+        on_engine ? static_cast<u32>(bound_engines[subchannel]) : 0xffffU, method,
+        dma_pusher.channel_state.bind_id};
+    if (on_engine) {
         CallEngineMultiMethod(dma_pusher, method, subchannel, base_start, amount, methods_pending);
     } else {
         for (u32 i = 0; i < amount; i++) {

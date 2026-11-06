@@ -300,3 +300,32 @@ follows; early link; unlinked and predicated NOINC stay jumps; BRA mode bits), s
 code; the rejection test fails on build 25's shader cache.
 To check in the log: "Native graphics shader rejected" / "Draw skipped" lines in the loading area
 compared with run 2 (5 capture failures + 10 invalid-memory binds).
+
+## Rejection lifecycle trace (yoshi-int-build-28, diagnostics only)
+Build 27 runtime log: title fine, 0 capture failures; 11 programs still rejected because their
+memory was zero, garbage or truncated when bound (216 s, and 10 within 0.6 s at 263 s); the
+gameplay area still flickers. The log cannot show whether build 27's fix B lifted them later, nor
+who wrote them: a lift and a later successful lowering logged nothing.
+Question: when a program is rejected because its memory is not valid, is that memory written
+later, by whom (CPU thread or GPU engine + method), how long after the rejecting bind, does the
+write lift the rejection, and does the next bind lower?
+Added (common/ns2_rejection_trace.h; no change to synchronization, ordering or caching):
+- "Rejection trace: tracking program X, captured range A+S" when a program is rejected.
+- "... program X LIFTED by <writer>: write A+S, T ms after the rejecting bind; N binds skipped
+  meanwhile" when an invalidation drops the rejection. Writer: CPU write (core n) on the CPU thread;
+  "CPU write, invalidation deferred ..." when the page was GPU-modified and the write was gathered
+  later; "deferred engine write ... flushed" for inline uploads/cached writes invalidated at the next
+  FlushCaching; "device WriteBlock (host/HLE)"; "queued CPU-side invalidate request"; plus the GPU
+  engine class, method and channel being executed when the write happens on the GPU side.
+- "... program X written by an unsafe emulator write (<path>)" (once per rejection) for writes that
+  do not notify the shader cache themselves: GPU memory WriteBlockUnsafe/WriteBlockCached, device
+  WriteBlockUnsafe and Write<T> (buffer cache DMA copies, downloads, query results, DMA fills).
+- "... LOWERED OK on the next bind" / "... REJECTED AGAIN on the bind after its lift: <error>".
+- A summary at most every 10 s, only while rejected programs are being bound: how many are still
+  rejected and never written, written only by unsafe paths, or lifted and awaiting a rebuild.
+Coverage (checked in the code): lifts can come from CPU writes on tracked pages (immediate, or
+deferred for GPU-modified pages), safe GPU memory / device writes, inline uploads and cached writes
+(at FlushCaching). Writes that never lift a rejection: buffer cache DMA copies
+(BufferCache::DMACopy writes guest memory with WriteBlockUnsafe), DMA fills, cache downloads,
+query writes; these are the "unsafe" lines above. Not observable at all: Core::Memory
+WriteBlockUnsafe and raw-pointer writes by HLE services into process memory.

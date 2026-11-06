@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "common/assert.h"
+#include "common/ns2_rejection_trace.h"
 #include "common/atomic_ops.h"
 #include "common/common_types.h"
 #include "common/heap_tracker.h"
@@ -831,6 +832,8 @@ struct Memory::Impl {
                 sys_core_guard.unlock();
             }
         };
+        const Common::NS2RejectionTrace::SourceScope trace_source{
+            Common::NS2RejectionTrace::CpuCoreSource(core)};
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             auto& current_area = rasterizer_write_areas[core];
             PAddr subaddress = address >> YUZU_PAGEBITS;
