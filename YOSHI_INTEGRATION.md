@@ -364,3 +364,21 @@ scratch registers", 1 program in the red/yellow area). main renames them to exte
 address map and the lowered-code format, so it needs its own change.
 Tests: video_core/ampere_ports.cpp (the rejected words from the build-28 log: SHFL.DOWN, F2I F16
 nearest, HMMA F16 and F32, default off for other titles, NS2_HMMA decodes).
+
+## yoshi-int-build-30: rejected-program dump (diagnostics only)
+Build 29: the ported SHFL/F2I/HMMA forms are reached (7 of the 12 red/yellow compute programs now
+build), but 5 are still rejected on other instructions. The lowering reports only the first
+unsupported instruction of a program, so the log cannot show what else each program needs.
+For Yoshi (full version and demo, set in ChannelState::Init), every rejected native program is now
+written once to the log folder, `log/ns2_native/<key>-<cs|gfx>-<address>`:
+- `.native.bin`: the captured instructions exactly as given to LowerToMaxwell;
+- `.mapped.bin`: raw memory from the program base (header included) to the end of the capture
+  plus 64 KiB, stopping at the first unmapped page (at most 1 MiB);
+- `.txt`: address, header size, sizes, key, the rejection reason, offset and words.
+At most 256 programs, once per address and key. Written at the two rejection points of
+LowerNativeCode (capture overrun, lowering failure) just before the unchanged error is thrown;
+memory is read with ReadBlockUnsafe (no cache flush). Nothing else changes: same programs are
+rejected, same translation, synchronization and caching. A log line names each dump.
+These files are game data: keep them local, never commit them.
+Test: video_core/ns2_rejected_dump.cpp (the files hold exactly the lowering input, re-lowering
+them gives the same rejection, the mapped dump stops at an unmapped page, one dump per program).

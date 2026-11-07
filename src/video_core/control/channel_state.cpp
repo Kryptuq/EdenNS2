@@ -76,6 +76,8 @@ void ChannelState::Init(Core::System& system, u64 program_id_) {
     // lowered to NS2_HMMA for it by default (EdenNS2 main); other titles keep the opt-in.
     if (program_id == 0x0400245021D2C000ULL || program_id == 0x04007C6028AA8000ULL) {
         Shader::Ampere::NativeTensorByDefault().store(true, std::memory_order_relaxed);
+        // Diagnostic only: keep the bytes of its rejected native programs for offline lowering.
+        Shader::Ampere::NativeRejectDumpByDefault().store(true, std::memory_order_relaxed);
     }
     payload.emplace(system, *memory_manager, *this);
     BindNvkDefaultSubchannels(*payload);

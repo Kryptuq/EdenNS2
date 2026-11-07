@@ -30,6 +30,7 @@ add_executable(tests
     video_core/ampere_returns.cpp
     video_core/ampere_capture.cpp
     video_core/ampere_ports.cpp
+    video_core/ns2_rejected_dump.cpp
     video_core/native_macro_fifo.cpp
     video_core/uniform_stream_reuse.cpp
     video_core/shader_invalidation.cpp

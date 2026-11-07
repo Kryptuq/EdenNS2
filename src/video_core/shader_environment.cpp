@@ -29,11 +29,13 @@
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+#include "shader_recompiler/frontend/ampere/native_options.h"
 #include "shader_recompiler/frontend/ampere/program_override.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
+#include "video_core/ns2_rejected_dump.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
@@ -402,6 +404,30 @@ private:
 
 thread_local NativeCaptureRange last_native_capture{};
 
+// Diagnostic only (NS2): writes a rejected native program's bytes to log/ns2_native/ when enabled
+// for the title. Reads with ReadBlockUnsafe so no cache is flushed; the caller's error is thrown
+// unchanged afterwards.
+void DumpRejectedNativeProgram(Tegra::MemoryManager& gpu_memory, GPUVAddr program_base,
+                               u32 header_size, bool compute,
+                               std::span<const Shader::Ampere::Instruction> native,
+                               std::string_view reason, u32 error_offset) {
+    if (!Shader::Ampere::NativeRejectDumpByDefault().load(std::memory_order_relaxed)) {
+        return;
+    }
+    static RejectedProgramDumper dumper{
+        Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_native"};
+    const auto stem = dumper.Dump(
+        program_base, header_size, compute, native, reason, error_offset,
+        [&gpu_memory](u64 address, void* dest, size_t size) {
+            if (!gpu_memory.IsFullyMappedRange(address, size)) return false;
+            gpu_memory.ReadBlockUnsafe(address, dest, size);
+            return true;
+        });
+    if (!stem.empty()) {
+        LOG_WARNING(HW_GPU, "NS2 rejected native program {:#x} dumped to {}.*", program_base, stem);
+    }
+}
+
 } // Anonymous namespace
 
 void ResetLastNativeCapture() {
@@ -456,6 +482,10 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         last_native_capture.size = native_header_size + native.size() * sizeof(Instruction);
         const auto status = capture.Observe(instruction, index);
         if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            DumpRejectedNativeProgram(*gpu_memory, program_base, native_header_size,
+                                      source_header_size == 0, native,
+                                      "branch outside capture bounds",
+                                      static_cast<u32>(index * sizeof(Instruction)));
             if (const char* dir = std::getenv("EDEN_NX2_SHADER_DUMP")) {
                 const auto path = fmt::format("{}/rejected-{:x}.bin", dir, program_base + native_header_size);
                 if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
@@ -548,6 +578,9 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         }
     }
     if (!lowered) {
+        DumpRejectedNativeProgram(*gpu_memory, program_base, native_header_size,
+                                  source_header_size == 0, native, lowered.error,
+                                  lowered.error_offset);
         const size_t failed = lowered.error_offset / sizeof(Shader::Ampere::Instruction);
         const auto words = failed < native.size() ? native[failed].words : std::array<u32, 4>{};
         throw Shader::RuntimeError(

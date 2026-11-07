@@ -16,4 +16,12 @@ inline std::atomic<bool>& NativeTensorByDefault() {
     return enabled;
 }
 
+/// Diagnostic only: whether the bytes of rejected native programs are written to the log folder
+/// (log/ns2_native/, see video_core/ns2_rejected_dump.h). Set for Yoshi and the Mysterious Book so
+/// its rejected programs can be lowered offline; it never changes what is rejected.
+inline std::atomic<bool>& NativeRejectDumpByDefault() {
+    static std::atomic<bool> enabled{false};
+    return enabled;
+}
+
 } // namespace Shader::Ampere
