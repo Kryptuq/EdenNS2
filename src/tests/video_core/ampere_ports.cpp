@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Instruction forms ported from EdenNS2 main (yoshi-int-build-29). The words are the ones Yoshi's
-// red/yellow area programs were rejected on in yoshi-int-build-28.
+// Instruction forms ported from EdenNS2 main (yoshi-int-build-29 and -31). The words are the ones
+// Yoshi's red/yellow area programs were rejected on (yoshi-int-build-28 and the build-30 dump).
 
 #include <array>
 #include <cstdlib>
@@ -85,6 +85,41 @@ TEST_CASE("Ampere HMMA with F32 results is accepted", "[video_core][ampere]") {
     Shader::Ampere::NativeTensorByDefault() = false;
     REQUIRE(static_cast<bool>(lowered));
     REQUIRE(Emits(lowered, 0xff00'0010'0000'0000ULL, 0xe100'0010'0000'0000ULL));
+}
+
+TEST_CASE("Ampere F2FP.PACK_AB with a uniform B operand", "[video_core][ampere]") {
+    // F2FP.PACK_AB R24, RZ, UR8 from the DLSS reconstruction kernel (0xc3e, bit 91 set).
+    const std::array<Instruction, 2> code{{{{0xff187c3e, 0x00000008, 0x080000ff, 0x002fe400}}, Exit}};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    // F2F.F16.F32 R251 = UR8 (R224): the B half comes from the uniform register's home.
+    REQUIRE(Emits(lowered, ~0ULL, 0x5ca8000000070000ULL | 251 | (u64{1} << 8) | (u64{2} << 10) |
+                                       (u64{224} << 20)));
+    // PRMT/merge into R24 (the BFI that packs both halves).
+    REQUIRE(Emits(lowered, 0xfff8'0000'0000'00ffULL, 0x5c18'0000'0000'0018ULL));
+}
+
+TEST_CASE("Ampere F2FP keeps rejecting bit 91 on the register form", "[video_core][ampere]") {
+    const std::array<Instruction, 2> code{{{{0xff18723e, 0x00000008, 0x080000ff, 0x002fe400}}, Exit}};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(!static_cast<bool>(lowered));
+    REQUIRE(lowered.error == "native float packing modifiers");
+}
+
+TEST_CASE("Ampere SUST.B byte-addressed 32-bit store", "[video_core][ampere]") {
+    // SUST.B.BA.2D B32 [R10], R26, c[0][0x99 * 4] from the DLSS reconstruction kernel.
+    const std::array<Instruction, 2> code{{{{0x0a007b9d, 0x6000991a, 0x0010a900, 0x0001e200}}, Exit}};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.required_texture_buffer == 0);
+    // .BA: X is a byte offset -> R250 = R10 >> 2 (B32 elements), R251 = R11 (Y).
+    REQUIRE(Emits(lowered, ~0ULL, 0x3828000000070000ULL | 250 | (u64{10} << 8) | (u64{2} << 20)));
+    REQUIRE(Emits(lowered, ~0ULL, 0x5c98000000070000ULL | 251 | (u64{11} << 20) | (u64{15} << 39)));
+    // SUST.D.B32 [R250], R26, 2D, descriptor offset 0x99, bound and typed bits.
+    const u64 store = 0xeb20000000070000ULL | 26 | (u64{250} << 8) | (u64{4} << 20) | (u64{3} << 33) |
+                      (u64{0x99} << 36) | (u64{1} << 51) | (u64{1} << 52);
+    REQUIRE(Emits(lowered, ~0ULL, store));
+    REQUIRE(Shader::Maxwell::Decode(store) == Shader::Maxwell::Opcode::SUST);
 }
 
 } // namespace

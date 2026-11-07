@@ -418,9 +418,39 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                  (u64{insn.Bits(63, 1)} << 45));
             break;
         }
-        case 0x23e: case 0xa3e: { // F2FP.PACK_AB / MERGE_C, round-to-nearest
+        case 0xb9d: { // SUST.B (binary/typed store), direct descriptor; memory type at 73-75
+            // (U8..B128, Maxwell SUST.D size order). Bits 76-80 memory order (caching only).
+            const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+            const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+            const u32 dimension = insn.Bits(61, 3), size = insn.Bits(73, 3);
+            const u32 data_regs = size == 6 ? 4U : size == 5 ? 2U : 1U;
+            // Bit 72 (.BA): the X coordinate is a byte offset (CUDA surface addressing).
+            const bool byte_address = insn.Bits(72, 1) != 0;
+            if ((insn.words[2] & ~(0x100U | 0xe00U | 0x1f000U)) != 0x00100000 || size == 7 ||
+                (dimension != 1 && dimension < 3) || dimension > 5 || binding >= 18 || offset > 0x1fff ||
+                insn.Bits(59, 2) || data + data_regs > 253 || (data % data_regs) ||
+                coordinate > (dimension >= 4 ? 252U : 253U))
+                return fail(index, "native binary surface store mode");
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                return fail(index, "native surface descriptor buffer conflict");
+            result.required_texture_buffer = binding;
+            u32 coordinates = coordinate;
+            if (byte_address) {
+                constexpr std::array<u32, 7> element_shift{0, 0, 1, 1, 2, 3, 4};
+                const u32 count = dimension == 1 ? 1U : dimension == 5 ? 3U : 2U;
+                emit(0x3828000000000000ULL | predicate | 250 | (u64{coordinate} << 8) | (u64{element_shift[size]} << 20));
+                for (u32 i = 1; i < count; ++i)
+                    emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{coordinate + i} << 20) | (u64{15} << 39));
+                coordinates = 250;
+            }
+            emit(0xeb20000000000000ULL | predicate | data | (u64{coordinates} << 8) | (u64{size} << 20) |
+                 (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51) | (u64{1} << 52));
+            break;
+        }
+        case 0x23e: case 0xa3e: case 0xc3e: { // F2FP.PACK_AB / MERGE_C (register, constant or uniform B), round-to-nearest
+            // Bit 91 is part of the uniform-register operand encoding of the 0xc3e form.
             if (insn.Bits(62, 2) || insn.Bits(73, 5) || insn.Bits(79, 2) ||
-                insn.Bits(81, 10) || insn.Bits(91, 1)) {
+                insn.Bits(81, 10) || (insn.Bits(91, 1) && opcode != 0xc3e)) {
                 return fail(index, "native float packing modifiers");
             }
             const bool merge = insn.Bits(78, 1);

@@ -30,13 +30,13 @@ TEST_CASE("Rejected native program dump is complete and lowers to the same rejec
     std::filesystem::remove_all(directory);
 
     // A mapped region of 3 pages from base 0x10000; the 4th page is unmapped. Header 0x80 bytes,
-    // then: NOP, F2FP 0xc3e (rejected on this branch, word from yoshi-int-build-29), EXIT.
+    // then: NOP, a corrupt IADD3 (control word 0; rejected, from the yoshi-int-build-30 dump), EXIT.
     constexpr u64 base = 0x10000;
     constexpr u32 header = 0x80;
     std::vector<u8> memory(3 * 0x1000);
     for (size_t i = 0; i < memory.size(); ++i) memory[i] = static_cast<u8>(i * 7 + 1);
     const std::array<Instruction, 3> native{{{{0x00007918, 0, 0, 0}},
-                                             {{0xff187c3e, 0x00000008, 0x080000ff, 0x002fe400}},
+                                             {{0x00038210, 0x00000005, 0x00000000, 0x00000000}},
                                              {{0x0000794d, 0, 0x03800000, 0}}}};
     std::memcpy(memory.data() + header, native.data(), sizeof(native));
     const auto read = [&](u64 address, void* dest, size_t size) {
