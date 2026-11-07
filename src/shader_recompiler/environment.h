@@ -7,12 +7,14 @@
 #pragma once
 
 #include <array>
+#include <span>
 #include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/shader_info.h"
 #include "shader_recompiler/stage.h"
+#include "shader_recompiler/frontend/ir/reg.h"
 #include "shader_recompiler/frontend/ir/value.h"
 
 namespace Shader::IR {
@@ -80,6 +82,12 @@ public:
     /// A Switch 2 native program lowered to Maxwell instructions. Its storage buffer pointers are
     /// raw 8-byte arguments in constant buffers, without the NVN descriptor layout.
     [[nodiscard]] virtual bool IsNativeProgram() const { return false; }
+
+    /// Register redirections for the instruction at `address` (lowered native programs).
+    [[nodiscard]] virtual std::span<const IR::RegisterRemap> RegisterRemaps(u32 address) const {
+        (void)address;
+        return {};
+    }
 
     /// Native programs: whether the 8-byte constant at (index, offset) is a mapped GPU address.
     /// Native argument tables mix pointers with scalars (sizes, strides).

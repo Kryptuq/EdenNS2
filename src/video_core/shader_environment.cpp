@@ -180,6 +180,11 @@ bool GenericEnvironment::IsNativeProgram() const {
     return native_source_size != 0 || Shader::Ampere::HasNativeAddressMap(code);
 }
 
+std::span<const Shader::IR::RegisterRemap> GenericEnvironment::RegisterRemaps(u32 address) const {
+    const auto it = register_remaps.find(address);
+    return it == register_remaps.end() ? std::span<const Shader::IR::RegisterRemap>{} : it->second;
+}
+
 bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     const u64 key = MakeCbufKey(index, offset);
     if (const auto it = storage_pointer_types.find(key); it != storage_pointer_types.end()) {
@@ -451,6 +456,7 @@ void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativ
     }
     native_source_size = lowered->source_size;
     code = lowered->code;
+    register_remaps = Shader::Ampere::NativeRegisterRemaps(code);
     cached_lowest = 0;
     cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
     lowered_native = std::move(lowered);
@@ -600,10 +606,23 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         }
         lowered_code.push_back(instruction);
     }
-    // Keep the original padding ABI, then retain the native address map as
-    // unreachable data. Existing disk-cache serialization carries it with code.
+    // Keep the original padding ABI, then retain the register redirections (EdenNS2 main
+    // register remap) and the native address map as unreachable data. Existing disk-cache
+    // serialization carries them with code.
     lowered_code.push_back(0);
+    std::vector<std::pair<u32, Shader::IR::RegisterRemap>> remaps;
+    for (const auto& range : lowered.register_remaps) {
+        for (u32 index = range.first; index < range.last; ++index) {
+            remaps.emplace_back(0x50U + index * 8 + ((index + 1) / 3) * 8,
+                                Shader::IR::RegisterRemap{range.from, range.to});
+        }
+    }
+    Shader::Ampere::AppendNativeRegisterRemaps(lowered_code, remaps);
     Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
+    if (!lowered.register_remaps.empty()) {
+        LOG_INFO(Shader, "NS2 native shader at {:#x}: {} renamed register ranges", program_base,
+                 lowered.register_remaps.size());
+    }
     LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
               program_base, result->source_size, lowered.instructions.size());
     return result;
@@ -849,6 +868,7 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         .read(reinterpret_cast<char*>(&stage), sizeof(stage));
     code.resize(Common::DivCeil(code_size, sizeof(u64)));
     file.read(reinterpret_cast<char*>(code.data()), code_size);
+    register_remaps = Shader::Ampere::NativeRegisterRemaps(code);
     for (size_t i = 0; i < num_texture_types; ++i) {
         u32 key;
         Shader::TextureType type;
@@ -912,6 +932,11 @@ u32 FileEnvironment::TranslateProgramAddress(u32 address) const {
 
 bool FileEnvironment::IsNativeProgram() const {
     return Shader::Ampere::HasNativeAddressMap(code);
+}
+
+std::span<const Shader::IR::RegisterRemap> FileEnvironment::RegisterRemaps(u32 address) const {
+    const auto it = register_remaps.find(address);
+    return it == register_remaps.end() ? std::span<const Shader::IR::RegisterRemap>{} : it->second;
 }
 
 bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {

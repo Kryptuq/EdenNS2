@@ -14,6 +14,7 @@
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <unordered_map>
 #include "common/container/unordered_map.h"
 #include <vector>
 
@@ -74,6 +75,8 @@ public:
 
     [[nodiscard]] bool IsNativeProgram() const override;
 
+    [[nodiscard]] std::span<const Shader::IR::RegisterRemap> RegisterRemaps(u32 address) const override;
+
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 
     [[nodiscard]] std::optional<u64> Analyze();
@@ -123,6 +126,8 @@ protected:
     GPUVAddr program_base{};
 
     std::vector<u64> code;
+    /// Lowered native programs: register redirections per instruction address (stored in code).
+    std::unordered_map<u32, std::vector<Shader::IR::RegisterRemap>> register_remaps;
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;
@@ -223,6 +228,8 @@ public:
 
     [[nodiscard]] bool IsNativeProgram() const override;
 
+    [[nodiscard]] std::span<const Shader::IR::RegisterRemap> RegisterRemaps(u32 address) const override;
+
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
@@ -254,6 +261,7 @@ public:
 
 private:
     std::vector<u64> code;
+    std::unordered_map<u32, std::vector<Shader::IR::RegisterRemap>> register_remaps;
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u64, u32> cbuf_values;

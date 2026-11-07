@@ -9,6 +9,8 @@
 #include <cstring>
 #include <type_traits>
 
+#include <span>
+
 #include "shader_recompiler/frontend/ir/attribute.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"
@@ -23,6 +25,8 @@ public:
         : block{&block_}, insertion_point{insertion_point_} {}
 
     Block* block;
+    /// Register redirections applied by GetReg/SetReg (native program lowering).
+    std::span<const RegisterRemap> register_remap;
 
     [[nodiscard]] U1 Imm1(bool value) const;
     [[nodiscard]] U8 Imm8(u8 value) const;

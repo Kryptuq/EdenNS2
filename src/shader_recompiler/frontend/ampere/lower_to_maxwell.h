@@ -41,9 +41,24 @@ struct LoweredProgram {
     u32 high_uniform_registers{};
     u32 error_offset{};
     std::string_view error;
+    /// Lowered instructions [first, last) access guest register `from` as extended register
+    /// `to` (IR::ExtendedReg): guest registers in the range the lowering reserves for itself
+    /// are renamed to free low registers for the instruction and redirected (EdenNS2 main).
+    struct RegisterRemapRange {
+        u32 first;
+        u32 last;
+        u8 from;
+        u8 to;
+    };
+    std::vector<RegisterRemapRange> register_remaps;
 
     explicit operator bool() const { return error.empty(); }
 };
+
+/// Extended register holding guest register `reg` (192-254) while it is renamed.
+constexpr u32 ExtendedIndexOfGuestRegister(u32 reg) {
+    return reg - 192;
+}
 
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
@@ -82,12 +97,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             result.instructions[relocation.output_index] |= (static_cast<u64>(relative) & 0xffffff) << 20;
         }
         result.source_size = (index + 1) * sizeof(Instruction);
+        for (auto& range : result.register_remaps) {
+            if (range.last == ~0U) range.last = static_cast<u32>(result.instructions.size());
+        }
         return result;
     };
     if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
     for (u32 index = 0; index < code.size(); ++index) {
         auto insn = code[index];
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
+        for (auto& range : result.register_remaps) {
+            if (range.last == ~0U) range.last = static_cast<u32>(result.instructions.size());
+        }
         u32 opcode = insn.Bits(0, 12);
         if (insn.Bits(12, 4) == 15) continue; // @!PT: never executes (compiler padding)
         u32 f16_dest = 255, f16_second = 255, f16_components = 0;
@@ -109,12 +130,62 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (insn.Bits(16, 8) == *active_link || (pair && insn.Bits(16, 8) + 1 == *active_link)))
                 return fail(index, "native callee overwrites link register");
         }
-        // Scratch values and emulated uniform state occupy reserved high GPRs.
-        // Reject native accesses that could alias that state.
-        for (u32 bit : {16U, 24U, 32U, 64U}) {
-            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66) continue;
-            const u32 reg = insn.Bits(bit, 8);
-            if (reg >= (uses_uniform_bank ? high_uniform_base : 246U) && reg < 255) return fail(index, "native program uses lowering scratch registers");
+        // Scratch values and emulated uniform state occupy reserved high GPRs (R246-R254, and
+        // R216-R245 plus UR28+ below them when the uniform bank is used). Guest registers in
+        // that range are renamed, for this instruction only, to low registers it does not use
+        // (keeping their position within a 4-register group), and the translator redirects
+        // those to extended registers holding the guest values (EdenNS2 main's register remap).
+        // The threshold is the one that used to reject such programs, so programs that lowered
+        // before are unchanged.
+        {
+            const u32 reserved_start = uses_uniform_bank ? high_uniform_base : 246U;
+            std::array<u32, 4> fields{};
+            u32 field_count = 0;
+            for (u32 bit : {16U, 24U, 32U, 64U}) {
+                if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66) continue;
+                fields[field_count++] = bit;
+            }
+            std::array<bool, 256> busy{};
+            bool needs_rename = false;
+            for (u32 i = 0; i < field_count; ++i) {
+                const u32 reg = insn.Bits(fields[i], 8);
+                if (reg >= reserved_start && reg < 255) {
+                    // Extended registers hold guest R192-R254 only.
+                    if (reg < 192) return fail(index, "native program uses lowering scratch registers");
+                    needs_rename = true;
+                } else if (reg < reserved_start) {
+                    for (u32 k = 0; k < 4 && reg + k < 256; ++k) busy[reg + k] = true;
+                }
+            }
+            if (needs_rename) {
+                std::array<std::pair<u32, u32>, 4> renamed{};
+                u32 renamed_count = 0;
+                for (u32 i = 0; i < field_count; ++i) {
+                    const u32 bit = fields[i];
+                    const u32 reg = insn.Bits(bit, 8);
+                    if (reg < reserved_start || reg >= 255) continue;
+                    u32 placeholder = ~0U;
+                    for (u32 r = 0; r < renamed_count; ++r)
+                        if (renamed[r].first == reg) placeholder = renamed[r].second;
+                    if (placeholder == ~0U) {
+                        for (u32 p = reg % 4; p + 4 <= reserved_start; p += 4) {
+                            if (!busy[p] && !busy[p + 1] && !busy[p + 2] && !busy[p + 3]) {
+                                placeholder = p;
+                                break;
+                            }
+                        }
+                        if (placeholder == ~0U) return fail(index, "native program uses lowering scratch registers");
+                        for (u32 k = 0; k < 4; ++k) busy[placeholder + k] = true;
+                        renamed[renamed_count++] = {reg, placeholder};
+                        for (u32 k = 0; k < 4 && reg + k < 255; ++k) {
+                            result.register_remaps.push_back({static_cast<u32>(result.instructions.size()), ~0U,
+                                                              static_cast<u8>(placeholder + k),
+                                                              static_cast<u8>(ExtendedIndexOfGuestRegister(reg + k))});
+                        }
+                    }
+                    insn.words[bit / 32] = (insn.words[bit / 32] & ~(0xffU << (bit % 32))) | (placeholder << (bit % 32));
+                }
+            }
         }
         // TLD/TLD4 .F16 (bit 79): the components come packed in pairs, (0, 1) in Rd and (2, 3) in
         // the second destination. Lowered as the F32 form into R248/R249 and R246/R247, then packed.
