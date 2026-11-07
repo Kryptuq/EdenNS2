@@ -41,6 +41,9 @@ struct LoweredNativeCode {
     /// Constant buffer holding the texture handles if the program requires one, otherwise ~0U
     /// (the engine's register value is used).
     u32 texture_bound = ~0U;
+    /// NativeProgramKey of the native instructions (diagnostics: identifies the program across
+    /// emulators whose lowered code differs, e.g. for the frame capture).
+    u64 native_key{};
 };
 
 /// The guest memory the calling thread's last native capture read: the program's header and every

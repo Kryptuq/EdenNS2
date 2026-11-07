@@ -727,10 +727,14 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     };
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& pipeline{pair->second};
-    if (!is_new) {
-        return pipeline.get();
+    if (is_new) {
+        pipeline = CreateComputePipeline(key, shader);
     }
-    pipeline = CreateComputePipeline(key, shader);
+    // NS2 diagnostics: which native program the pipeline runs (frame capture). The ShaderInfo is
+    // made at runtime for every program address, also when the pipeline came from the disk cache.
+    if (pipeline && shader->lowered_native) {
+        pipeline->SetNS2NativeKey(shader->lowered_native->native_key);
+    }
     return pipeline.get();
 }
 

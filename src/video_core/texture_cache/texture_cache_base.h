@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <atomic>
 #include <deque>
 #include <limits>
@@ -224,6 +225,14 @@ public:
 
     /// Return a reference to the given image view id
     [[nodiscard]] ImageView& GetImageView(ImageViewId id) noexcept;
+
+    /// Diagnostics: GPU address, size, layers and format of the image behind a view.
+    [[nodiscard]] std::string DescribeImageView(ImageViewId id);
+
+    /// NS2 diagnostics: downloads mip level 0 of the image behind a view (host data, all layers)
+    /// and writes it with a small header to `path`. Waits for the host GPU. Returns false when
+    /// there is no image.
+    bool NS2CaptureImageView(ImageViewId id, const std::filesystem::path& path);
 
     /// Get the imageview from the graphics descriptor table in the specified index
     [[nodiscard]] ImageView& GetImageView(u32 index) noexcept;

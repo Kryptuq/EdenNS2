@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <atomic>
 #include <vector>
 
@@ -24,7 +27,9 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/scm_rev.h"
 #include "common/settings.h"
 
 namespace Vulkan {
@@ -153,6 +158,30 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     }
 }
 
+namespace {
+// NS2 diagnostics: Yoshi's DLSS reconstruction kernel (main's pipeline a7e217052ec1940b) and the
+// run main's capture defaults to.
+constexpr u64 NS2CaptureNativeKey = 0x85237f4449a5ebe7ULL;
+constexpr u32 NS2CaptureRun = 300;
+
+std::filesystem::path NS2CaptureDirectory() {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "ns2_capture_yoshi-integration";
+}
+} // Anonymous namespace
+
+void ComputePipeline::NS2CaptureAfterDispatch(TextureCache& texture_cache) {
+    if (ns2_capture_after.empty()) {
+        return;
+    }
+    u32 saved = 0;
+    for (const auto& [id, file_name] : ns2_capture_after) {
+        saved += texture_cache.NS2CaptureImageView(id, NS2CaptureDirectory() / file_name) ? 1 : 0;
+    }
+    LOG_WARNING(Render_Vulkan, "NS2 capture: native program {:016x}: saved {} written images after the dispatch",
+                ns2_native_key, saved);
+    ns2_capture_after.clear();
+}
+
 bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                 Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
                                 BufferCache& buffer_cache, TextureCache& texture_cache) {
@@ -237,6 +266,57 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+
+    // NS2 diagnostics (port of EdenNS2 main's b111 frame capture): once per session, the images
+    // Yoshi's DLSS reconstruction kernel reads and writes, before (and, for written images, after)
+    // its 300th run - the same program and run main captures by default (main identifies it by
+    // its pipeline hash a7e217052ec1940b; the lowered code differs here, so the native program key
+    // is used). Only reads images: rendering is unchanged. Files go to
+    // <log dir>/ns2_capture_yoshi-integration/ (main writes <log dir>/ns2_capture/).
+    if (ns2_native_key == NS2CaptureNativeKey && ++ns2_capture_runs == NS2CaptureRun) {
+        static std::atomic<bool> captured{false};
+        if (!captured.exchange(true)) {
+            std::error_code ec;
+            const auto dir = NS2CaptureDirectory();
+            std::filesystem::create_directories(dir, ec);
+            {
+                std::ofstream info_file(dir / "capture_info.txt");
+                info_file << fmt::format(
+                    "emulator=EdenNS2 yoshi-integration\nbuild={} {}\nnative_key={:016x}\n"
+                    "pipeline_hash={:016x}\nrun={}\nmain_reference=log/ns2_capture/a7e217052ec1940b_run300_*\n",
+                    Common::g_scm_branch, Common::g_scm_desc, ns2_native_key, shader_hash,
+                    NS2CaptureRun);
+            }
+            size_t view_index = 0;
+            u32 saved = 0;
+            const auto capture = [&](size_t count, const char* kind, bool written) {
+                for (size_t i = 0; i < count && view_index < views.size(); ++i, ++view_index) {
+                    const auto id = views[view_index].id;
+                    const std::string name =
+                        fmt::format("yoshi-integration_{:016x}_run{}_{}{}_{}", ns2_native_key, NS2CaptureRun,
+                                    kind, view_index, texture_cache.DescribeImageView(id));
+                    std::string file_name;
+                    for (const char ch : name) {
+                        file_name += (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_') ? ch : '-';
+                    }
+                    if (texture_cache.NS2CaptureImageView(id, dir / (file_name + "_before.ns2img"))) {
+                        ++saved;
+                    }
+                    if (written) {
+                        ns2_capture_after.emplace_back(id, file_name + "_after.ns2img");
+                    }
+                }
+            };
+            for (const auto& desc : info.texture_buffer_descriptors) capture(desc.count, "tb", false);
+            for (const auto& desc : info.image_buffer_descriptors) capture(desc.count, "ib", desc.is_written);
+            for (const auto& desc : info.texture_descriptors) capture(desc.count, "t", false);
+            for (const auto& desc : info.image_descriptors) capture(desc.count, "i", desc.is_written);
+            LOG_WARNING(Render_Vulkan,
+                        "NS2 capture: native program {:016x} (pipeline {:016x}) run {}: saved {} images "
+                        "before the dispatch to {}",
+                        ns2_native_key, shader_hash, NS2CaptureRun, saved, dir.string());
+        }
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <fstream>
 #include <algorithm>
 #include <numeric>
 #include <cstdlib>
@@ -547,6 +548,61 @@ const typename P::ImageView& TextureCache<P>::GetImageView(ImageViewId id) const
 template <class P>
 typename P::ImageView& TextureCache<P>::GetImageView(ImageViewId id) noexcept {
     return slot_image_views[id];
+}
+
+template <class P>
+std::string TextureCache<P>::DescribeImageView(ImageViewId id) {
+    if (!id) {
+        return "null";
+    }
+    const auto& view = slot_image_views[id];
+    if (!view.image_id) {
+        return fmt::format("view(no image) fmt={}", static_cast<u32>(view.format));
+    }
+    const auto& image = slot_images[view.image_id];
+    return fmt::format("{:#x}:{}x{}x{} layers={} type={} fmt={}", image.gpu_addr, image.info.size.width,
+                       image.info.size.height, image.info.size.depth, image.info.resources.layers,
+                       static_cast<u32>(image.info.type), static_cast<u32>(image.info.format));
+}
+
+template <class P>
+bool TextureCache<P>::NS2CaptureImageView(ImageViewId id, const std::filesystem::path& path) {
+    if (!id) {
+        return false;
+    }
+    const auto& view = slot_image_views[id];
+    if (!view.image_id) {
+        return false;
+    }
+    Image& image = slot_images[view.image_id];
+    if (image.info.type == ImageType::Buffer || image.unswizzled_size_bytes == 0) {
+        return false;
+    }
+    auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
+    const auto copies = FullDownloadCopies(image.info);
+    image.DownloadMemory(map, copies);
+    runtime.Finish();
+    const BufferImageCopy& level0 = copies.front();
+    // Header: magic, version, width, height, depth, layers, Eden pixel format, row length,
+    // image height (texels), byte size of the data that follows (level 0, all layers).
+    const std::array<u32, 10> header{
+        0x474d4932, // "2IMG"
+        1,
+        level0.image_extent.width,
+        level0.image_extent.height,
+        level0.image_extent.depth,
+        static_cast<u32>(level0.image_subresource.num_layers),
+        static_cast<u32>(image.info.format),
+        level0.buffer_row_length,
+        level0.buffer_image_height,
+        static_cast<u32>(level0.buffer_size),
+    };
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(header.data()), sizeof(header));
+    const size_t bytes = std::min<size_t>(level0.buffer_size, map.mapped_span.size() - level0.buffer_offset);
+    file.write(reinterpret_cast<const char*>(map.mapped_span.data() + level0.buffer_offset),
+               static_cast<std::streamsize>(bytes));
+    return static_cast<bool>(file);
 }
 
 template <class P>
