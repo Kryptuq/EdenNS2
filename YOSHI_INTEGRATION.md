@@ -382,3 +382,22 @@ rejected, same translation, synchronization and caching. A log line names each d
 These files are game data: keep them local, never commit them.
 Test: video_core/ns2_rejected_dump.cpp (the files hold exactly the lowering input, re-lowering
 them gives the same rejection, the mapped dump stops at an unmapped page, one dump per program).
+
+## yoshi-int-build-31: remaining red/yellow translator gaps (C1-C4)
+The yoshi-int-build-30 dump showed every remaining gap of the five rejected red/yellow compute
+programs (offline, by replacing each failing instruction and lowering again); EdenNS2 main lowers
+all five (its b123 log has the same program keys and sizes). Four separate commits:
+- C1 F2FP.PACK_AB with a uniform B (0xc3e) and SUST.B (0xb9d), ported from main. Needed by the DLSS
+  reconstruction kernel 85237f4449a5ebe7.
+- C2 main b108: raw surface accesses wider than a texel are split into texel-sized raw accesses.
+  SUST.B makes this store reachable (32-bit byte-addressed stores into an R16_FLOAT image; device
+  lost on main before b108). Ported unchanged, test = main's [ns2-surface] test.
+- C3 UIADD3 carry forms with uniform-predicate carries (UP2 carry out, three-source add with
+  UP1/UP0 carries, UIADD3.X with carries in), in this branch's R239 model; tested by executing the
+  lowered code on random inputs.
+- C4 main's register remap: guest registers in the lowering's reserved range are renamed per
+  instruction and redirected to 64 extended IR registers (programs using up to R250). Programs that
+  lowered before are byte-identical (same threshold), so their disk cache entries stay valid.
+Offline result: all five programs lower and translate to valid SPIR-V (spirv-val, Vulkan 1.3).
+Not runtime-tested yet. The other ten rejected programs in the dump are partly written shader
+memory (main never sees them); that is a separate open problem, as is the gameplay flicker.
