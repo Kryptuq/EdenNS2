@@ -2902,9 +2902,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 const bool carry_in = insn.Bits(74, 1) != 0;
                 const u32 carry_out = insn.Bits(81, 3);
                 const u32 a = insn.Bits(24, 8);
+                // UPn is R239 bit 6-n for every n, so any UP0-UP6 works here. UP2 and up (Yoshi's
+                // 64-bit address adds) are accepted only without a uniform guard, whose swapped-in
+                // predicate is also saved in R253.
                 if ((carry_in && carry_out != 7) || (opcode == 0x210 && (insn.words[1] & ~0xffU)) ||
-                    (rewritten_uniform && carry_out != 7 && carry_out > 1) ||
-                    (rewritten_uniform && carry_in && insn.Bits(87, 3) > 1 && insn.Bits(87, 3) != 7))
+                    (rewritten_uniform && carry_out != 7 && carry_out > 1 && guarded_uniform) ||
+                    (rewritten_uniform && carry_in && insn.Bits(87, 3) > 1 && insn.Bits(87, 3) != 7 &&
+                     guarded_uniform))
                     return fail(index, "native integer carry mode");
                 if (opcode == 0x810) {
                     emit(0x1c00000000000000ULL | predicate | 250 | (u64{a} << 8) | (u64{insn.words[1]} << 20));
@@ -2950,7 +2954,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (insn.Bits(64, 8) != 255 || insn.Bits(84, 3) != 7 || negate_a || negate_b || negate_c ||
                  (extended && insn.Bits(77, 4) != 15))) {
                 const u32 first_output = insn.Bits(81, 3), second_output = insn.Bits(84, 3);
-                if (rewritten_uniform || guarded_uniform || insn.Bits(73, 1) || insn.Bits(76, 1) ||
+                // UIADD3 (rewritten_uniform): carry-ins are read from R239 and carry-outs merged
+                // into it; only the unguarded form without negations (Yoshi's 64-bit adds).
+                if (guarded_uniform || (rewritten_uniform && (negate_a || negate_b || negate_c)) ||
+                    insn.Bits(73, 1) || insn.Bits(76, 1) ||
                     (first_output != 7 && first_output == second_output) ||
                     (!extended && (insn.Bits(77, 4) != 15 || insn.Bits(87, 4) != 15)) ||
                     (opcode == 0x210 && (insn.words[1] & ~0x800000ffU)) || (opcode == 0xa10 && insn.Bits(62, 1)) ||
@@ -2974,6 +2981,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 if (extended) {
                     for (const u32 carry : {insn.Bits(87, 4), insn.Bits(77, 4)}) {
                         if (carry == 15) continue;
+                        if (rewritten_uniform && (carry & 7) != 7) {
+                            // UPn as 0/1: BFE.U32 R250 = R239 bit 6-n; a negated carry flips it.
+                            emit(0x3800000000000000ULL | predicate | 250 | (u64{239} << 8) |
+                                 (u64{(6 - (carry & 7)) | (1U << 8)} << 20));
+                            if (carry >> 3)
+                                emit(0x0400000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{1} << 20) |
+                                     (u64{2} << 53));
+                            accumulate(250);
+                            continue;
+                        }
                         mov_imm(250, 1);
                         if (carry != 7)
                             emit(0x5ca0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
@@ -2985,6 +3002,26 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     accumulate(250);
                 }
                 if (dest != 255) emit(base(0x5c98000000000000ULL) | (u64{253} << 20) | (u64{15} << 39));
+                if (rewritten_uniform) {
+                    // UPn outputs: set P(6-n) from the carry count, merge into R239 bit 6-n, and
+                    // restore the guest predicates (saved in R253, free once the sum is moved).
+                    u32 mask = 0;
+                    for (const u32 target : {first_output, second_output})
+                        if (target != 7) mask |= 1U << (6 - target);
+                    if (mask) {
+                        emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
+                        for (const u32 output : {0U, 1U}) {
+                            const u32 target = output ? second_output : first_output;
+                            if (target == 7) continue;
+                            mov_imm(250, output + 1);
+                            emit(0x5b60000000000000ULL | predicate | 7 | (u64{6 - target} << 3) | (u64{254} << 8) |
+                                 (u64{250} << 20) | (u64{7} << 39) | (u64{6} << 49));
+                        }
+                        emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
+                        emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
+                    }
+                    break;
+                }
                 // An output that is also the guard predicate is written last.
                 const bool guard_first = (native_predicate & 7) != 7 && first_output == (native_predicate & 7);
                 for (const u32 output : {guard_first ? 1U : 0U, guard_first ? 0U : 1U}) {
