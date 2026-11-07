@@ -29,6 +29,7 @@ add_executable(tests
     video_core/vertex_repack.cpp
     video_core/ampere_returns.cpp
     video_core/ampere_capture.cpp
+    video_core/ampere_ldsm.cpp
     video_core/ampere_ports.cpp
     video_core/ampere_register_remap.cpp
     video_core/ampere_uniform_carry.cpp
