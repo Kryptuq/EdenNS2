@@ -1153,6 +1153,198 @@ void PatchTexelFetch(IR::Block& block, IR::Inst& inst, TexturePixelFormat pixel_
                               ir.FPMul(ir.ConvertSToF(32, 32, ir.BitCast<IR::U32>(w)), max_value));
     inst.ReplaceUsesWith(converted);
 }
+
+// Bytes per texel of the uncompressed formats raw (typed) surface accesses can target; 0 when
+// unknown or block compressed.
+u32 TexelBytes(TexturePixelFormat format) {
+    switch (format) {
+    case TexturePixelFormat::R8_UNORM:
+    case TexturePixelFormat::R8_SNORM:
+    case TexturePixelFormat::R8_SINT:
+    case TexturePixelFormat::R8_UINT:
+    case TexturePixelFormat::G4R4_UNORM:
+    case TexturePixelFormat::S8_UINT:
+        return 1;
+    case TexturePixelFormat::R5G6B5_UNORM:
+    case TexturePixelFormat::B5G6R5_UNORM:
+    case TexturePixelFormat::A1R5G5B5_UNORM:
+    case TexturePixelFormat::A1B5G5R5_UNORM:
+    case TexturePixelFormat::A5B5G5R1_UNORM:
+    case TexturePixelFormat::A4B4G4R4_UNORM:
+    case TexturePixelFormat::R16_FLOAT:
+    case TexturePixelFormat::R16_UNORM:
+    case TexturePixelFormat::R16_SNORM:
+    case TexturePixelFormat::R16_UINT:
+    case TexturePixelFormat::R16_SINT:
+    case TexturePixelFormat::R8G8_UNORM:
+    case TexturePixelFormat::R8G8_SNORM:
+    case TexturePixelFormat::R8G8_SINT:
+    case TexturePixelFormat::R8G8_UINT:
+    case TexturePixelFormat::D16_UNORM:
+        return 2;
+    case TexturePixelFormat::A8B8G8R8_UNORM:
+    case TexturePixelFormat::A8B8G8R8_SNORM:
+    case TexturePixelFormat::A8B8G8R8_SINT:
+    case TexturePixelFormat::A8B8G8R8_UINT:
+    case TexturePixelFormat::A8B8G8R8_SRGB:
+    case TexturePixelFormat::A2B10G10R10_UNORM:
+    case TexturePixelFormat::A2B10G10R10_UINT:
+    case TexturePixelFormat::A2R10G10B10_UNORM:
+    case TexturePixelFormat::B10G11R11_FLOAT:
+    case TexturePixelFormat::B8G8R8A8_UNORM:
+    case TexturePixelFormat::B8G8R8A8_SRGB:
+    case TexturePixelFormat::E5B9G9R9_FLOAT:
+    case TexturePixelFormat::R32_FLOAT:
+    case TexturePixelFormat::R32_UINT:
+    case TexturePixelFormat::R32_SINT:
+    case TexturePixelFormat::R16G16_UNORM:
+    case TexturePixelFormat::R16G16_FLOAT:
+    case TexturePixelFormat::R16G16_UINT:
+    case TexturePixelFormat::R16G16_SINT:
+    case TexturePixelFormat::R16G16_SNORM:
+    case TexturePixelFormat::D32_FLOAT:
+    case TexturePixelFormat::X8_D24_UNORM:
+    case TexturePixelFormat::D24_UNORM_S8_UINT:
+    case TexturePixelFormat::S8_UINT_D24_UNORM:
+        return 4;
+    case TexturePixelFormat::R16G16B16A16_FLOAT:
+    case TexturePixelFormat::R16G16B16A16_UNORM:
+    case TexturePixelFormat::R16G16B16A16_SNORM:
+    case TexturePixelFormat::R16G16B16A16_SINT:
+    case TexturePixelFormat::R16G16B16A16_UINT:
+    case TexturePixelFormat::R16G16B16X16_FLOAT:
+    case TexturePixelFormat::R32G32_FLOAT:
+    case TexturePixelFormat::R32G32_SINT:
+    case TexturePixelFormat::R32G32_UINT:
+        return 8;
+    case TexturePixelFormat::R32G32B32A32_UINT:
+    case TexturePixelFormat::R32G32B32A32_FLOAT:
+    case TexturePixelFormat::R32G32B32A32_SINT:
+        return 16;
+    default:
+        return 0;
+    }
+}
+
+u32 ImageFormatBytes(ImageFormat format) {
+    switch (format) {
+    case ImageFormat::R8_UINT:
+    case ImageFormat::R8_SINT:
+        return 1;
+    case ImageFormat::R16_UINT:
+    case ImageFormat::R16_SINT:
+        return 2;
+    case ImageFormat::R32_UINT:
+        return 4;
+    case ImageFormat::R32G32_UINT:
+        return 8;
+    case ImageFormat::R32G32B32A32_UINT:
+        return 16;
+    default:
+        return 0;
+    }
+}
+
+ImageFormat RawImageFormat(u32 bytes) {
+    switch (bytes) {
+    case 1:
+        return ImageFormat::R8_UINT;
+    case 2:
+        return ImageFormat::R16_UINT;
+    case 4:
+        return ImageFormat::R32_UINT;
+    case 8:
+        return ImageFormat::R32G32_UINT;
+    default:
+        return ImageFormat::R32G32B32A32_UINT;
+    }
+}
+
+// A raw (SUST.D/SULD.D) surface access of more bytes than one texel of the bound image covers
+// several consecutive texels on the hardware: the X coordinate counts access-sized elements and
+// the data is laid out little-endian across the texels. A view in the access format would have
+// a different texel size than the image (invalid in Vulkan; the GPU then addresses past the
+// image). Split the access into texel-sized accesses of a same-sized raw format instead.
+// `inst` is already the indexed ImageRead/ImageWrite with its final flags and index.
+void SplitWideRawImageAccess(IR::Block& block, IR::Inst& inst, u32 access_bytes, u32 texel_bytes) {
+    const u32 parts{access_bytes / texel_bytes};
+    const auto flags{inst.Flags<IR::TextureInstInfo>()};
+    const IR::Value index{inst.Arg(0)};
+    const IR::Value coords{inst.Arg(1)};
+    const bool is_write{inst.GetOpcode() == IR::Opcode::ImageWrite};
+    const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
+    IR::IREmitter ir{block, it};
+    const bool scalar_coords{coords.IsImmediate() || coords.Type() == IR::Type::U32};
+    const u32 coord_count{scalar_coords ? 1U
+                          : coords.Type() == IR::Type::U32x2 ? 2U
+                          : coords.Type() == IR::Type::U32x3 ? 3U
+                                                             : 4U};
+    const IR::U32 x{scalar_coords ? IR::U32{coords} : IR::U32{ir.CompositeExtract(coords, 0)}};
+    const IR::U32 base_x{ir.IMul(x, ir.Imm32(parts))};
+    const auto part_coords{[&](u32 part) -> IR::Value {
+        const IR::U32 part_x{part == 0 ? base_x : IR::U32{ir.IAdd(base_x, ir.Imm32(part))}};
+        if (scalar_coords) {
+            return part_x;
+        }
+        std::array<IR::Value, 4> elements{part_x};
+        for (u32 i = 1; i < coord_count; ++i) {
+            elements[i] = ir.CompositeExtract(coords, i);
+        }
+        switch (coord_count) {
+        case 2:
+            return ir.CompositeConstruct(elements[0], elements[1]);
+        case 3:
+            return ir.CompositeConstruct(elements[0], elements[1], elements[2]);
+        default:
+            return ir.CompositeConstruct(elements[0], elements[1], elements[2], elements[3]);
+        }
+    }};
+    const IR::U32 zero{ir.Imm32(0)};
+    if (is_write) {
+        const IR::Value color{inst.Arg(2)};
+        std::array<IR::U32, 4> words;
+        for (u32 i = 0; i < 4; ++i) {
+            words[i] = IR::U32{ir.CompositeExtract(color, i)};
+        }
+        for (u32 part = 0; part < parts; ++part) {
+            const u32 byte{part * texel_bytes};
+            std::array<IR::U32, 4> data{zero, zero, zero, zero};
+            if (texel_bytes >= 4) {
+                for (u32 w = 0; w < texel_bytes / 4; ++w) {
+                    data[w] = words[byte / 4 + w];
+                }
+            } else {
+                data[0] = ir.BitFieldExtract(words[byte / 4], ir.Imm32((byte % 4) * 8),
+                                             ir.Imm32(texel_bytes * 8));
+            }
+            const IR::Value part_color{ir.CompositeConstruct(data[0], data[1], data[2], data[3])};
+            block.PrependNewInst(it, IR::Opcode::ImageWrite, {index, part_coords(part), part_color},
+                                 flags.raw);
+        }
+        inst.Invalidate();
+        return;
+    }
+    std::array<IR::U32, 4> result{zero, zero, zero, zero};
+    for (u32 part = 0; part < parts; ++part) {
+        const u32 byte{part * texel_bytes};
+        const auto read{block.PrependNewInst(it, IR::Opcode::ImageRead, {index, part_coords(part)},
+                                             flags.raw)};
+        const IR::Value value{&*read};
+        if (texel_bytes >= 4) {
+            for (u32 w = 0; w < texel_bytes / 4; ++w) {
+                result[byte / 4 + w] = IR::U32{ir.CompositeExtract(value, w)};
+            }
+        } else {
+            const IR::U32 piece{ir.BitFieldExtract(IR::U32{ir.CompositeExtract(value, 0)}, ir.Imm32(0),
+                                                   ir.Imm32(texel_bytes * 8))};
+            result[byte / 4] = IR::U32{ir.BitFieldInsert(result[byte / 4], piece,
+                                                         ir.Imm32((byte % 4) * 8),
+                                                         ir.Imm32(texel_bytes * 8))};
+        }
+    }
+    inst.ReplaceUsesWith(ir.CompositeConstruct(result[0], result[1], result[2], result[3]));
+}
+
 } // Anonymous namespace
 
 void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo& host_info) {
@@ -1261,6 +1453,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         default:
             break;
         }
+        std::optional<std::pair<u32, u32>> split_bytes;
         u32 index;
         u32 size_shift = cbuf.count > 1 ? DynamicDescriptorSizeShift(cbuf.dynamic_offset) : DESCRIPTOR_SIZE_SHIFT;
         u32 count = cbuf.count;
@@ -1283,7 +1476,20 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             }
             const bool is_written{inst->GetOpcode() != IR::Opcode::ImageRead};
             const bool is_read{inst->GetOpcode() != IR::Opcode::ImageWrite};
-            const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+            bool is_integer{is_texture_pixel_format_integer(cbuf)};
+            if (flags.type != TextureType::Buffer &&
+                (inst->GetOpcode() == IR::Opcode::ImageWrite ||
+                 (inst->GetOpcode() == IR::Opcode::ImageRead && !inst->HasAssociatedPseudoOperation()))) {
+                const u32 access_bytes{ImageFormatBytes(flags.image_format)};
+                const u32 texel_bytes{TexelBytes(ReadTexturePixelFormatCached(env, cbuf))};
+                if (access_bytes != 0 && texel_bytes != 0 && access_bytes > texel_bytes &&
+                    access_bytes % texel_bytes == 0) {
+                    flags.image_format.Assign(RawImageFormat(texel_bytes));
+                    split_bytes = {access_bytes, texel_bytes};
+                    // Raw texel bits through an unsigned view of the image's texel size.
+                    is_integer = true;
+                }
+            }
             if (flags.type == TextureType::Buffer) {
                 index = descriptors.Add(ImageBufferDescriptor{
                     .format = flags.image_format,
@@ -1359,6 +1565,11 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             inst->SetArg(0, ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1)));
         } else {
             inst->SetArg(0, IR::Value{});
+        }
+        if (split_bytes) {
+            SplitWideRawImageAccess(*texture_inst.block, *inst, split_bytes->first,
+                                    split_bytes->second);
+            continue;
         }
 
         if (!host_info.support_snorm_render_buffer && inst->GetOpcode() == IR::Opcode::ImageFetch &&
